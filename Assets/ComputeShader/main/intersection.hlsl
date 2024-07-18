@@ -195,11 +195,10 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
         BLASNode node = _BNodes[idx];   //获取当前BLAS节点
         
         bool leaf = node.primitiveStartIdx >= 0;
-        
-        if (leaf)
+        bool hit = IntersectBox2(ray, node.boundMax, node.boundMin);    // 和BLAS的包围盒求交
+        if (hit)
         {
-            bool hit = IntersectBox2(ray, node.boundMax, node.boundMin);    // 和BLAS的包围盒求交
-            if (hit)
+            if (leaf)
             {
                 // 遍历BLAS中的每一个面
                 for (int primitiveIdx = node.primitiveStartIdx; primitiveIdx < node.primitiveEndIdx; primitiveIdx++)
@@ -236,24 +235,11 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
                     }
                 }
             }
-        }
-        else
-        {
-            int leftIdx = node.childIdx;
-            int rightIdx = node.childIdx + 1;
-            BLASNode leftNode = _BNodes[leftIdx];
-            BLASNode rightNode = _BNodes[rightIdx];
-
-            float dstA = RayBoundingBoxDst(ray, leftNode.boundMin, leftNode.boundMax);
-            float dstB = RayBoundingBoxDst(ray, rightNode.boundMin, rightNode.boundMax);
-            bool isNearestA = dstA <= dstB;
-            float dstNear = isNearestA ? dstA : dstB;
-            float dstFar = isNearestA ? dstB : dstA;
-            int childIndexNear = isNearestA ? leftIdx : rightIdx;
-            int childIndexFar = isNearestA ? rightIdx : leftIdx;
-
-            if (dstFar < bestHit.distance) stack[stackPtr++] = childIndexFar;
-            if (dstNear < bestHit.distance) stack[stackPtr++] = childIndexNear;
+            else
+            {
+                stack[++stackPtr] = node.childIdx;
+                stack[++stackPtr] = node.childIdx + 1;
+            }
         }
     }
 }
