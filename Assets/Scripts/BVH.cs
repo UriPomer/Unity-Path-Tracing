@@ -244,10 +244,9 @@ public class BVH
         {
             BoundMax = BVHRoot.Bounds.max,
             BoundMin = BVHRoot.Bounds.min,
-            TransformIdx = objectTransformIdx,
             NodeRootIdx = originBnodesCount,
+            TransformIdx = objectTransformIdx,
         });
-        BVHBuilder.nodeStartToEnd.Add(originBnodesCount, bnodes.Count);
     }
     
     /// <summary>
@@ -403,7 +402,7 @@ public class BVH
             {
                 int b = (int)Mathf.Floor(nBuckets * centerBounding.Offset(primitiveInfos[i].Center)[dim]); //确认该面片属于哪个桶
                 b = Mathf.Clamp(b, 0, nBuckets - 1);
-                buckets[b].Count++;
+                buckets[b].Count += 1;
                 buckets[b].Bounds.Extend(primitiveInfos[i].Bounds);
             }
 
@@ -430,6 +429,8 @@ public class BVH
                 rightBox.Extend(buckets[nBuckets - 1 - i].Bounds);
                 areaRight[nBuckets - 2 - i] = rightBox.SurfaceArea();
             }
+            
+            
 
             //计算cost
             float minCost = float.MaxValue;

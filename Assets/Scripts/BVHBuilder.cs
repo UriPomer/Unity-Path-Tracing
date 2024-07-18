@@ -18,7 +18,7 @@ public struct MaterialData
     public int NormalIdx;
     public int RoughIdx;
 
-    public static int TypeSize = Marshal.SizeOf(typeof(MaterialData));
+    public static int TypeSize = sizeof(float)*11+sizeof(int)*5;
 }
 
 public class BVHBuilder
@@ -42,8 +42,7 @@ public class BVHBuilder
 
     // algorithm data
     private static List<int> indices = new List<int>(); // indices of vertices
-    public static Dictionary<int, int> nodeStartToEnd = new Dictionary<int, int>();
-    public static float BVHCostOffset = 1.0f;
+    public static float BVHCostOffset = 0.5f;
 
     public static ComputeBuffer VertexBuffer;
     public static ComputeBuffer UVBuffer;
@@ -229,10 +228,11 @@ public class BVHBuilder
             normals.AddRange(meshNormals);
             uvs.AddRange(meshUVs);
             tangents.AddRange(meshTangents);
-
-            // if not UV is used, insert empty one
-            if (uvs.Count <= 0) uvs.Add(Vector2.zero);
+            
         }
+        // if not UV is used, insert empty one
+        if (uvs.Count <= 0) uvs.Add(Vector2.zero);
+        
         // create texture 2d array
         if (AlbedoTextures != null) UnityEngine.Object.Destroy(AlbedoTextures);
         if (EmissionTextures != null) UnityEngine.Object.Destroy(EmissionTextures);
@@ -251,6 +251,15 @@ public class BVHBuilder
     {
         if (!objectUpdated)
             return false;
+        
+        vertices.Clear();
+        uvs.Clear();
+        indices.Clear();
+        normals.Clear();
+        tangents.Clear();
+        materials.Clear();
+        bnodes.Clear();
+        meshNodes.Clear();
 
         BuildMaterialAndMeshData(objects);
 
