@@ -185,7 +185,7 @@ float RayBoundingBoxDst(Ray ray, float3 boxMin, float3 boxMax)
  */
 void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transformIdx)
 {
-    int stack[BVHTREE_RECURSE_SIZE + 3];
+    int stack[BVHTREE_RECURSE_SIZE];
     int stackPtr = 0;
     stack[stackPtr++] = startIdx;
     float4x4 localToWorld = _Transforms[transformIdx * 2];
