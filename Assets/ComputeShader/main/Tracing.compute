@@ -152,16 +152,16 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     Ray r = GenRayByID(id.xy);
     _Pixel = id.xy;
     float3 result = float3(0.0f, 0.0f, 0.0f);
-    for(int i = 0; i < 8; i++)
-    {
-        RayHit hit = Trace(r);
-        result += r.energy * SRGB2Linear(Shade(r, hit));
-
-        if (!any(r.energy))
-        {
-            break;
-        }
-    }
+    // for(int i = 0; i < 8; i++)
+    // {
+    //     RayHit hit = Trace(r);
+    //     result += r.energy * SRGB2Linear(Shade(r, hit));
+    //
+    //     if (!any(r.energy))
+    //     {
+    //         break;
+    //     }
+    // }
     _Result[id.xy] = float4(result, 1.0f);
 }
 

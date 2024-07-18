@@ -185,13 +185,13 @@ float RayBoundingBoxDst(Ray ray, float3 boxMin, float3 boxMax)
  */
 void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transformIdx)
 {
-    int stack[BVHTREE_RECURSE_SIZE];
+    int stack[BVHTREE_RECURSE_SIZE + 3];
     int stackPtr = 0;
-    stack[stackPtr] = startIdx;
+    stack[stackPtr++] = startIdx;
     float4x4 localToWorld = _Transforms[transformIdx * 2];
     while (stackPtr >= 0 && stackPtr < BVHTREE_RECURSE_SIZE)
     {
-        int idx = stack[stackPtr--];    //模拟栈
+        int idx = stack[--stackPtr];    //模拟栈
         BLASNode node = _BNodes[idx];   //获取当前BLAS节点
         
         bool leaf = node.primitiveStartIdx >= 0;
@@ -237,8 +237,8 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
             }
             else
             {
-                stack[++stackPtr] = node.childIdx;
-                stack[++stackPtr] = node.childIdx + 1;
+                stack[stackPtr++] = node.childIdx;
+                stack[stackPtr++] = node.childIdx + 1;
             }
         }
     }

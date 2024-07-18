@@ -181,7 +181,6 @@ public class Tracing : MonoBehaviour
 
     private void OnDrawGizmos()
     {
-        // if (!drawGizmos) return;
         var bnodes = BVHBuilder.GetBLASNodes();
         var meshNodes = BVHBuilder.GetMeshNodes();
         var transforms = BVHBuilder.GetTransforms();
@@ -191,29 +190,34 @@ public class Tracing : MonoBehaviour
             {
                 var meshNode = meshNodes[i];
                 var localToWorld = transforms[meshNode.TransformIdx * 2];
-                
+    
                 // draw mesh bounds
                 Gizmos.color = Color.green;
                 var boundCenter = (meshNode.BoundMin + meshNode.BoundMax) / 2;
                 var size = meshNode.BoundMax - meshNode.BoundMin;
                 Gizmos.DrawWireCube(localToWorld.MultiplyPoint3x4(boundCenter), localToWorld.MultiplyVector(size));
-                
-                //recursively draw bvh
-                int[] stack = new int[32];
+    
+                // recursively draw bvh
+                int[] stack = new int[40];
                 int stackPtr = 0;
-                stack[stackPtr] = meshNode.NodeRootIdx;
-        
-                while (stackPtr >= 0 && stackPtr <= 32)
+                stack[stackPtr++] = meshNode.NodeRootIdx;
+    
+                while (stackPtr > 0 && stackPtr <= 32)
                 {
-                    var nodeIdx = stack[stackPtr--];
+                    int nodeIdx = stack[--stackPtr];
                     var bnode = bnodes[nodeIdx];
+    
+                    if (!(stackPtr >= 0 && stackPtr <= 32))
+                    {
+                        Debug.Log("stackPtr: " + stackPtr);
+                    }
                     
                     if (bnode.PrimitiveStartIdx < 0)
                     {
                         stack[stackPtr++] = bnode.ChildIdx;
                         stack[stackPtr++] = bnode.ChildIdx + 1;
                     }
-                    
+    
                     var min = localToWorld.MultiplyPoint3x4(bnode.BoundMin);
                     var max = localToWorld.MultiplyPoint3x4(bnode.BoundMax);
                     var center = (min + max) / 2;
@@ -224,6 +228,7 @@ public class Tracing : MonoBehaviour
             }
         }
     }
+
     
     void ResetSampleCount()
     {
