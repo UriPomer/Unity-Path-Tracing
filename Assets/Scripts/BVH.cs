@@ -410,11 +410,12 @@ public class BVH
     BVHNode Split(List<PrimitiveInfo> primitiveInfos, int start, int end, int depth = 0)
     {
         int primitiveInfoCount = end - start;
-        var parent = primitiveInfos[start];
-        var size = parent.Bounds.SurfaceArea();
-        float parentCost = primitiveInfoCount * size;
-        
-        var bounding = parent.Bounds;
+        AABB bounding = new();
+        //  计算所有面片的包围盒
+        for (int i = start; i < end; i++)
+        {
+            bounding.Extend(primitiveInfos[i].Bounds);
+        }
         
         AABB centerBounding = new(); //所有面片的中心点的包围盒
         for (int i = start; i < end; i++)
@@ -423,7 +424,7 @@ public class BVH
         }
         
         int dim = centerBounding.MaxDimension();
-        int primitiveInfoMid = (start + end) / 2;
+        int primitiveInfoMid;
         const int MaxDepth = 32;
         List<SAHBucket> buckets = new();
         for (int i = 0; i < nBuckets; i++)
