@@ -200,22 +200,17 @@ public class Tracing : MonoBehaviour
                 // recursively draw bvh
                 int[] stack = new int[40];
                 int stackPtr = 0;
-                stack[stackPtr++] = meshNode.NodeRootIdx;
+                stack[stackPtr] = meshNode.NodeRootIdx;
     
-                while (stackPtr > 0 && stackPtr <= 32)
+                while (stackPtr >= 0 && stackPtr <= 32)
                 {
-                    int nodeIdx = stack[--stackPtr];
+                    int nodeIdx = stack[stackPtr--];
                     var bnode = bnodes[nodeIdx];
-    
-                    if (!(stackPtr >= 0 && stackPtr <= 32))
-                    {
-                        Debug.Log("stackPtr: " + stackPtr);
-                    }
                     
                     if (bnode.PrimitiveStartIdx < 0)
                     {
-                        stack[stackPtr++] = bnode.ChildIdx;
-                        stack[stackPtr++] = bnode.ChildIdx + 1;
+                        stack[++stackPtr] = bnode.ChildIdx;
+                        stack[++stackPtr] = bnode.ChildIdx + 1;
                     }
     
                     var min = localToWorld.MultiplyPoint3x4(bnode.BoundMin);
