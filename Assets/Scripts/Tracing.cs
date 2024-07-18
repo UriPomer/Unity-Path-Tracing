@@ -181,7 +181,7 @@ public class Tracing : MonoBehaviour
 
     private void OnDrawGizmos()
     {
-        if (!drawGizmos) return;
+        // if (!drawGizmos) return;
         var bnodes = BVHBuilder.GetBLASNodes();
         var meshNodes = BVHBuilder.GetMeshNodes();
         var transforms = BVHBuilder.GetTransforms();
@@ -198,10 +198,22 @@ public class Tracing : MonoBehaviour
                 var size = meshNode.BoundMax - meshNode.BoundMin;
                 Gizmos.DrawWireCube(localToWorld.MultiplyPoint3x4(boundCenter), localToWorld.MultiplyVector(size));
                 
-                for(int j = meshNode.NodeRootIdx; j < BVHBuilder.nodeStartToEnd[meshNode.NodeRootIdx]; j++)
+                //recursively draw bvh
+                int[] stack = new int[32];
+                int stackPtr = 0;
+                stack[stackPtr] = meshNode.NodeRootIdx;
+        
+                while (stackPtr >= 0 && stackPtr <= 32)
                 {
-                    var bnode = bnodes[j];
-                    if(bnode.PrimitiveStartIdx < 0) continue;
+                    var nodeIdx = stack[stackPtr--];
+                    var bnode = bnodes[nodeIdx];
+                    
+                    if (bnode.PrimitiveStartIdx < 0)
+                    {
+                        stack[stackPtr++] = bnode.ChildIdx;
+                        stack[stackPtr++] = bnode.ChildIdx + 1;
+                    }
+                    
                     var min = localToWorld.MultiplyPoint3x4(bnode.BoundMin);
                     var max = localToWorld.MultiplyPoint3x4(bnode.BoundMax);
                     var center = (min + max) / 2;

@@ -482,7 +482,7 @@ public class BVH
         float leafCost = primitiveInfoCount;
         minCost = BVHBuilder.BVHCostOffset + minCost / bounding.SurfaceArea();
 
-        if ( (primitiveInfoCount > 16 || minCost < leafCost) && depth < MaxDepth ) //继续划分
+        if ( primitiveInfoCount > 16 || minCost < leafCost) //继续划分
         {
             List<PrimitiveInfo> leftInfos = new();
             List<PrimitiveInfo> rightInfos = new();
