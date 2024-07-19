@@ -42,7 +42,6 @@ public class BVHBuilder
 
     // algorithm data
     private static List<int> indices = new List<int>(); // indices of vertices
-    public static float BVHCostOffset = 0.5f;
 
     public static ComputeBuffer VertexBuffer;
     public static ComputeBuffer UVBuffer;
@@ -221,7 +220,8 @@ public class BVHBuilder
                 var subMeshIndices = mesh.GetIndices(i).ToList();
                 //TODO:
                 //这里的build是build了BVHNode，这个BVH和下面的bnodes的区别是什么？
-                BVH blasTree = new BVH(meshVertices, subMeshIndices);   //这个对象创建之后就没有用了，数据存储在下面的ref的参数里
+                // BVH blasTree = new BVH(meshVertices, subMeshIndices);   //这个对象创建之后就没有用了，数据存储在下面的ref的参数里
+                BVH blasTree = BVH.Construct(meshVertices, subMeshIndices, BVHType.SAH);
                 blasTree.FlattenBLAS(ref indices, ref bnodes, ref meshNodes, subMeshIndices, vertexStart, i < matCount ? i + matStart : 0, objectIdx);
             }
             vertices.AddRange(meshVertices);
@@ -309,7 +309,8 @@ public class BVHBuilder
         if (meshNodes.Count <= 0) return;
         if (transforms.Count <= 0) LoadTransforms();
         tnodes.Clear();
-        BVH tlasTree = new BVH(meshNodes, transforms);
+        // BVH tlasTree = new BVH(meshNodes, transforms);
+        BVH tlasTree = BVH.Construct(meshNodes, transforms, BVHType.SAH);
         tlasTree.FlattenTLAS(ref meshNodes, ref tnodes);
         SetBuffer(ref TLASBuffer, tnodes, TLASNode.TypeSize);
         SetBuffer(ref MeshNodeBuffer, meshNodes, MeshNode.TypeSize);
@@ -435,10 +436,5 @@ public class BVHBuilder
     public static List<Matrix4x4> GetTransforms()
     {
         return transforms;
-    }
-
-    public static void SetCostOffset(float offset)
-    {
-        BVHCostOffset = offset;
     }
 }
