@@ -6,6 +6,7 @@ struct Ray
     float3 origin;
     float3 dir;
     float3 energy;
+    float3 invDir;
 };
 
 struct Material
@@ -180,6 +181,7 @@ Ray GenRay(float3 origin, float3 dir)
     ray.origin = origin;
     ray.dir = dir;
     ray.energy = float3(1.0f, 1.0f, 1.0f);
+    ray.invDir = 1.0f / ray.dir;
     return ray;
 }
 

@@ -103,6 +103,7 @@ Ray GenRayByID(float2 pixelCoord)
     
     ray.dir = normalize(worldDir);
     ray.energy = float3(1.0f, 1.0f, 1.0f);
+    ray.invDir = 1.0f / ray.dir;
 
     return ray;
 }

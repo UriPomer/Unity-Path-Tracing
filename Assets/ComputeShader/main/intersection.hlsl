@@ -163,6 +163,20 @@ bool IntersectBox3(Ray ray, RayHit bestHit, float3 pMax, float3 pMin)
     return intersectForward && intersectBackward;
 }
 
+float RayBoundingBoxDst(Ray ray, float3 boxMin, float3 boxMax)
+{
+    float3 tMin = (boxMin - ray.origin) * ray.invDir;
+    float3 tMax = (boxMax - ray.origin) * ray.invDir;
+    float3 t1 = min(tMin, tMax);
+    float3 t2 = max(tMin, tMax);
+    float tNear = max(max(t1.x, t1.y), t1.z);
+    float tFar = min(min(t2.x, t2.y), t2.z);
+
+    bool hit = tFar >= tNear && tFar > 0;
+    float dst = hit ? tNear > 0 ? tNear : 0 : 1.#INF;
+    return dst;
+};
+
 /*
  *与BLAS树中的三角形面求交
  */
@@ -221,8 +235,22 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
             }
             else
             {
-                stack[++stackPtr] = node.childIdx;  //左子节点
-                stack[++stackPtr] = node.childIdx + 1;  //右子节点
+                int childIndexA = node.childIdx;
+                int childIndexB = node.childIdx + 1;
+                BLASNode childA = _BNodes[childIndexA];
+                BLASNode childB = _BNodes[childIndexB];
+
+                float dstA = RayBoundingBoxDst(ray, childA.boundMin, childA.boundMax);
+                float dstB = RayBoundingBoxDst(ray, childB.boundMin, childB.boundMax);
+
+                bool isNearestA = dstA <= dstB;
+                float dstNear = isNearestA ? dstA : dstB;
+                float dstFar = isNearestA ? dstB : dstA;
+                int childIndexNear = isNearestA ? childIndexA : childIndexB;
+                int childIndexFar = isNearestA ? childIndexB : childIndexA;
+
+                if (dstFar < bestHit.distance) stack[++stackPtr] = childIndexFar;
+                if (dstNear < bestHit.distance) stack[++stackPtr] = childIndexNear;
             }
         }
     }
