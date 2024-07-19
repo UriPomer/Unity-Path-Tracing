@@ -79,8 +79,8 @@ public class Tracing : MonoBehaviour
         tracingShader.SetTexture(0, "_Result", target);
         tracingShader.Dispatch(0, dispatchGroupXFull, dispatchGroupYFull, 1);
         Graphics.Blit(target, frameConverged, collectMaterial);
-        // Graphics.Blit(frameConverged, destination);
-        Graphics.Blit(target, destination);
+        Graphics.Blit(frameConverged, destination);
+        // Graphics.Blit(target, destination);
     }
 
     private void Update()
@@ -96,8 +96,8 @@ public class Tracing : MonoBehaviour
 
     private void SetShaderParameters(int refreshRate)
     {
-        if(sampleCount % refreshRate == 0)
-        {
+        // if(sampleCount % refreshRate == 0 || true)
+        // {
             var DirectionalLight = LightManager.Instance.DirectionalLight;
         
             Vector3 dir = DirectionalLight.transform.forward;
@@ -137,7 +137,7 @@ public class Tracing : MonoBehaviour
             if (BVHBuilder.MetallicTextures != null) tracingShader.SetTexture(0, "_MetallicTextures", BVHBuilder.MetallicTextures);
             if (BVHBuilder.NormalTextures != null) tracingShader.SetTexture(0, "_NormalTextures", BVHBuilder.NormalTextures);
             if (BVHBuilder.RoughnessTextures != null) tracingShader.SetTexture(0, "_RoughnessTextures", BVHBuilder.RoughnessTextures);
-        }
+        // }
     }
     
     private void EstimateGroups(int width, int height)
