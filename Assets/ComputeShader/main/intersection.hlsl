@@ -163,23 +163,6 @@ bool IntersectBox3(Ray ray, RayHit bestHit, float3 pMax, float3 pMin)
     return intersectForward && intersectBackward;
 }
 
-
-float RayBoundingBoxDst(Ray ray, float3 boxMin, float3 boxMax)
-{
-    float3 invDir = 1.0 / ray.dir;
-    float3 tMin = (boxMin - ray.origin) * invDir;
-    float3 tMax = (boxMax - ray.origin) * invDir;
-    float3 t1 = min(tMin, tMax);
-    float3 t2 = max(tMin, tMax);
-    float tNear = max(max(t1.x, t1.y), t1.z);
-    float tFar = min(min(t2.x, t2.y), t2.z);
-
-    bool hit = tFar >= tNear && tFar > 0;
-    float dst = hit ? tNear > 0 ? tNear : 0 : 1.#INF;
-    return dst;
-};
-
-
 /*
  *与BLAS树中的三角形面求交
  */
@@ -187,21 +170,22 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
 {
     int stack[BVHTREE_RECURSE_SIZE];
     int stackPtr = 0;
-    stack[stackPtr++] = startIdx;
+    int primitiveIdx;
+    stack[stackPtr] = startIdx;
     float4x4 localToWorld = _Transforms[transformIdx * 2];
     while (stackPtr >= 0 && stackPtr < BVHTREE_RECURSE_SIZE)
     {
-        int idx = stack[--stackPtr];    //模拟栈
+        int idx = stack[stackPtr--];    //模拟栈
         BLASNode node = _BNodes[idx];   //获取当前BLAS节点
-        
-        bool leaf = node.primitiveStartIdx >= 0;
+
         bool hit = IntersectBox2(ray, node.boundMax, node.boundMin);    // 和BLAS的包围盒求交
+        bool leaf = node.primitiveStartIdx >= 0;
         if (hit)
         {
             if (leaf)
             {
                 // 遍历BLAS中的每一个面
-                for (int primitiveIdx = node.primitiveStartIdx; primitiveIdx < node.primitiveEndIdx; primitiveIdx++)
+                for (primitiveIdx = node.primitiveStartIdx; primitiveIdx < node.primitiveEndIdx; primitiveIdx++)
                 {
                     // 根据之前得出的结论，这里的_Indices对应OrderedPrimitiveIndices，然后每一个BLASNode的primitiveStartIdx和primitiveEndIdx对应的是OrderedPrimitiveIndices的索引
                     // 然后再通过OrderedPrimitiveIndices的索引找到实际的面的索引
@@ -212,7 +196,7 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
                     float2 uv0 = _UVs[_Indices[i]];
                     float2 uv1 = _UVs[_Indices[i + 1]];
                     float2 uv2 = _UVs[_Indices[i + 2]];
-                    float t = 0, u, v;
+                    float t, u, v;
                     if (IntersectTriangle(ray, v0, v1, v2, t, u, v))    //与面求交
                     {
                         if (t > 0.0 && t < bestHit.distance)    //距离更近且不为负数
@@ -237,8 +221,8 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
             }
             else
             {
-                stack[stackPtr++] = node.childIdx;
-                stack[stackPtr++] = node.childIdx + 1;
+                stack[++stackPtr] = node.childIdx;  //左子节点
+                stack[++stackPtr] = node.childIdx + 1;  //右子节点
             }
         }
     }
