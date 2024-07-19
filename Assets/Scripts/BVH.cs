@@ -200,7 +200,7 @@ public abstract class BVH
 
     protected abstract BVHNode Build(
         List<PrimitiveInfo> faceInfo,
-        int faceInfoStart, int faceInfoEnd, int depth = 0
+        int faceInfoStart, int faceInfoEnd
     );
 
     /// <summary>
@@ -219,10 +219,10 @@ public abstract class BVH
         int verticesIdxOffset, int materialIdx, int objectTransformIdx
     )
     {
-        int faceOffset = indices.Count / 3;  //面的数量
-        int bnodesOffset = bnodes.Count;
+        int primitiveCount = indices.Count / 3;  //面的数量
+        int bnodesCount = bnodes.Count;
         // add indices
-        foreach (int faceId in OrderedFaceId)
+        foreach (int faceId in OrderedPrimitiveIndices)
         {
             indices.Add(subindices[faceId * 3] + verticesIdxOffset);
             indices.Add(subindices[faceId * 3 + 1] + verticesIdxOffset);
@@ -238,8 +238,8 @@ public abstract class BVH
             {
                 BoundMax = node.Bounds.max,
                 BoundMin = node.Bounds.min,
-                PrimitiveStartIdx = node.PrimitiveStartIdx >= 0 ? node.PrimitiveStartIdx + faceOffset : -1,
-                PrimitiveEndIdx = node.PrimitiveStartIdx >= 0 ? node.PrimitiveEndIdx + faceOffset : -1,
+                PrimitiveStartIdx = node.PrimitiveStartIdx >= 0 ? node.PrimitiveStartIdx + primitiveCount : -1,
+                PrimitiveEndIdx = node.PrimitiveStartIdx >= 0 ? node.PrimitiveEndIdx + primitiveCount : -1,
                 MaterialIdx = node.PrimitiveStartIdx >= 0 ? materialIdx : 0,
                 ChildIdx = node.PrimitiveStartIdx >= 0 ? -1 : nodes.Count + bnodes.Count + 1
             });
@@ -253,7 +253,7 @@ public abstract class BVH
         {
             BoundMax = BVHRoot.Bounds.max,
             BoundMin = BVHRoot.Bounds.min,
-            NodeRootIdx = bnodesOffset,
+            NodeRootIdx = bnodesCount,
             TransformIdx = objectTransformIdx
         });
     }
@@ -270,7 +270,7 @@ public abstract class BVH
     {
         // reorder raw nodes
         List<MeshNode> newRawNodes = new List<MeshNode>();
-        foreach(int rawNodeId in OrderedFaceId)
+        foreach(int rawNodeId in OrderedPrimitiveIndices)
         {
             newRawNodes.Add(meshNodes[rawNodeId]);
         }
@@ -347,7 +347,7 @@ public abstract class BVH
     }
 
     public BVHNode BVHRoot = null;
-    public List<int> OrderedFaceId = new List<int>();
+    public List<int> OrderedPrimitiveIndices = new List<int>();
 
     public static BVH Construct(List<Vector3> vertices, List<int> indices, BVHType type)
     {
@@ -394,48 +394,47 @@ public class BVHSAH : BVH
     }
 
     protected override BVHNode Build(
-        List<PrimitiveInfo> faceInfo,
-        int faceInfoStart, int faceInfoEnd,
-        int depth = 0
+        List<PrimitiveInfo> primitiveInfos,
+        int start, int end
     )
     {
         // get vertices bounding
         AABB bounding = new AABB();
-        for (int i = faceInfoStart; i < faceInfoEnd; i++)
-            bounding.Extend(faceInfo[i].Bounds);
-        int faceInfoCount = faceInfoEnd - faceInfoStart;
+        for (int i = start; i < end; i++)
+            bounding.Extend(primitiveInfos[i].Bounds);
+        int primitiveInfoCount = end - start;
         // if only one face, create a leaf
-        if (faceInfoCount == 1)
+        if (primitiveInfoCount == 1)
         {
-            int idx = OrderedFaceId.Count;
-            int faceIdx = faceInfo[faceInfoStart].PrimitiveIdx;
-            OrderedFaceId.Add(faceIdx);
-            return BVHNode.CreateLeaf(idx, faceInfoCount, bounding);
+            int idx = OrderedPrimitiveIndices.Count;
+            int faceIdx = primitiveInfos[start].PrimitiveIdx;
+            OrderedPrimitiveIndices.Add(faceIdx);
+            return BVHNode.CreateLeaf(idx, primitiveInfoCount, bounding);
         }
 
         // get centroids bounding
         AABB centerBounding = new AABB();
-        for (int i = faceInfoStart; i < faceInfoEnd; i++)
-            centerBounding.Extend(faceInfo[i].Center);
+        for (int i = start; i < end; i++)
+            centerBounding.Extend(primitiveInfos[i].Center);
         int dim = centerBounding.MaxDimension();
-        int faceInfoMid = (faceInfoStart + faceInfoEnd) / 2;
+        int primitiveInfoMid = (start + end) / 2;
         // if cannot further split on this axis, generate a leaf
         if (Mathf.Approximately(centerBounding.max[dim], centerBounding.min[dim]))
         {
-            int idx = OrderedFaceId.Count;
-            for (int i = faceInfoStart; i < faceInfoEnd; i++)
+            int idx = OrderedPrimitiveIndices.Count;
+            for (int i = start; i < end; i++)
             {
-                int faceIdx = faceInfo[i].PrimitiveIdx;
-                OrderedFaceId.Add(faceIdx);
+                int faceIdx = primitiveInfos[i].PrimitiveIdx;
+                OrderedPrimitiveIndices.Add(faceIdx);
             }
-            return BVHNode.CreateLeaf(idx, faceInfoCount, bounding);
+            return BVHNode.CreateLeaf(idx, primitiveInfoCount, bounding);
         }
 
-        if (faceInfoCount <= 2)
+        if (primitiveInfoCount <= 2)
         {
             // if only 2 faces remain, skip SAH
-            faceInfo.Sort(
-                faceInfoStart, faceInfoCount,
+            primitiveInfos.Sort(
+                start, primitiveInfoCount,
                 Comparer<PrimitiveInfo>.Create((x, y) => x.Center[dim].CompareTo(y.Center[dim]))
             );
         }
@@ -447,12 +446,12 @@ public class BVHSAH : BVH
                 buckets.Add(new SAHBucket());
             }
 
-            for (int i = faceInfoStart; i < faceInfoEnd; i++)
+            for (int i = start; i < end; i++)
             {
-                int b = (int)Mathf.Floor(nBuckets * centerBounding.Offset(faceInfo[i].Center)[dim]); //确认该面片属于哪个桶
+                int b = (int)Mathf.Floor(nBuckets * centerBounding.Offset(primitiveInfos[i].Center)[dim]); //确认该面片属于哪个桶
                 b = Mathf.Clamp(b, 0, nBuckets - 1);
                 buckets[b].Count++;
-                buckets[b].Bounds.Extend(faceInfo[i].Bounds);
+                buckets[b].Bounds.Extend(primitiveInfos[i].Bounds);
             }
 
             //处理桶的cost
@@ -495,11 +494,11 @@ public class BVHSAH : BVH
                 }
             }
             //// create leaf or split primitives at selected bucket
-            float leafCost = faceInfoCount;
+            float leafCost = primitiveInfoCount;
             minCost = 0.5f + minCost / bounding.SurfaceArea();
-            if (faceInfoCount > 16 || minCost < leafCost)
+            if (primitiveInfoCount > 16 || minCost < leafCost)
             {
-                var partition = faceInfo.GetRange(faceInfoStart, faceInfoCount).ToList().ToLookup(info =>
+                var partition = primitiveInfos.GetRange(start, primitiveInfoCount).ToList().ToLookup(info =>
                 {
                     int b = (int)Mathf.Floor(nBuckets * centerBounding.Offset(info.Center)[dim]);
                     b = Mathf.Clamp(b, 0, nBuckets - 1);
@@ -507,26 +506,26 @@ public class BVHSAH : BVH
                 });
                 var pLeft = partition[true].ToList();
                 var pRight = partition[false].ToList();
-                faceInfoMid = pLeft.Count + faceInfoStart;
-                for (int i = faceInfoStart; i < faceInfoEnd; i++)
-                    faceInfo[i] = (i < faceInfoMid) ? pLeft[i - faceInfoStart] : pRight[i - faceInfoMid];
+                primitiveInfoMid = pLeft.Count + start;
+                for (int i = start; i < end; i++)
+                    primitiveInfos[i] = (i < primitiveInfoMid) ? pLeft[i - start] : pRight[i - primitiveInfoMid];
             }
             else
             {
-                int idx = OrderedFaceId.Count;
-                for (int i = faceInfoStart; i < faceInfoEnd; i++)
+                int idx = OrderedPrimitiveIndices.Count;
+                for (int i = start; i < end; i++)
                 {
-                    int faceIdx = faceInfo[i].PrimitiveIdx;
-                    OrderedFaceId.Add(faceIdx);
+                    int primitiveIdx = primitiveInfos[i].PrimitiveIdx;
+                    OrderedPrimitiveIndices.Add(primitiveIdx);
                 }
-                return BVHNode.CreateLeaf(idx, faceInfoCount, bounding);
+                return BVHNode.CreateLeaf(idx, primitiveInfoCount, bounding);
             }
         }
         // avoid middle index error
-        if (faceInfoMid == faceInfoStart) faceInfoMid = (faceInfoStart + faceInfoEnd) / 2;
+        if (primitiveInfoMid == start) primitiveInfoMid = (start + end) / 2;
         // recursively build left and right nodes
-        var leftChild = Build(faceInfo, faceInfoStart, faceInfoMid, depth + 1);
-        var rightChild = Build(faceInfo, faceInfoMid, faceInfoEnd, depth + 1);
+        var leftChild = Build(primitiveInfos, start, primitiveInfoMid);
+        var rightChild = Build(primitiveInfos, primitiveInfoMid, end);
         return BVHNode.CreateParent(
             dim,
             leftChild,
