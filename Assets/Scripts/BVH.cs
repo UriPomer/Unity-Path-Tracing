@@ -430,44 +430,51 @@ public class BVHSAH : BVH
         }
         else
         {
-            // init SAH bucket info
-            List<SAHBucket> buckets = new List<SAHBucket>();
-            for (int i = 0; i < nBuckets; i++) buckets.Add(new SAHBucket());
-            // update buckets info
+            List<SAHBucket> buckets = new();
+            for (int i = 0; i < nBuckets; i++)
+            {
+                buckets.Add(new SAHBucket());
+            }
+
             for (int i = faceInfoStart; i < faceInfoEnd; i++)
             {
-                int b = (int)Mathf.Floor(nBuckets * centerBounding.Offset(faceInfo[i].Center)[dim]);
+                int b = (int)Mathf.Floor(nBuckets * centerBounding.Offset(faceInfo[i].Center)[dim]); //确认该面片属于哪个桶
                 b = Mathf.Clamp(b, 0, nBuckets - 1);
-                buckets[b].Count += 1;
+                buckets[b].Count++;
                 buckets[b].Bounds.Extend(faceInfo[i].Bounds);
             }
-            // process counts and bounds info
-            List<int> countBelow = new List<int>() { buckets[0].Count };
-            List<int> countAbove = new List<int>() { 0 };
-            List<AABB> boundsBelow = new List<AABB>() { buckets[0].Bounds };
-            List<AABB> boundsAbove = new List<AABB>() { null };
-            for (int i = 1; i < nBuckets - 1; i++)
+
+            //处理桶的cost
+            List<int> countLeft = new();
+            int[] countRight = new int[nBuckets - 1];
+            List<float> areaLeft = new();
+            float[] areaRight = new float[nBuckets - 1];
+
+
+            int leftSum = 0;
+            int rightSum = 0;
+            AABB leftBox = new();
+            AABB rightBox = new();
+            for (int i = 0; i < nBuckets - 1; i++)    // 12个桶，只有11个划分点
             {
-                countBelow.Add(countBelow[i - 1] + buckets[i].Count);
-                boundsBelow.Add(AABB.Combine(boundsBelow[i - 1], buckets[i].Bounds));
-                countAbove.Add(0);
-                boundsAbove.Add(new AABB());
+                leftSum += buckets[i].Count;
+                countLeft.Add(leftSum);
+                leftBox.Extend(buckets[i].Bounds);
+                areaLeft.Add(leftBox.SurfaceArea());
+                
+                rightSum += buckets[nBuckets - 1 - i].Count;
+                countRight[nBuckets - 2 - i] = rightSum;
+                rightBox.Extend(buckets[nBuckets - 1 - i].Bounds);
+                areaRight[nBuckets - 2 - i] = rightBox.SurfaceArea();
             }
-            countAbove[nBuckets - 2] = buckets[nBuckets - 1].Count;
-            boundsAbove[nBuckets - 2] = buckets[nBuckets - 1].Bounds;
-            for (int i = nBuckets - 3; i >= 0; i--)
-            {
-                countAbove[i] = countAbove[i + 1] + buckets[i + 1].Count;
-                boundsAbove[i] = AABB.Combine(boundsAbove[i + 1], buckets[i + 1].Bounds);
-            }
-            // find bucket to split with minimum SAH cost
+
+            //计算cost
             float minCost = float.MaxValue;
             int minCostSplitBucket = -1;
             for (int i = 0; i < nBuckets - 1; i++)
             {
-                if (countBelow[i] == 0 || countAbove[i] == 0) continue;
-                float cost = countBelow[i] * boundsBelow[i].SurfaceArea() +
-                             countAbove[i] * boundsAbove[i].SurfaceArea();
+                if (countLeft[i] == 0 || countRight[i] == 0) continue;
+                float cost = countLeft[i] * areaLeft[i] + countRight[i] * areaRight[i];
                 if (cost < minCost)
                 {
                     minCost = cost;
