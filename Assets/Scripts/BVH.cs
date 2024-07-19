@@ -47,55 +47,55 @@ public struct TLASNode
 /// </summary>
 public class AABB
 {
-    public Vector3 pMin;
-    public Vector3 pMax;
-    public Vector3 pExtent;
+    public Vector3 min;
+    public Vector3 max;
+    public Vector3 extent;
 
     public AABB()
     {
-        pMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-        pMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-        pExtent = pMax - pMin;
+        min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+        max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+        extent = max - min;
     }
 
     public AABB(Vector3 min, Vector3 max)
     {
-        pMin = Vector3.Min(min, max);
-        pMax = Vector3.Max(min, max);
-        pExtent = pMax - pMin;
+        this.min = Vector3.Min(min, max);
+        this.max = Vector3.Max(min, max);
+        extent = this.max - this.min;
     }
 
     public AABB(Vector3 v0, Vector3 v1, Vector3 v2)
     {
-        pMin = Vector3.Min(v0, Vector3.Min(v1, v2));
-        pMax = Vector3.Max(v0, Vector3.Max(v1, v2));
-        pExtent = pMax - pMin;
+        min = Vector3.Min(v0, Vector3.Min(v1, v2));
+        max = Vector3.Max(v0, Vector3.Max(v1, v2));
+        extent = max - min;
     }
 
     public void Extend(AABB volume)
     {
-        pMin = Vector3.Min(volume.pMin, pMin);
-        pMax = Vector3.Max(volume.pMax, pMax);
-        pExtent = pMax - pMin;
+        min = Vector3.Min(volume.min, min);
+        max = Vector3.Max(volume.max, max);
+        extent = max - min;
     }
 
     public void Extend(Vector3 p)
     {
-        pMin = Vector3.Min(p, pMin);
-        pMax = Vector3.Max(p, pMax);
-        pExtent = pMax - pMin;
+        min = Vector3.Min(p, min);
+        max = Vector3.Max(p, max);
+        extent = max - min;
     }
 
     public Vector3 Center()
     {
-        return (pMin + pMax) * 0.5f;
+        return (min + max) * 0.5f;
     }
 
     public int MaxDimension()
     {
         int result = 0; // 0 for x, 1 for y, 2 for z
-        if(pExtent.y > pExtent[result]) result = 1;
-        if(pExtent.z > pExtent[result]) result = 2;
+        if(extent.y > extent[result]) result = 1;
+        if(extent.z > extent[result]) result = 2;
         return result;
     }
 
@@ -108,25 +108,25 @@ public class AABB
 
     public Vector3 Offset(Vector3 p)
     {
-        Vector3 o = p - pMin;
-        if (pMax.x > pMin.x) o.x /= pExtent.x;
-        if (pMax.y > pMin.y) o.y /= pExtent.y;
-        if (pMax.z > pMin.z) o.z /= pExtent.z;
+        Vector3 o = p - min;
+        if (max.x > min.x) o.x /= extent.x;
+        if (max.y > min.y) o.y /= extent.y;
+        if (max.z > min.z) o.z /= extent.z;
         return o;
     }
 
     public float SurfaceArea()
     {
         return 2.0f * (
-            pExtent.x * pExtent.y +
-            pExtent.x * pExtent.z +
-            pExtent.y * pExtent.z
+            extent.x * extent.y +
+            extent.x * extent.z +
+            extent.y * extent.z
         );
     }
 
     public AABB Copy()
     {
-        return new AABB(pMin, pMax);
+        return new AABB(min, max);
     }
 }
 
@@ -152,15 +152,15 @@ public abstract class BVH
         public BVHNode LeftChild;
         public BVHNode RightChild;
         public int SplitAxis;
-        public int FaceStart;
-        public int FaceEnd;
+        public int PrimitiveStartIdx;
+        public int PrimitiveEndIdx;
 
         public bool IsLeaf()
         {
             return (LeftChild == null) && (RightChild == null);
         }
 
-        public static BVHNode InitLeaf(int start, int count, AABB bounding)
+        public static BVHNode CreateLeaf(int start, int count, AABB bounding)
         {
             BVHNode node = new BVHNode
             {
@@ -168,13 +168,13 @@ public abstract class BVH
                 LeftChild = null,
                 RightChild = null,
                 SplitAxis = -1,
-                FaceStart = start,
-                FaceEnd = start + count
+                PrimitiveStartIdx = start,
+                PrimitiveEndIdx = start + count
             };
             return node;
         }
 
-        public static BVHNode InitInterior(int splitAxis, BVHNode nodeLeft, BVHNode nodeRight)
+        public static BVHNode CreateParent(int splitAxis, BVHNode nodeLeft, BVHNode nodeRight)
         {
             BVHNode node = new BVHNode
             {
@@ -182,50 +182,41 @@ public abstract class BVH
                 LeftChild = nodeLeft,
                 RightChild = nodeRight,
                 SplitAxis = splitAxis,
-                FaceStart = -1,
-                FaceEnd = -1
+                PrimitiveStartIdx = -1,
+                PrimitiveEndIdx = -1
             };
             return node;
         }
     }
 
-    /// <summary>
-    /// Info for each triangle face
-    /// </summary>
-    public class FaceInfo
+    // 只有AABB和中心点信息，而没有顶点信息
+    public class PrimitiveInfo
     {
         public AABB Bounds;
         public Vector3 Center;
-        public int FaceIdx;
+        public int PrimitiveIdx;
     }
 
-    /// <summary>
-    /// private tree building method
-    /// should be called in constructor
-    /// </summary>
-    /// <param name="faceInfo">converted face info data</param>
-    /// <param name="faceInfoStart">start index</param>
-    /// <param name="faceInfoEnd">end index</param>
-    /// <returns></returns>
+
     protected abstract BVHNode Build(
-        List<FaceInfo> faceInfo,
+        List<PrimitiveInfo> faceInfo,
         int faceInfoStart, int faceInfoEnd, int depth = 0
     );
 
     /// <summary>
-    /// method that converts tree into array memory
+    /// 将子网格的BVH节点转换为BLAS节点，并存到全局的BLAS节点列表和indices列表中
     /// </summary>
-    /// <param name="indices">indices list</param>
-    /// <param name="bnodes">blas node list</param>
-    /// <param name="tnodesRaw">raw tlas node list</param>
-    /// <param name="subindices">subindices list for current tree</param>
-    /// <param name="verticesOffset">vertices offset</param>
-    /// <param name="materialIdx">current assigned matrial index</param>
-    /// <param name="transformIdx">current assigned transform index</param>
+    /// <param name="indices"></param>
+    /// <param name="bnodes"></param>
+    /// <param name="meshNode"></param>
+    /// <param name="subindices"></param>
+    /// <param name="verticesIdxOffset"></param>
+    /// <param name="materialIdx"></param>
+    /// <param name="objectTransformIdx"></param>
     public void FlattenBLAS(
         ref List<int> indices, ref List<BLASNode> bnodes,
-        ref List<MeshNode> tnodesRaw, List<int> subindices,
-        int verticesOffset, int materialIdx, int transformIdx
+        ref List<MeshNode> meshNode, List<int> subindices,
+        int verticesIdxOffset, int materialIdx, int objectTransformIdx
     )
     {
         int faceOffset = indices.Count / 3;  //面的数量
@@ -233,9 +224,9 @@ public abstract class BVH
         // add indices
         foreach (int faceId in OrderedFaceId)
         {
-            indices.Add(subindices[faceId * 3] + verticesOffset);
-            indices.Add(subindices[faceId * 3 + 1] + verticesOffset);
-            indices.Add(subindices[faceId * 3 + 2] + verticesOffset);
+            indices.Add(subindices[faceId * 3] + verticesIdxOffset);
+            indices.Add(subindices[faceId * 3 + 1] + verticesIdxOffset);
+            indices.Add(subindices[faceId * 3 + 2] + verticesIdxOffset);
         }
         // add BLAS nodes
         Queue<BVHNode> nodes = new Queue<BVHNode>();
@@ -245,12 +236,12 @@ public abstract class BVH
             var node = nodes.Dequeue();
             bnodes.Add(new BLASNode
             {
-                BoundMax = node.Bounds.pMax,
-                BoundMin = node.Bounds.pMin,
-                PrimitiveStartIdx = node.FaceStart >= 0 ? node.FaceStart + faceOffset : -1,
-                PrimitiveEndIdx = node.FaceStart >= 0 ? node.FaceEnd + faceOffset : -1,
-                MaterialIdx = node.FaceStart >= 0 ? materialIdx : 0,
-                ChildIdx = node.FaceStart >= 0 ? -1 : nodes.Count + bnodes.Count + 1
+                BoundMax = node.Bounds.max,
+                BoundMin = node.Bounds.min,
+                PrimitiveStartIdx = node.PrimitiveStartIdx >= 0 ? node.PrimitiveStartIdx + faceOffset : -1,
+                PrimitiveEndIdx = node.PrimitiveStartIdx >= 0 ? node.PrimitiveEndIdx + faceOffset : -1,
+                MaterialIdx = node.PrimitiveStartIdx >= 0 ? materialIdx : 0,
+                ChildIdx = node.PrimitiveStartIdx >= 0 ? -1 : nodes.Count + bnodes.Count + 1
             });
             if (node.LeftChild != null)
                 nodes.Enqueue(node.LeftChild);
@@ -258,24 +249,32 @@ public abstract class BVH
                 nodes.Enqueue(node.RightChild);
         }
         // add raw TLAS node
-        tnodesRaw.Add(new MeshNode()
+        meshNode.Add(new MeshNode()
         {
-            BoundMax = BVHRoot.Bounds.pMax,
-            BoundMin = BVHRoot.Bounds.pMin,
+            BoundMax = BVHRoot.Bounds.max,
+            BoundMin = BVHRoot.Bounds.min,
             NodeRootIdx = bnodesOffset,
-            TransformIdx = transformIdx
+            TransformIdx = objectTransformIdx
         });
     }
 
-    public void FlattenTLAS(ref List<MeshNode> rawNodes, ref List<TLASNode> tnodes)
+      
+    /// <summary>
+    /// rawNodes代表每一个Mesh的属性，包括包围盒、Transform索引等，而且是世界坐标系下的属性
+    /// BVHRoot是整个场景的BVH根节点，是用rawNodes的信息构建的
+    /// 这里通过rawNodes和BVH生成TLASNode
+    /// </summary>
+    /// <param name="meshNodes"></param>
+    /// <param name="tnodes"></param>
+    public void FlattenTLAS(ref List<MeshNode> meshNodes, ref List<TLASNode> tnodes)
     {
         // reorder raw nodes
         List<MeshNode> newRawNodes = new List<MeshNode>();
         foreach(int rawNodeId in OrderedFaceId)
         {
-            newRawNodes.Add(rawNodes[rawNodeId]);
+            newRawNodes.Add(meshNodes[rawNodeId]);
         }
-        rawNodes = newRawNodes;
+        meshNodes = newRawNodes;
         // add TLAS nodes
         Queue<BVHNode> nodes = new Queue<BVHNode>();
         nodes.Enqueue(BVHRoot);
@@ -284,11 +283,11 @@ public abstract class BVH
             var node = nodes.Dequeue();
             tnodes.Add(new TLASNode
             {
-                BoundMax = node.Bounds.pMax,
-                BoundMin = node.Bounds.pMin,
-                MeshNodeStartIdx = node.FaceStart >= 0 ? node.FaceStart : -1,
+                BoundMax = node.Bounds.max,
+                BoundMin = node.Bounds.min,
+                MeshNodeStartIdx = node.PrimitiveStartIdx >= 0 ? node.PrimitiveStartIdx : -1,
                 // Mesh = node.FaceStart >= 0 ? node.FaceEnd : -1,
-                ChildIdx = node.FaceStart >= 0 ? -1 : nodes.Count + tnodes.Count + 1
+                ChildIdx = node.PrimitiveStartIdx >= 0 ? -1 : nodes.Count + tnodes.Count + 1
             });
             if (node.LeftChild != null)
                 nodes.Enqueue(node.LeftChild);
@@ -296,39 +295,51 @@ public abstract class BVH
                 nodes.Enqueue(node.RightChild);
         }
     }
-
-    protected List<FaceInfo> CreateFaceInfo(List<Vector3> vertices, List<int> indices)
+    
+    // 将顶点和顶点对应的索引转换为PrimitiveInfo，存储AABB和中心点信息
+    // 此处生成的PrimitiveInfo的PrimitiveIdx与顶点的索引的对应关系是，PrimitiveIdx = 顶点索引 / 3 取整
+    protected List<PrimitiveInfo> CreatePrimitiveInfo(List<Vector3> vertices, List<int> indices)
     {
-        List<FaceInfo> info = new List<FaceInfo>();
+        List<PrimitiveInfo> info = new List<PrimitiveInfo>();
         for (int i = 0; i < indices.Count / 3; i++)
         {
-            info.Add(new FaceInfo
+            info.Add(new PrimitiveInfo
             {
                 Bounds = new AABB(
                     vertices[indices[i * 3]],
                     vertices[indices[i * 3 + 1]],
                     vertices[indices[i * 3 + 2]]
                 ),
-                FaceIdx = i
+                PrimitiveIdx = i
             });
             info[i].Center = info[i].Bounds.Center();
         }
         return info;
     }
 
-    protected List<FaceInfo> CreateFaceInfo(List<MeshNode> rawNodes, List<Matrix4x4> transforms)
+    
+    /// <summary>
+    /// 通过TLASRawNode和Transforms生成PrimitiveInfo
+    /// 这里的rawNodes，通常情况下，场景中有几个物体，就有几个rawNodes，但如何一个mesh有多个submesh，那么这个mesh就会有多个rawNodes
+    /// </summary>
+    /// <param name="meshNodes"></param>
+    /// <param name="transforms"></param>
+    /// <returns></returns>
+    protected List<PrimitiveInfo> CreatePrimitiveInfo(List<MeshNode> meshNodes, List<Matrix4x4> transforms)
     {
-        List<FaceInfo> info = new List<FaceInfo>();
-        for (int i = 0; i < rawNodes.Count; i++)
+        //这个函数完全可以改名，它只是把rawNode的包围盒从local space转换到world space，并且计算了变换后的包围盒的中心点
+        List<PrimitiveInfo> info = new List<PrimitiveInfo>();
+        for (int i = 0; i < meshNodes.Count; i++)
         {
-            var node = rawNodes[i];
-            info.Add(new FaceInfo
+            var node = meshNodes[i];
+            info.Add(new PrimitiveInfo
             {
                 Bounds = new AABB(
+                    // 这里的乘以2是因为每个Transform有两个矩阵，一个是localToWorld，一个是worldToLocal，这里的transform是localToWorld，如果加一才那就是worldToLocal
                     transforms[node.TransformIdx * 2].MultiplyPoint3x4(node.BoundMin),
                     transforms[node.TransformIdx * 2].MultiplyPoint3x4(node.BoundMax)
                 ),
-                FaceIdx = i
+                PrimitiveIdx = i
             });
             info[i].Center = info[i].Bounds.Center();
         }
@@ -369,7 +380,7 @@ public class BVHSAH : BVH
     public BVHSAH(List<Vector3> vertices, List<int> indices)
     {
         // generate face info
-        var faceInfo = CreateFaceInfo(vertices, indices);
+        var faceInfo = CreatePrimitiveInfo(vertices, indices);
         // build tree
         BVHRoot = Build(faceInfo, 0, faceInfo.Count);
     }
@@ -377,13 +388,13 @@ public class BVHSAH : BVH
     public BVHSAH(List<MeshNode> rawNodes, List<Matrix4x4> transforms)
     {
         // generate face info
-        var faceInfo = CreateFaceInfo(rawNodes, transforms);
+        var faceInfo = CreatePrimitiveInfo(rawNodes, transforms);
         // build tree
         BVHRoot = Build(faceInfo, 0, faceInfo.Count);
     }
 
     protected override BVHNode Build(
-        List<FaceInfo> faceInfo,
+        List<PrimitiveInfo> faceInfo,
         int faceInfoStart, int faceInfoEnd,
         int depth = 0
     )
@@ -397,9 +408,9 @@ public class BVHSAH : BVH
         if (faceInfoCount == 1)
         {
             int idx = OrderedFaceId.Count;
-            int faceIdx = faceInfo[faceInfoStart].FaceIdx;
+            int faceIdx = faceInfo[faceInfoStart].PrimitiveIdx;
             OrderedFaceId.Add(faceIdx);
-            return BVHNode.InitLeaf(idx, faceInfoCount, bounding);
+            return BVHNode.CreateLeaf(idx, faceInfoCount, bounding);
         }
 
         // get centroids bounding
@@ -409,15 +420,15 @@ public class BVHSAH : BVH
         int dim = centerBounding.MaxDimension();
         int faceInfoMid = (faceInfoStart + faceInfoEnd) / 2;
         // if cannot further split on this axis, generate a leaf
-        if (centerBounding.pMax[dim] == centerBounding.pMin[dim])
+        if (centerBounding.max[dim] == centerBounding.min[dim])
         {
             int idx = OrderedFaceId.Count;
             for (int i = faceInfoStart; i < faceInfoEnd; i++)
             {
-                int faceIdx = faceInfo[i].FaceIdx;
+                int faceIdx = faceInfo[i].PrimitiveIdx;
                 OrderedFaceId.Add(faceIdx);
             }
-            return BVHNode.InitLeaf(idx, faceInfoCount, bounding);
+            return BVHNode.CreateLeaf(idx, faceInfoCount, bounding);
         }
 
         if (faceInfoCount <= 2)
@@ -425,7 +436,7 @@ public class BVHSAH : BVH
             // if only 2 faces remain, skip SAH
             faceInfo.Sort(
                 faceInfoStart, faceInfoCount,
-                Comparer<FaceInfo>.Create((x, y) => x.Center[dim].CompareTo(y.Center[dim]))
+                Comparer<PrimitiveInfo>.Create((x, y) => x.Center[dim].CompareTo(y.Center[dim]))
             );
         }
         else
@@ -503,10 +514,10 @@ public class BVHSAH : BVH
                 int idx = OrderedFaceId.Count;
                 for (int i = faceInfoStart; i < faceInfoEnd; i++)
                 {
-                    int faceIdx = faceInfo[i].FaceIdx;
+                    int faceIdx = faceInfo[i].PrimitiveIdx;
                     OrderedFaceId.Add(faceIdx);
                 }
-                return BVHNode.InitLeaf(idx, faceInfoCount, bounding);
+                return BVHNode.CreateLeaf(idx, faceInfoCount, bounding);
             }
         }
         // avoid middle index error
@@ -514,7 +525,7 @@ public class BVHSAH : BVH
         // recursively build left and right nodes
         var leftChild = Build(faceInfo, faceInfoStart, faceInfoMid, depth + 1);
         var rightChild = Build(faceInfo, faceInfoMid, faceInfoEnd, depth + 1);
-        return BVHNode.InitInterior(
+        return BVHNode.CreateParent(
             dim,
             leftChild,
             rightChild
