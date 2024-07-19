@@ -505,7 +505,7 @@ MonoBehaviour:
   skyboxTexture: {fileID: 2800000, guid: 6ae478bd6a07f014c8a40b932c2acf59, type: 3}
   SkyboxIntensity: 1
   TraceDepth: 5
-  drawGizmos: 0
+  drawGizmos: 1
   BVHCostOffset: 1
 --- !u!114 &1621107197
 MonoBehaviour:

@@ -198,17 +198,29 @@ public class Tracing : MonoBehaviour
                 var size = meshNode.BoundMax - meshNode.BoundMin;
                 Gizmos.DrawWireCube(localToWorld.MultiplyPoint3x4(boundCenter), localToWorld.MultiplyVector(size));
                 
-                for(int j = meshNode.NodeRootIdx; j < BVHBuilder.nodeStartToEnd[meshNode.NodeRootIdx]; j++)
+                int stackPtr = 0;
+                int[] stack = new int[32];
+                stack[stackPtr] = meshNode.NodeRootIdx;
+
+                while (stackPtr >= 0 && stackPtr < 32)
                 {
-                    var bnode = bnodes[j];
-                    if(bnode.PrimitiveStartIdx < 0) continue;
+                    var idx = stack[stackPtr--];
+                    var bnode = bnodes[idx];
                     var min = localToWorld.MultiplyPoint3x4(bnode.BoundMin);
                     var max = localToWorld.MultiplyPoint3x4(bnode.BoundMax);
                     var center = (min + max) / 2;
                     var s = max - min;
                     Gizmos.color = Color.red;
                     Gizmos.DrawWireCube(center, s);
+                    
+                    if(bnode.PrimitiveStartIdx < 0)
+                    {
+                        stack[++stackPtr] = bnode.ChildIdx;
+                        
+                        stack[++stackPtr] = bnode.ChildIdx + 1;
+                    }
                 }
+                
             }
         }
     }
