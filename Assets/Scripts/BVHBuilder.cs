@@ -43,7 +43,6 @@ public class BVHBuilder
     // algorithm data
     private static List<int> indices = new List<int>(); // indices of vertices
     public static Dictionary<int, int> nodeStartToEnd = new Dictionary<int, int>();
-    public static float BVHCostOffset = 1.0f;
 
     public static ComputeBuffer VertexBuffer;
     public static ComputeBuffer UVBuffer;
@@ -428,10 +427,5 @@ public class BVHBuilder
     public static List<Matrix4x4> GetTransforms()
     {
         return transforms;
-    }
-
-    public static void SetCostOffset(float offset)
-    {
-        BVHCostOffset = offset;
     }
 }

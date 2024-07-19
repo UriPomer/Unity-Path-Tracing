@@ -22,8 +22,6 @@ public class Tracing : MonoBehaviour
     
     [SerializeField]
     private bool drawGizmos = true;
-    [SerializeField, Range(0.0f, 1.0f)]
-    private float BVHCostOffset = 1.0f;
     
     private int sampleCount = 0;
     
@@ -44,7 +42,6 @@ public class Tracing : MonoBehaviour
 
     private void Start()
     {
-        BVHBuilder.SetCostOffset(BVHCostOffset);
         cam = GetComponent<Camera>();
         LightManager.Instance.UpdateLights();
     }

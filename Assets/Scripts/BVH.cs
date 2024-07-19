@@ -420,7 +420,7 @@ public class BVHSAH : BVH
         int dim = centerBounding.MaxDimension();
         int faceInfoMid = (faceInfoStart + faceInfoEnd) / 2;
         // if cannot further split on this axis, generate a leaf
-        if (centerBounding.max[dim] == centerBounding.min[dim])
+        if (Mathf.Approximately(centerBounding.max[dim], centerBounding.min[dim]))
         {
             int idx = OrderedFaceId.Count;
             for (int i = faceInfoStart; i < faceInfoEnd; i++)
