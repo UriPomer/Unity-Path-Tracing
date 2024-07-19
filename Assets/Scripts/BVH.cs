@@ -42,9 +42,8 @@ public struct TLASNode
 
     public static int TypeSize = sizeof(float) * 3 * 2 + sizeof(int) * 2;   //32 bytes
 }
-/// <summary>
-/// Bounding box
-/// </summary>
+
+
 public class AABB
 {
     public Vector3 min;
@@ -243,7 +242,7 @@ public abstract class BVH
                 PrimitiveStartIdx = node.PrimitiveStartIdx >= 0 ? node.PrimitiveStartIdx + originPrimitiveCount : -1,
                 PrimitiveEndIdx = node.PrimitiveStartIdx >= 0 ? node.PrimitiveEndIdx + originPrimitiveCount : -1,
                 MaterialIdx = node.PrimitiveStartIdx >= 0 ? materialIdx : 0,
-                ChildIdx = node.PrimitiveStartIdx >= 0 ? -1 : nodes.Count + bnodes.Count + 1
+                ChildIdx = node.PrimitiveStartIdx >= 0 ? -1 : nodes.Count + originBnodesCount + 1
             });
             // 注意这里是先插入左节点，再插入右节点，所以在BLAS中，右节点的索引是左节点的索引+1
             if (node.LeftChild != null) nodes.Enqueue(node.LeftChild);
