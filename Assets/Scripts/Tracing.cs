@@ -178,6 +178,10 @@ public class Tracing : MonoBehaviour
 
     private void OnDrawGizmos()
     {
+        if (!drawGizmos)
+        {
+            return;
+        }
         var bnodes = BVHBuilder.GetBLASNodes();
         var meshNodes = BVHBuilder.GetMeshNodes();
         var transforms = BVHBuilder.GetTransforms();
@@ -197,7 +201,7 @@ public class Tracing : MonoBehaviour
                 int stackPtr = 0;
                 int[] stack = new int[32];
                 stack[stackPtr] = meshNode.NodeRootIdx;
-
+    
                 while (stackPtr >= 0 && stackPtr < 32)
                 {
                     var idx = stack[stackPtr--];
