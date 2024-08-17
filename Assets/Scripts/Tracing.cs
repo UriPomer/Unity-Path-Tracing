@@ -78,9 +78,9 @@ public class Tracing : MonoBehaviour
         dispatchGroupYFull = Mathf.CeilToInt(Screen.height / 8.0f);
         tracingShader.SetTexture(0, "_Result", target);
         tracingShader.Dispatch(0, dispatchGroupXFull, dispatchGroupYFull, 1);
-        Graphics.Blit(target, frameConverged, collectMaterial);
-        Graphics.Blit(frameConverged, destination);
-        // Graphics.Blit(target, destination);
+        // Graphics.Blit(target, frameConverged, collectMaterial);
+        // Graphics.Blit(frameConverged, destination);
+        Graphics.Blit(target, destination);
     }
 
     private void Update()

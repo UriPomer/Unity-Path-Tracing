@@ -85,6 +85,15 @@ float3 SampleReflectionDirectionSphere(float3 normal, float alpha)
     return mul(tangentSpaceDir, GetTangentSpace(normal));
 }
 
+float3 SampleHemisphere4(float3 norm)
+{
+    float2 rand1 = rand();
+    float theta = rand1.x * PI_TWO;
+    float phi = acos(1.0 - 2.0 * rand1.y);
+    float3 v = float3(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi));
+    return v * sign(dot(v, norm));
+}
+
 Ray GenRayByID(float2 pixelCoord)
 {
     uint width, height;

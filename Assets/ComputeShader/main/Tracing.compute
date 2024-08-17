@@ -109,13 +109,16 @@ float3 Shade(inout Ray ray, RayHit hit)
                 float alpha = SmoothnessToPhongAlpha(hit.material.roughness);
                 float3 rayOutDir = normalize(lerp(
                     reflect(ray.dir,hit.normal),
-                    SampleReflectionDirectionSphere(hit.normal, alpha),
+                    // SampleReflectionDirectionSphere(hit.normal, alpha),
+                    SampleHemisphere4(hit.normal),
                     hit.material.roughness * hit.material.roughness
                     ));
+
+                // Specular Model
                 float3 H = normalize(rayOutDir + ray.dir);  // Half vector
                 float NdotL = abs(dot(hit.normal, ray.dir));
-                float specColor = lerp(0.04, 1.0, hit.material.metallic);
-                float3 F = SchlickFresnel(specColor, dot(rayOutDir, H));
+                float specColor = lerp(0.04, hit.material.albedo, hit.material.metallic);
+                float3 F = SchlickFresnel(dot(rayOutDir, H),specColor);
                 float G = SmithG(NdotL, hit.material.roughness);
                 ray.energy *= F * G;
 
@@ -124,11 +127,14 @@ float3 Shade(inout Ray ray, RayHit hit)
                 lightContribution *= hit.material.roughness * hit.material.roughness;
             }
             else{
-                float alpha = SmoothnessToPhongAlpha(hit.material.roughness);
-                float3 rayOutDir = normalize(SampleReflectionDirectionSphere(hit.normal, alpha));
+                // float alpha = SmoothnessToPhongAlpha(hit.material.roughness);
+                // float3 rayOutDir = normalize(SampleReflectionDirectionSphere(hit.normal, alpha));
+                float3 rayOutDir = normalize(SampleHemisphere4(hit.normal));
                 float3 H = normalize(rayOutDir + ray.dir);  // Half vector
-                float NdotL = saturate(dot(hit.normal, ray.dir));
-                float NdotV = saturate(dot(hit.normal, rayOutDir));
+
+                // Diffuse Model
+                float NdotL = saturate(dot(hit.normal, rayOutDir));
+                float NdotV = saturate(dot(hit.normal, ray.dir));
                 float fd90 = 0.5 + 2.0 * hit.material.roughness * dot(rayOutDir, H) * dot(rayOutDir, H);
                 float fd = lerp(1.0, fd90, NdotL) * lerp(1.0, fd90, NdotV);
                 ray.energy *= (1.0 - hit.material.metallic) * fd * hit.material.albedo;
