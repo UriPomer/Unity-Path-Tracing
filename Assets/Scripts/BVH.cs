@@ -2,6 +2,13 @@ using System.Collections.Generic;
 using UnityEngine;
 using System.Linq;
 
+
+//BLAS 对应于场景中的单个 3D 模型。BLASes 存储实际的顶点数据
+//MeshNode 代表每一个Mesh的属性，包括包围盒、Transform索引。 NodeRootIdx是这个Mesh的BLAS节点的起始索引
+//TLASNode 有点怪，感觉应该删掉，或者把MeshNode改名为TLASNode
+//TODO: 重构这个文件，把MeshNode、TLASNode分开，不要混在一起
+
+
 public struct BLASNode
 {
     public Vector3 BoundMax;
@@ -260,16 +267,16 @@ public abstract class BVH
 
       
     /// <summary>
-    /// rawNodes代表每一个Mesh的属性，包括包围盒、Transform索引等，而且是世界坐标系下的属性
-    /// BVHRoot是整个场景的BVH根节点，是用rawNodes的信息构建的
-    /// 这里通过rawNodes和BVH生成TLASNode
+    /// meshNodes代表每一个Mesh的属性，包括包围盒、Transform索引等，而且是世界坐标系下的属性
+    /// BVHRoot是整个场景的BVH根节点，是用meshNodes的信息构建的
+    /// 这里通过meshNodes和BVH生成TLASNode
     /// </summary>
     /// <param name="meshNodes"></param>
     /// <param name="tnodes"></param>
     public void FlattenTLAS(ref List<MeshNode> meshNodes, ref List<TLASNode> tnodes)
     {
         List<MeshNode> orderedMeshNodes = new List<MeshNode>();
-        foreach (var meshNodeIdx in OrderedPrimitiveIndices) //实际上，在这里OrderedPrimitiveIndices存储的是rawNode(Mesh)的索引，而不是primitive的索引
+        foreach (var meshNodeIdx in OrderedPrimitiveIndices) //实际上，在这里OrderedPrimitiveIndices存储的是meshNode(Mesh)的索引，而不是primitive的索引
         {
             orderedMeshNodes.Add(meshNodes[meshNodeIdx]);
         }
