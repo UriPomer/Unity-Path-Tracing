@@ -199,7 +199,7 @@ public class BVHBuilder
                     Metallic = mat.GetFloat("_Metallic"),
                     Smoothness = mat.GetFloat("_Glossiness"),
                     IOR = mat.HasProperty("_IOR") ? mat.GetFloat("_IOR") : 1.0f,
-                    RenderMode = mat.HasProperty("_RenderMode") ? mat.GetFloat("_RenderMode") : 0.0f,
+                    RenderMode = mat.HasProperty("_Mode") ? mat.GetFloat("_Mode") : 0.0f,
                     AlbedoIdx = albedoIdx,
                     EmitIdx = emitIdx,
                     MetallicIdx = metallicIdx,
