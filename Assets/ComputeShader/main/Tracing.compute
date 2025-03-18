@@ -1,0 +1,173 @@
+#pragma kernel CSMain
+
+#include "intersection.hlsl"
+#include "function.hlsl"
+#include "colors.hlsl"
+#include "bxdf.hlsl"
+
+float3 SampleSkybox(Ray ray)
+{
+    float theta = acos(ray.dir.y) / -PI;
+    float phi = atan2(ray.dir.x, - ray.dir.z) / - PI * 0.5f;
+    return _SkyboxTexture.SampleLevel(sampler_SkyboxTexture, float2(phi, theta), 0).xyz;
+}
+
+// trace a ray and returns hit immediately (for shadow rays)
+bool TraceHit(Ray ray, float targetDist)
+{
+    RayHit bestHit = GenRayHit();
+    return IntersectTlasFast(ray, bestHit, targetDist);
+}
+
+// trace a ray and detect nearest hit
+RayHit Trace(Ray ray)
+{
+    RayHit bestHit = GenRayHit();
+    IntersectTlas(ray, bestHit);
+    return bestHit;
+}
+
+
+float3 Shade(inout Ray ray, RayHit hit)
+{
+    if(hit.distance < 1.#INF)
+    {
+        float3 lightContribution = 0.0;
+        {
+            Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, _DirectionalLight); //创建指向光源的阴影射线，用于检测是否被遮挡，这里的_DirectionalLight是光源的方向的负值，在C#代码中已经计算好了，额不明白为什么copy的代码中要这样写，有点混乱
+            if (_DirectionalLightColor.a > 0.0 && !TraceHit(shadowRay, 1.#INF))
+            {
+                lightContribution += hit.material.albedo * saturate(dot(hit.normal, _DirectionalLight)) *
+                    _DirectionalLightColor.rgb * _DirectionalLightColor.a;
+            }
+        }
+    
+        // sample point lights
+        for (int i = 0; i < _PointLightsCount; i++)
+        {
+            float4 lightPos = _PointLights[i * 2];
+            float4 lightColor = _PointLights[i * 2 + 1];
+            if (lightColor.a <= 0.0)
+                continue;
+            float3 rayDir = lightPos.xyz - hit.position;
+            float rayDist = length(rayDir);
+            float distDecay = max(0.0, rayDist - lightPos.w);
+            distDecay = pow(0.2, distDecay * distDecay);
+            rayDir /= rayDist;
+            Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, rayDir);
+            if (!TraceHit(shadowRay, rayDist))
+            {
+                lightContribution += hit.material.albedo * saturate(dot(hit.normal, rayDir)) *
+                    lightColor.rgb * lightColor.a * distDecay;
+            }
+        }
+
+        float roulette = rand();
+        if (hit.mode >= 3.0)
+        {
+            float outside = dot(ray.dir, hit.normal);
+            hit.normal *= sign(outside);    // Ensure normal points in the right direction
+            ray.origin = hit.position + hit.normal * 1e-5;
+            // dielectric workflow
+            float alpha = SmoothnessToPhongAlpha(hit.material.roughness);
+            hit.normal = normalize(lerp(
+                hit.normal,
+                SampleReflectionDirectionSphere(hit.normal,alpha),
+                hit.material.roughness * hit.material.roughness
+            ));
+            float3 rayOutDir = normalize(reflect(ray.dir, hit.normal));
+            float3 H = normalize(ray.dir + rayOutDir);
+            float fresnel = DielectricFresnel(dot(H, ray.dir), hit.material.ior);
+            float reflChance = 1.0 - (1.0 - fresnel) * (1.0 - hit.material.metallic);
+            if (roulette < reflChance)
+            {
+                //rayOutDir = normalize(reflect(-ray.dir, H));
+                SpecReflModel(hit, ray.dir, rayOutDir, H, ray.energy);
+                ray.dir = rayOutDir;
+                ray.energy *= 1.0 / clamp(reflChance, 1e-2, 1.0);
+                lightContribution *= reflChance;
+            }
+            else
+            {
+                //rayOutDir = -normalize(refract(-ray.dir, H, 1.0 / hit.mat.ior));
+                rayOutDir = normalize(refract(ray.dir, -hit.normal, 1.0 / hit.material.ior));
+                SpecRefrModel(hit, ray.dir, rayOutDir, H, ray.energy);
+                ray.dir = rayOutDir;
+                ray.energy *= 1.0 / clamp((1.0 - reflChance), 1e-2, 1.0);
+                lightContribution *= reflChance;
+            }
+        }
+
+        else
+        {
+            // Calculate chances of diffuse and specular reflection
+            float diffChance = dot(hit.material.albedo, LUM) * (1.0 - hit.material.metallic);
+            
+            ray.origin = hit.position + hit.normal * 1e-5; // Offset the origin slightly to avoid self-intersection
+            if(roulette > diffChance)
+            {
+                float alpha = SmoothnessToPhongAlpha(hit.material.roughness);
+                float3 rayOutDir = normalize(lerp(
+                    reflect(ray.dir,hit.normal),
+                    // SampleReflectionDirectionSphere(hit.normal, alpha),
+                    SampleHemisphere4(hit.normal),
+                    hit.material.roughness * hit.material.roughness
+                    ));
+
+                // Specular Model
+                float3 H = normalize(rayOutDir + ray.dir);  // Half vector
+                float NdotL = abs(dot(hit.normal, ray.dir));
+                float specColor = lerp(0.04, hit.material.albedo, hit.material.metallic);
+                float3 F = SchlickFresnel(dot(rayOutDir, H),specColor);
+                float G = SmithG(NdotL, hit.material.roughness);
+                ray.energy *= F * G;
+
+                ray.dir = rayOutDir;
+                ray.energy *= 1.0 / clamp(1.0 - diffChance, 1e-2, 1.0);
+                lightContribution *= hit.material.roughness * hit.material.roughness;
+            }
+            else{
+                // float alpha = SmoothnessToPhongAlpha(hit.material.roughness);
+                // float3 rayOutDir = normalize(SampleReflectionDirectionSphere(hit.normal, alpha));
+                float3 rayOutDir = normalize(SampleHemisphere4(hit.normal));
+                float3 H = normalize(rayOutDir + ray.dir);  // Half vector
+
+                // Diffuse Model
+                float NdotL = saturate(dot(hit.normal, rayOutDir));
+                float NdotV = saturate(dot(hit.normal, ray.dir));
+                float fd90 = 0.5 + 2.0 * hit.material.roughness * dot(rayOutDir, H) * dot(rayOutDir, H);
+                float fd = lerp(1.0, fd90, NdotL) * lerp(1.0, fd90, NdotV);
+                ray.energy *= (1.0 - hit.material.metallic) * fd * hit.material.albedo;
+
+                ray.dir = rayOutDir;
+                ray.energy *= 1.0 / clamp(diffChance, 1e-2, 1.0);
+            }
+        }
+        return hit.material.emission + lightContribution;
+    }
+    else
+    {
+        ray.energy = 0.0f;
+        return SampleSkybox(ray);
+    }
+}
+
+[numthreads(8,8,1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    Ray r = GenRayByID(id.xy);
+    _Pixel = id.xy;
+    float3 result = float3(0.0f, 0.0f, 0.0f);
+    for(int i = 0; i < 4; i++)
+    {
+        RayHit hit = Trace(r);
+        result += r.energy * SRGB2Linear(Shade(r, hit));
+    
+        if (!any(r.energy))
+        {
+            break;
+        }
+    }
+    _Result[id.xy] = float4(result, 1.0f);
+}
+
