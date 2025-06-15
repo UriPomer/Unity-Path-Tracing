@@ -23,7 +23,7 @@ public class Tracing : MonoBehaviour
     int TraceDepth = 5;
     
     [SerializeField]
-    private bool drawGizmos = true;
+    private bool drawGizmos = false;
     
     private int sampleCount = 0;
     
