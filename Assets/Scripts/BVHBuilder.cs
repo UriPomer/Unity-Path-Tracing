@@ -316,10 +316,7 @@ public class BVHBuilder
 
         // 突然发现，由于每次都是使用“foreach(var obj in objects)”遍历所有物体，所以这些数组的索引都是一一对应的
         foreach (var obj in objects)
-        {
             transforms.Add(obj.transform.localToWorldMatrix);
-            transforms.Add(obj.transform.worldToLocalMatrix);
-        }
 
         SetBuffer(ref TransformBuffer, transforms, sizeof(float) * 4 * 4);
 

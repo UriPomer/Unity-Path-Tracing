@@ -210,7 +210,7 @@ public class Tracing : MonoBehaviour
             for (int i = 0; i < meshNodes.Count; i++)
             {
                 var meshNode = meshNodes[i];
-                var localToWorld = transforms[meshNode.TransformIdx * 2];
+                var localToWorld = transforms[meshNode.TransformIdx];
     
                 // draw mesh bounds
                 Gizmos.color = Color.green;

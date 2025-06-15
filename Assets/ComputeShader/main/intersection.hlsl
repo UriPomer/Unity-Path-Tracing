@@ -11,7 +11,7 @@
  */
 Ray PrepareTreeEnterRay(Ray ray, int transformIdx)
 {
-    float4x4 worldToLocal = _Transforms[transformIdx * 2 + 1];
+    float4x4 worldToLocal = AffineInverse(_Transforms[transformIdx]);
     float3 origin = mul(worldToLocal, float4(ray.origin, 1.0)).xyz;     // 把光线的起点变换到局部坐标系
     float3 dir = normalize(mul(worldToLocal, float4(ray.dir, 0.0)).xyz);    // 把光线的方向变换到局部坐标系
     return GenRay(origin, dir);
@@ -22,7 +22,7 @@ Ray PrepareTreeEnterRay(Ray ray, int transformIdx)
  */
 float PrepareTreeEnterTargetDistance(float targetDist, int transformIdx)
 {
-    float4x4 worldToLocal = _Transforms[transformIdx * 2 + 1];
+    float4x4 worldToLocal = AffineInverse(_Transforms[transformIdx]);
     if (targetDist >= 1.#INF)
     {
         return targetDist;
@@ -40,7 +40,7 @@ float PrepareTreeEnterTargetDistance(float targetDist, int transformIdx)
  */
 void PrepareTreeEnterHit(Ray rayLocal, inout RayHit hit, int transformIdx)
 {
-    float4x4 worldToLocal = _Transforms[transformIdx * 2 + 1];
+    float4x4 worldToLocal = AffineInverse(_Transforms[transformIdx]);
     if (hit.distance < 1.#INF)
     {
         hit.position = mul(worldToLocal, float4(hit.position, 1.0)).xyz;
@@ -53,7 +53,7 @@ void PrepareTreeEnterHit(Ray rayLocal, inout RayHit hit, int transformIdx)
  */
 void PrepareTreeExit(Ray rayWorld, inout RayHit hit, int transformIdx)
 {
-    float4x4 localToWorld = _Transforms[transformIdx * 2];
+    float4x4 localToWorld = _Transforms[transformIdx];
     if (hit.distance < 1.#INF)
     {
         hit.position = mul(localToWorld, float4(hit.position, 1.0)).xyz;
@@ -185,7 +185,7 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
     int stackPtr = 0;
     int primitiveIdx;
     stack[stackPtr] = startIdx;
-    float4x4 localToWorld = _Transforms[transformIdx * 2];
+    float4x4 localToWorld = _Transforms[transformIdx];
     while (stackPtr >= 0 && stackPtr < BVHTREE_RECURSE_SIZE)
     {
         int idx = stack[stackPtr--];    //模拟栈

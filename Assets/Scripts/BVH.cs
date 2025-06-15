@@ -326,9 +326,8 @@ public abstract class BVH
             infos.Add(new PrimitiveInfo
             {
                 Bounds = new AABB(
-                    // 这里的乘以2是因为每个Transform有两个矩阵，一个是localToWorld，一个是worldToLocal，这里的transform是localToWorld，如果加一才那就是worldToLocal
-                    transforms[node.TransformIdx * 2].MultiplyPoint3x4(node.BoundMin),
-                    transforms[node.TransformIdx * 2].MultiplyPoint3x4(node.BoundMax)
+                    transforms[node.TransformIdx].MultiplyPoint3x4(node.BoundMin),
+                    transforms[node.TransformIdx].MultiplyPoint3x4(node.BoundMax)
                 ),
                 PrimitiveIdx = i
             });

@@ -36,6 +36,33 @@ float3 GetNormal(int idx, float2 data, int normIdx, float2 uv)
     }
 }
 
+// ---------- 4×4 仿 inverse 函数（支持平移 + 任意缩放/旋转，无剪切即可） ----------
+float3x3 Inverse3x3(float3x3 m)
+{
+    // 余子式矩阵的转置 / 行列式
+    float3 r0 = cross(m[1], m[2]);
+    float3 r1 = cross(m[2], m[0]);
+    float3 r2 = cross(m[0], m[1]);
+    float  det = dot(m[0], r0);
+    return transpose(float3x3(r0, r1, r2)) / det;
+}
+
+// 仅针对 TRS（平移+旋转+缩放）矩阵的快速求逆
+float4x4 AffineInverse(float4x4 m)
+{
+    float3x3 R  = (float3x3)m;      // 左上 3×3：旋转 × 缩放
+    float3   t  = m[3].xyz;         // 第 4 行前 3 个：平移
+    float3x3 Rinv = Inverse3x3(R);  // 先求 3×3 的逆
+    float3   tinv = mul(-t, Rinv);  // 平移部分：-T * R⁻¹
+
+    return float4x4(
+        float4(Rinv[0], 0),
+        float4(Rinv[1], 0),
+        float4(Rinv[2], 0),
+        float4(tinv   , 1)
+    );
+}
+
 float sdot(float3 x, float3 y, float f = 1.0f)
 {
     return saturate(dot(x, y) * f);
