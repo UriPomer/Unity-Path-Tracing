@@ -410,35 +410,48 @@ public class BVHBuilder
 
     private static Texture2DArray CreateTextureArray(ref List<Texture2D> textures)
     {
-        int texWidth = 1, texHeight = 1;
-        foreach (Texture tex in textures)
+        int sliceCount = Mathf.Max(1, textures.Count);
+
+        int maxW = 1, maxH = 1;
+        foreach (var tex in textures)
         {
-            texWidth = Mathf.Max(texWidth, tex.width);
-            texHeight = Mathf.Max(texHeight, tex.height);
+            if (tex == null) continue;
+            maxW = Mathf.Max(maxW, tex.width);
+            maxH = Mathf.Max(maxH, tex.height);
         }
-        int maxDim = GetMaxDimension(textures.Count, Mathf.Max(texWidth, texHeight));
-        texWidth = Mathf.Min(texWidth, maxDim);
-        texHeight = Mathf.Min(texHeight, maxDim);
-        var newTexture = new Texture2DArray(
-            texWidth, texHeight, Mathf.Max(1, textures.Count),
-            TextureFormat.ARGB32, true, false
+
+        int maxDim = GetMaxDimension(sliceCount, Mathf.Max(maxW, maxH));
+        int targetW = Mathf.Clamp(maxW, 1, maxDim);
+        int targetH = Mathf.Clamp(maxH, 1, maxDim);
+
+        var array = new Texture2DArray(
+            targetW, targetH, sliceCount,
+            TextureFormat.ARGB32, /*mip*/ true, /*linear*/ false
         );
-        newTexture.SetPixels(Enumerable.Repeat(Color.white, texWidth * texHeight).ToArray(), 0, 0);
-        RenderTexture rt = new RenderTexture(texWidth, texHeight, 1, RenderTextureFormat.ARGB32);
-        Texture2D tmp = new Texture2D(texWidth, texHeight, TextureFormat.ARGB32, false);
-        for (int i = 0; i < textures.Count; i++)
+        Color32[] clearColors = Enumerable.Repeat<Color32>(new Color32(255, 255, 255, 255), targetW * targetH).ToArray();
+        for (int i = 0; i < sliceCount; ++i)
+            array.SetPixels32(clearColors, i, 0);
+
+        RenderTexture blitRT = new RenderTexture(targetW, targetH, 0, RenderTextureFormat.ARGB32)
         {
-            RenderTexture.active = rt;
-            Graphics.Blit(textures[i], rt);
-            tmp.ReadPixels(new Rect(0, 0, texWidth, texHeight), 0, 0);
-            tmp.Apply();
-            newTexture.SetPixels(tmp.GetPixels(0), i, 0);
+            filterMode = FilterMode.Bilinear,
+            useMipMap   = true,
+            autoGenerateMips = false,
+            enableRandomWrite = false
+        };
+        blitRT.Create();
+
+        for (int i = 0; i < sliceCount; i++)
+        {
+            Texture src = (i < textures.Count && textures[i] != null) ? textures[i] : Texture2D.whiteTexture;
+            Graphics.Blit(src, blitRT);
+            Graphics.CopyTexture(blitRT, 0, 0, array, i, 0);
         }
-        newTexture.Apply();
-        RenderTexture.active = null;
-        UnityEngine.Object.Destroy(rt);
-        UnityEngine.Object.Destroy(tmp);
-        return newTexture;
+
+        array.Apply(updateMipmaps: true, makeNoLongerReadable: true);
+        blitRT.Release();
+
+        return array;
     }
 
     private static int GetMaxDimension(int count, int dim)
