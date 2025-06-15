@@ -212,56 +212,40 @@ public abstract class BVH
     /// <summary>
     /// 将子网格的BVH节点转换为BLAS节点，并存到全局的BLAS节点列表和indices列表中
     /// </summary>
-    /// <param name="indices"></param>
-    /// <param name="bnodes"></param>
-    /// <param name="meshNode"></param>
-    /// <param name="subindices"></param>
-    /// <param name="verticesIdxOffset"></param>
-    /// <param name="materialIdx"></param>
-    /// <param name="objectTransformIdx"></param>
     public void FlattenBLAS(
-        ref List<int> indices, ref List<BLASNode> bnodes,
-        ref List<MeshNode> meshNode, List<int> subindices,
-        int verticesIdxOffset, int materialIdx, int objectTransformIdx
+        ref List<BLASNode> bnodes,
+        ref List<MeshNode> meshNodes,
+        int materialIdx,
+        int objectTransformIdx,
+        int globalPrimitiveBase
     )
     {
-        int originPrimitiveCount = indices.Count / 3; // 已有的面片数量
-        int originBnodesCount = bnodes.Count; // 已有的BLAS节点数量
-        
-        foreach (var primitiveIdx in OrderedPrimitiveIndices)
+        int blasRootIdx = bnodes.Count;
+
+        Queue<BVHNode> q = new Queue<BVHNode>();
+        q.Enqueue(BVHRoot);
+        while (q.Count > 0)
         {
-            indices.Add(subindices[primitiveIdx * 3 + 0] + verticesIdxOffset);
-            indices.Add(subindices[primitiveIdx * 3 + 1] + verticesIdxOffset);
-            indices.Add(subindices[primitiveIdx * 3 + 2] + verticesIdxOffset);
-        }
-        
-        Queue<BVHNode> nodes = new Queue<BVHNode>();
-        nodes.Enqueue(BVHRoot); //BVHRoot是调用这个函数的BVH的根节点
-        
-        while (nodes.Count > 0)
-        {
-            var node = nodes.Dequeue();
+            var n = q.Dequeue();
             bnodes.Add(new BLASNode
             {
-                BoundMax = node.Bounds.max,
-                BoundMin = node.Bounds.min,
-                // node.PrimitiveStartIdx >= 0 说明是叶子节点
-                PrimitiveStartIdx = node.PrimitiveStartIdx >= 0 ? node.PrimitiveStartIdx + originPrimitiveCount : -1,
-                PrimitiveEndIdx = node.PrimitiveStartIdx >= 0 ? node.PrimitiveEndIdx + originPrimitiveCount : -1,
-                MaterialIdx = node.PrimitiveStartIdx >= 0 ? materialIdx : 0,
-                ChildIdx = node.PrimitiveStartIdx >= 0 ? -1 : nodes.Count + bnodes.Count + 1
+                BoundMax         = n.Bounds.max,
+                BoundMin         = n.Bounds.min,
+                PrimitiveStartIdx= n.IsLeaf() ? n.PrimitiveStartIdx + globalPrimitiveBase : -1,
+                PrimitiveEndIdx  = n.IsLeaf() ? n.PrimitiveEndIdx   + globalPrimitiveBase : -1,
+                MaterialIdx      = n.IsLeaf() ? materialIdx : 0,
+                ChildIdx         = n.IsLeaf() ? -1 : q.Count + bnodes.Count + 1
             });
-            // 注意这里是先插入左节点，再插入右节点，所以在BLAS中，右节点的索引是左节点的索引+1
-            if (node.LeftChild != null) nodes.Enqueue(node.LeftChild);
-            if (node.RightChild != null) nodes.Enqueue(node.RightChild);
+            if (n.LeftChild  != null) q.Enqueue(n.LeftChild);
+            if (n.RightChild != null) q.Enqueue(n.RightChild);
         }
-        
-        meshNode.Add(new MeshNode
+
+        meshNodes.Add(new MeshNode
         {
-            BoundMax = BVHRoot.Bounds.max,
-            BoundMin = BVHRoot.Bounds.min,
+            BoundMax     = BVHRoot.Bounds.max,
+            BoundMin     = BVHRoot.Bounds.min,
             TransformIdx = objectTransformIdx,
-            NodeRootIdx = originBnodesCount,
+            NodeRootIdx  = blasRootIdx
         });
     }
 
@@ -300,25 +284,28 @@ public abstract class BVH
         }
     }
     
+    private static List<PrimitiveInfo> sharedInfos = new List<PrimitiveInfo>();
     // 将顶点和顶点对应的索引转换为PrimitiveInfo，存储AABB和中心点信息
     // 此处生成的PrimitiveInfo的PrimitiveIdx与顶点的索引的对应关系是，PrimitiveIdx = 顶点索引 / 3 取整
-    protected List<PrimitiveInfo> CreatePrimitiveInfo(List<Vector3> vertices, List<int> indices)
+    protected List<PrimitiveInfo> CreatePrimitiveInfo(Vector3[] vertices, int[] indices)
     {
-        List<PrimitiveInfo> infos = new List<PrimitiveInfo>();
-        for (int i = 0; i < indices.Count / 3; i++)
+        sharedInfos.Clear();
+        int triCount = indices.Length / 3;
+        // 预分配容量，减少扩容
+        if (sharedInfos.Capacity < triCount) sharedInfos.Capacity = triCount;
+
+        for (int i = 0; i < triCount; i++)
         {
-            infos.Add(new PrimitiveInfo
+            int i0 = indices[i * 3], i1 = indices[i * 3 + 1], i2 = indices[i * 3 + 2];
+            var bounds = new AABB(vertices[i0], vertices[i1], vertices[i2]);
+            sharedInfos.Add(new PrimitiveInfo
             {
-                Bounds = new AABB(
-                    vertices[indices[i * 3]],
-                    vertices[indices[i * 3 + 1]],
-                    vertices[indices[i * 3 + 2]]
-                ),
+                Bounds = bounds,
+                Center = bounds.Center(),
                 PrimitiveIdx = i
             });
-            infos[i].Center = infos[i].Bounds.Center();
         }
-        return infos;
+        return sharedInfos;
     }
 
     
@@ -353,7 +340,7 @@ public abstract class BVH
     public BVHNode BVHRoot = null;
     public List<int> OrderedPrimitiveIndices = new List<int>();
 
-    public static BVH Construct(List<Vector3> vertices, List<int> indices, BVHType type)
+    public static BVH Construct(Vector3[] vertices, int[] indices, BVHType type)
     {
                 return new BVHSAH(vertices, indices);
     }
@@ -381,7 +368,7 @@ public class BVHSAH : BVH
         public AABB Bounds = new AABB();
     }
 
-    public BVHSAH(List<Vector3> vertices, List<int> indices)
+    public BVHSAH(Vector3[] vertices,int[] indices)
     {
         // generate face info
         var faceInfo = CreatePrimitiveInfo(vertices, indices);

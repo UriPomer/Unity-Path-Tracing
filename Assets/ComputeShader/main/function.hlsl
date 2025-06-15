@@ -41,6 +41,34 @@ float sdot(float3 x, float3 y, float f = 1.0f)
     return saturate(dot(x, y) * f);
 }
 
+uint WangHash(uint seed)
+{
+    seed = (seed ^ 61u) ^ (seed >> 16);
+    seed *= 9u;
+    seed ^= (seed >> 4);
+    seed *= 0x27d4eb2du;
+    seed ^= (seed >> 15);
+    return seed;
+}
+
+float HashToFloat(uint h)
+{
+    return asfloat(0x3f800000u | (h >> 9)) - 1.0;
+}
+
+void RNG_SeedPixel(inout RNG rng, uint2 pixelXY, uint frameId /*帧序号*/)
+{
+    uint s = pixelXY.x | (pixelXY.y << 16);
+    s ^= frameId * 747796405u;
+    rng.state = WangHash(s);
+}
+
+float RNG_Next(inout RNG rng)
+{
+    rng.state = WangHash(rng.state);
+    return HashToFloat(rng.state);
+}
+
 float rand()
 {
     float result = frac(sin(_Seed / 100.0f * dot(_Pixel, float2(12.9898f, 78.233f))) * 43758.5453f); // Fraction part
@@ -52,7 +80,7 @@ bool SkipTransparent(Material mat)
 {
     float f = DielectricFresnel(0.2, mat.ior);
     float r = mat.roughness * mat.roughness;
-    return rand() < (1.0 - f) * (1.0 - mat.metallic) * (1.0 - r);
+    return RNG_Next(rng) < (1.0 - f) * (1.0 - mat.metallic) * (1.0 - r);
 }
 
 float SmoothnessToPhongAlpha(float s)
@@ -76,9 +104,9 @@ float3x3 GetTangentSpace(float3 normal)
 float3 SampleReflectionDirectionSphere(float3 normal, float alpha)
 {
     // Spherical coordinate to cartesian
-    float cosTheta = pow(rand(), 1.0f / (alpha + 1.0f));
+    float cosTheta = pow(RNG_Next(rng), 1.0f / (alpha + 1.0f));
     float sinTheta = sqrt(1.0f - cosTheta * cosTheta);
-    float phi = 2 * PI * rand();
+    float phi = 2 * PI * RNG_Next(rng);
     float3 tangentSpaceDir = float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
 
     // Transform direction to world space
@@ -87,7 +115,7 @@ float3 SampleReflectionDirectionSphere(float3 normal, float alpha)
 
 float3 SampleHemisphere4(float3 norm)
 {
-    float2 rand1 = rand();
+    float2 rand1 = RNG_Next(rng);
     float theta = rand1.x * PI_TWO;
     float phi = acos(1.0 - 2.0 * rand1.y);
     float3 v = float3(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi));

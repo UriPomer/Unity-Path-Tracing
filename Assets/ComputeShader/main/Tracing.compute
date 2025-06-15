@@ -62,7 +62,7 @@ float3 Shade(inout Ray ray, RayHit hit)
             }
         }
 
-        float roulette = rand();
+        float roulette = RNG_Next(rng);
         if (hit.mode >= 3.0)
         {
             float outside = dot(ray.dir, hit.normal);
@@ -155,6 +155,7 @@ float3 Shade(inout Ray ray, RayHit hit)
 [numthreads(8,8,1)]
 void CSMain(uint3 id : SV_DispatchThreadID)
 {
+    RNG_SeedPixel(rng, id.xy, _FrameCount);
     Ray r = GenRayByID(id.xy);
     _Pixel = id.xy;
     float3 result = float3(0.0f, 0.0f, 0.0f);

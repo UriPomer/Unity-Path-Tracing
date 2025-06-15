@@ -143,9 +143,8 @@ bool IntersectBox2(Ray ray, float3 pMax, float3 pMin)
 {
     // reference: https://github.com/knightcrawler25/GLSL-PathTracer/blob/master/src/shaders/common/intersection.glsl
     // reference: https://medium.com/@bromanz/another-view-on-the-classic-ray-aabb-intersection-algorithm-for-bvh-traversal-41125138b525
-    float3 invDir = 1.0 / ray.dir;
-    float3 f = (pMax - ray.origin) * invDir;
-    float3 n = (pMin - ray.origin) * invDir;
+    float3 f = (pMax - ray.origin) * ray.invDir;
+    float3 n = (pMin - ray.origin) * ray.invDir;
     float3 tMax = max(f, n);
     float3 tMin = min(f, n);
     float t0 = max(tMin.x, max(tMin.y, tMin.z));

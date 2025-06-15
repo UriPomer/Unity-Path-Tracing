@@ -38,6 +38,12 @@ float3 _DirectionalLight;
 float4 _DirectionalLightColor;
 StructuredBuffer<float4> _PointLights;
 int _PointLightsCount;
+uint _FrameCount;
+struct RNG
+{
+    uint state;
+};
+RNG rng;
 
 static const float PI = 3.14159265f;
 #define PI_TWO          6.28318530717958623198

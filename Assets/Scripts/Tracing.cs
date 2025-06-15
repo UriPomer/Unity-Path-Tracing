@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using UnityEditor;
 using UnityEngine;
+using UnityEngine.Profiling;
 
 public class Tracing : MonoBehaviour
 {
@@ -93,11 +95,14 @@ public class Tracing : MonoBehaviour
             Camera.main.transform.hasChanged = false;
         }
     }
+    
+    private uint frameId = 0;
 
     private void SetShaderParameters(int refreshRate)
     {
         // if(sampleCount % refreshRate == 0 || true)
         // {
+        tracingShader.SetInt("_FrameCount", (int)frameId++);
             var DirectionalLight = LightManager.Instance.DirectionalLight;
         
             Vector3 dir = DirectionalLight.transform.forward;
@@ -167,12 +172,27 @@ public class Tracing : MonoBehaviour
         return offset;
     }
     
+#if UNITY_EDITOR
+    [MenuItem("Tools/Debug/Force GC & UnloadAssets")]
+    static void ForceGC()
+    {
+        System.GC.Collect();
+        Resources.UnloadUnusedAssets();
+        Debug.Log($"After GC - Total Alloc: {Profiler.GetTotalAllocatedMemoryLong()/1048576f:F1} MB");
+    }
+#endif
+    
     private void OnDisable()
     {
         if (target != null)
         {
             target.Release();
         }
+        BVHBuilder.Destroy();
+    }
+    
+    private void OnApplicationQuit()
+    {
         BVHBuilder.Destroy();
     }
 

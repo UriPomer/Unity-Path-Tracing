@@ -79,38 +79,80 @@ public class BVHBuilder
 
     public static bool Validate()
     {
-        // check if object data is updated
-        foreach (GameObject obj in objects)
+        // —— 1. 检测物体结构变化（Register/Unregister） —— //
+        if (objectUpdated)
         {
-            if (obj.transform.hasChanged)
+            BuildBVH();
+            LoadTransforms();
+            objectUpdated = false;
+            objectTransformUpdated = false;
+            return true;
+        }
+
+        bool anyMoved = false;
+        foreach (var obj in objects)
+        {
+            if (obj.transform.hasChanged || (obj.transform.parent != null && obj.transform.parent.hasChanged))
             {
-                objectTransformUpdated = true;
+                anyMoved = true;
                 obj.transform.hasChanged = false;
-                break;
-            }
-            if (obj.transform.parent.transform.hasChanged)
-            {
-                objectTransformUpdated = true;
-                obj.transform.parent.transform.hasChanged = false;
+                if (obj.transform.parent != null) obj.transform.parent.hasChanged = false;
                 break;
             }
         }
 
-        return BuildBVH() || LoadTransforms();
+        if (anyMoved || objectTransformUpdated)
+        {
+            LoadTransforms();
+            objectTransformUpdated = false;
+            return true;
+        }
+
+        return false;
+    }
+    
+    private static readonly int ID_MainTex          = Shader.PropertyToID("_MainTex");
+    private static readonly int ID_EmissionMap      = Shader.PropertyToID("_EmissionMap");
+    private static readonly int ID_MetallicGlossMap = Shader.PropertyToID("_MetallicGlossMap");
+    private static readonly int ID_BumpMap          = Shader.PropertyToID("_BumpMap");
+    private static readonly int ID_SpecGlossMap     = Shader.PropertyToID("_SpecGlossMap");
+    private static readonly int ID_EmissionColor    = Shader.PropertyToID("_EmissionColor");
+    private static readonly int ID_Metallic         = Shader.PropertyToID("_Metallic");
+    private static readonly int ID_Glossiness       = Shader.PropertyToID("_Glossiness");
+    private static readonly int ID_IOR              = Shader.PropertyToID("_IOR");
+    private static readonly int ID_Mode             = Shader.PropertyToID("_Mode");
+    
+    private struct SubMeshKey
+    {
+        public Mesh Mesh;
+        public int  SubMeshIndex;
+        public override int GetHashCode() => Mesh.GetHashCode() * 397 ^ SubMeshIndex;
+        public override bool Equals(object obj) =>
+            obj is SubMeshKey o && o.Mesh == Mesh && o.SubMeshIndex == SubMeshIndex;
     }
 
     private static void BuildMaterialAndMeshData(List<GameObject> objects)
     {
         materials.Clear();
-        List<Texture2D> albedoTex = new List<Texture2D>();
-        List<Texture2D> emitTex = new List<Texture2D>();
-        List<Texture2D> metalTex = new List<Texture2D>();
-        List<Texture2D> normTex = new List<Texture2D>();
-        List<Texture2D> roughTex = new List<Texture2D>();
+        indices   .Clear();
+        bnodes    .Clear();
+        meshNodes .Clear();
+        
+        Dictionary<Mesh, (int start, int count)> meshCache = new();
+        Dictionary<(Mesh mesh,int subIdx), (BVH bvh, int indexStart,int triCnt)> subMeshCache = new();
+        
+        var albedoMap   = new Dictionary<Texture2D,int>();
+        var emitMap     = new Dictionary<Texture2D,int>();
+        var metalMap    = new Dictionary<Texture2D,int>();
+        var normalMap   = new Dictionary<Texture2D,int>();
+        var roughMap    = new Dictionary<Texture2D,int>();
+        var objIndexMap = new Dictionary<GameObject,int>(objects.Count);
+        for (int i = 0; i < objects.Count; i++)
+            objIndexMap[objects[i]] = i;
 
         materials.Add(new MaterialData()
         {
-            Color = new Vector4(1.0f, 1.0f, 1.0f, 1.0f), // white color by default
+            Color = new Vector4(1.0f, 1.0f, 1.0f, 1.0f),
             Emission = Vector3.zero,
             Metallic = 0.0f,
             Smoothness = 0.0f,
@@ -122,116 +164,88 @@ public class BVHBuilder
             NormalIdx = -1,
             RoughIdx = -1
         });
+        var albedoTex = new List<Texture2D>();
+        var emitTex   = new List<Texture2D>();
+        var metalTex  = new List<Texture2D>();
+        var normTex   = new List<Texture2D>();
+        var roughTex  = new List<Texture2D>();
 
-        foreach (var obj in objects)
+        for (int objIdx = 0; objIdx < objects.Count; objIdx++)
         {
+            GameObject obj       = objects[objIdx];
             Renderer renderer = obj.GetComponent<Renderer>();
-            var mats = renderer.sharedMaterials;
-            int matStart = materials.Count;
-            int matCount = mats.Length;
-            foreach (var mat in mats)
+            var sharedMats = renderer.sharedMaterials;
+            int matStart   = materials.Count;
+            foreach (var mat in sharedMats)
             {
-                int albedoIdx = -1, emitIdx = -1, metallicIdx = -1, normalIdx = -1, roughIdx = -1;
-                if (mat.HasProperty("_MainTex"))
-                {
-                    albedoIdx = albedoTex.IndexOf((Texture2D)mat.mainTexture);
-                    if (albedoIdx < 0 && mat.mainTexture != null)
-                    {
-                        albedoTex.Add((Texture2D)mat.mainTexture);
-                        albedoIdx = albedoTex.Count - 1;
-                    }
-                }
+                ExtractMaterialTexture(mat, albedoMap, albedoTex,  ID_MainTex,          out int albedoIdx);
+                ExtractMaterialTexture(mat, emitMap,   emitTex,    ID_EmissionMap,      out int emitIdx);
+                ExtractMaterialTexture(mat, metalMap,  metalTex,   ID_MetallicGlossMap, out int metalIdx);
+                ExtractMaterialTexture(mat, normalMap,   normTex,    ID_BumpMap,          out int normIdx);
+                ExtractMaterialTexture(mat, roughMap,  roughTex,   ID_SpecGlossMap,     out int roughIdx);
 
-                if (mat.HasProperty("_EmissionMap"))
-                {
-                    var emitMap = mat.GetTexture("_EmissionMap");
-                    emitIdx = emitTex.IndexOf(emitMap as Texture2D);
-                    if (emitIdx < 0 && emitMap != null)
-                    {
-                        emitIdx = emitTex.Count;
-                        emitTex.Add(emitMap as Texture2D);
-                    }
-                }
-
-                if (mat.HasProperty("_MetallicGlossMap"))
-                {
-                    var metalMap = mat.GetTexture("_MetallicGlossMap");
-                    metallicIdx = metalTex.IndexOf(metalMap as Texture2D);
-                    if (metallicIdx < 0 && metalMap != null)
-                    {
-                        metallicIdx = metalTex.Count;
-                        metalTex.Add(metalMap as Texture2D);
-                    }
-                }
-
-                if (mat.HasProperty("_BumpMap"))
-                {
-                    var normMap = mat.GetTexture("_BumpMap");
-                    normalIdx = normTex.IndexOf(normMap as Texture2D);
-                    if (normalIdx < 0 && normMap != null)
-                    {
-                        normalIdx = normTex.Count;
-                        normTex.Add(normMap as Texture2D);
-                    }
-                }
-
-                if (mat.HasProperty("_SpecGlossMap"))
-                {
-                    var roughMap = mat.GetTexture("_SpecGlossMap"); // assume Autodesk interactive shader
-                    roughIdx = roughTex.IndexOf(roughMap as Texture2D);
-                    if (roughIdx < 0 && roughMap != null)
-                    {
-                        roughIdx = roughTex.Count;
-                        roughTex.Add(roughMap as Texture2D);
-                    }
-                }
-
-                Color emission = Color.black;
-                if (mat.IsKeywordEnabled("_EMISSION"))
-                {
-                    emission = mat.GetColor("_EmissionColor");
-                }
-
-                materials.Add(new MaterialData()
-                {
-                    Color = new Vector4(mat.color.r, mat.color.g, mat.color.b, mat.color.a),
-                    Emission = new Vector3(emission.r, emission.g, emission.b),
-                    Metallic = mat.GetFloat("_Metallic"),
-                    Smoothness = mat.GetFloat("_Glossiness"),
-                    IOR = mat.HasProperty("_IOR") ? mat.GetFloat("_IOR") : 1.0f,
-                    RenderMode = mat.HasProperty("_Mode") ? mat.GetFloat("_Mode") : 0.0f,
-                    AlbedoIdx = albedoIdx,
-                    EmitIdx = emitIdx,
-                    MetallicIdx = metallicIdx,
-                    NormalIdx = normalIdx,
-                    RoughIdx = roughIdx
+                Color emCol = mat.IsKeywordEnabled("_EMISSION") ? mat.GetColor(ID_EmissionColor) : Color.black;
+                materials.Add(new MaterialData{
+                    Color      = mat.color,
+                    Emission   = new Vector3(emCol.r, emCol.g, emCol.b),
+                    Metallic   = mat.HasProperty(ID_Metallic)   ? mat.GetFloat(ID_Metallic)   : 0f,
+                    Smoothness = mat.HasProperty(ID_Glossiness) ? mat.GetFloat(ID_Glossiness) : 0f,
+                    IOR        = mat.HasProperty(ID_IOR)        ? mat.GetFloat(ID_IOR)        : 1f,
+                    RenderMode = mat.HasProperty(ID_Mode)       ? mat.GetFloat(ID_Mode)       : 0f,
+                    AlbedoIdx  = albedoIdx, EmitIdx   = emitIdx,
+                    MetallicIdx= metalIdx,  NormalIdx = normIdx,
+                    RoughIdx   = roughIdx
                 });
             }
 
             Mesh mesh = obj.GetComponent<MeshFilter>().sharedMesh;
-            var meshVertices = mesh.vertices.ToList();
-            var meshNormals = mesh.normals;
-            var meshUVs = mesh.uv;
-            var meshTangents = mesh.tangents;
-            int vertexStart = vertices.Count;
-            int objectIdx = objects.IndexOf(obj);
-            for (int i = 0; i < mesh.subMeshCount; i++)
-            {
-                var subMeshIndices = mesh.GetIndices(i).ToList();
-                //TODO:
-                //这里的build是build了BVHNode，这个BVH和下面的bnodes的区别是什么？
-                // BVH blasTree = new BVH(meshVertices, subMeshIndices);   //这个对象创建之后就没有用了，数据存储在下面的ref的参数里
-                BVH blasTree = BVH.Construct(meshVertices, subMeshIndices, BVHType.SAH);
-                blasTree.FlattenBLAS(ref indices, ref bnodes, ref meshNodes, subMeshIndices, vertexStart, i < matCount ? i + matStart : 0, objectIdx);
-            }
-            vertices.AddRange(meshVertices);
-            normals.AddRange(meshNormals);
-            uvs.AddRange(meshUVs);
-            tangents.AddRange(meshTangents);
             
+            if (!meshCache.TryGetValue(mesh, out var vRange))
+            {
+                int vStart = vertices.Count;
+                vertices.AddRange(mesh.vertices);
+                normals .AddRange(mesh.normals);
+                var u  = mesh.uv;       verticesEnsure(uvs,     u,  mesh.vertexCount, Vector2.zero);
+                var tg = mesh.tangents; verticesEnsure(tangents, tg, mesh.vertexCount, Vector4.zero);
+                vRange = (vStart, mesh.vertexCount);
+                meshCache[mesh] = vRange;
+            }
+            int vertexStart = vRange.start;
+            
+            for (int s = 0; s < mesh.subMeshCount; s++)
+            {
+                var key = (mesh, s);
+
+                if (!subMeshCache.TryGetValue(key, out var entry))
+                {
+                    int[] subIdx = mesh.GetIndices(s);
+                    BVH   bvh    = BVH.Construct(mesh.vertices, subIdx, BVHType.SAH);
+
+                    int indexStart = indices.Count;
+                    foreach (int p in bvh.OrderedPrimitiveIndices)
+                    {
+                        indices.Add(subIdx[p*3+0] + vertexStart);
+                        indices.Add(subIdx[p*3+1] + vertexStart);
+                        indices.Add(subIdx[p*3+2] + vertexStart);
+                    }
+
+                    entry = (bvh, indexStart, bvh.OrderedPrimitiveIndices.Count);
+                    subMeshCache[key] = entry;
+                }
+
+                int primitiveBase = entry.indexStart / 3;
+                
+                entry.bvh.FlattenBLAS(
+                    ref bnodes,
+                    ref meshNodes,
+                    s < sharedMats.Length ? matStart + s : 0,
+                    objIdx,                       // TransformIdx == object idx
+                    primitiveBase
+                );
+            }
         }
         // if not UV is used, insert empty one
-        if (uvs.Count <= 0) uvs.Add(Vector2.zero);
+        if (uvs.Count == 0) uvs.Add(Vector2.zero);
         
         // create texture 2d array
         if (AlbedoTextures != null) UnityEngine.Object.Destroy(AlbedoTextures);
@@ -245,7 +259,28 @@ public class BVHBuilder
         NormalTextures = CreateTextureArray(ref normTex);
         RoughnessTextures = CreateTextureArray(ref roughTex);
     }
-
+    
+    static void verticesEnsure<T>(List<T> dst, T[] src, int count, T pad)
+    {
+        if (src != null && src.Length == count) dst.AddRange(src);
+        else dst.AddRange(System.Linq.Enumerable.Repeat(pad, count));
+    }
+    
+    static void ExtractMaterialTexture(
+        Material mat, Dictionary<Texture2D,int> map, List<Texture2D> list,
+        int propId, out int idx)
+    {
+        idx = -1;
+        if (mat.HasProperty(propId) && mat.GetTexture(propId) is Texture2D t)
+        {
+            if (!map.TryGetValue(t, out idx))
+            {
+                idx = list.Count;
+                list.Add(t);
+                map[t] = idx;
+            }
+        }
+    }
 
     private static bool BuildBVH()
     {
@@ -318,9 +353,11 @@ public class BVHBuilder
 
     private static void SetBuffer<T>(ref ComputeBuffer buffer, List<T> data, int stride) where T : struct
     {
-        if (buffer != null) buffer.Release();
         if (data.Count == 0) return;
-        buffer = new ComputeBuffer(data.Count, stride);
+        if (buffer == null || buffer.count != data.Count || buffer.stride != stride) {
+            buffer?.Release();
+            buffer = new ComputeBuffer(data.Count, stride);
+        }
         buffer.SetData(data);
     }
 
