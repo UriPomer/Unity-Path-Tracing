@@ -34,7 +34,6 @@ public class BVHBuilder
     private static List<Vector4> tangents = new List<Vector4>();
     // Acceleration structure
     private static List<BLASNode> bnodes = new List<BLASNode>();
-    private static List<TLASNode> tnodes = new List<TLASNode>();
     private static List<MeshNode> meshNodes = new List<MeshNode>();
 
     // transform data, size of objects * 2, contains local to world and inverse matrix
@@ -50,7 +49,6 @@ public class BVHBuilder
     public static ComputeBuffer TangentBuffer;
     public static ComputeBuffer MaterialBuffer;
     public static ComputeBuffer BLASBuffer;
-    public static ComputeBuffer TLASBuffer;
     public static ComputeBuffer MeshNodeBuffer;
     public static ComputeBuffer TransformBuffer;
     public static Texture2DArray AlbedoTextures = null;
@@ -334,18 +332,19 @@ public class BVHBuilder
         SetBuffer(ref MaterialBuffer, materials, MaterialData.TypeSize);
         SetBuffer(ref BLASBuffer, bnodes, BLASNode.TypeSize);
     }
+    
+    private static List<MeshNode> meshHierarchy = new List<MeshNode>();
 
+    public static IReadOnlyList<MeshNode> GetMeshHierarchy() => meshHierarchy;
 
     public static void RebuildTLAS()
     {
         if (meshNodes.Count <= 0) return;
         if (transforms.Count <= 0) LoadTransforms();
-        tnodes.Clear();
-        // BVH tlasTree = new BVH(meshNodes, transforms);
         BVH tlasTree = BVH.Construct(meshNodes, transforms, BVHType.SAH);
-        tlasTree.FlattenTLAS(ref meshNodes, ref tnodes);
-        SetBuffer(ref TLASBuffer, tnodes, TLASNode.TypeSize);
-        SetBuffer(ref MeshNodeBuffer, meshNodes, MeshNode.TypeSize);
+        meshHierarchy.Clear();
+        tlasTree.FlattenTLAS(ref meshHierarchy, meshNodes, transforms);
+        SetBuffer(ref MeshNodeBuffer, meshHierarchy, MeshNode.TypeSize);
     }
 
     private static void SetBuffer<T>(ref ComputeBuffer buffer, List<T> data, int stride) where T : struct
@@ -397,7 +396,6 @@ public class BVHBuilder
         if (TangentBuffer != null) TangentBuffer.Release();
         if (UVBuffer != null) UVBuffer.Release();
         if (MaterialBuffer != null) MaterialBuffer.Release();
-        if (TLASBuffer != null) TLASBuffer.Release();
         if (MeshNodeBuffer != null) MeshNodeBuffer.Release();
         if (BLASBuffer != null) BLASBuffer.Release();
         if (TransformBuffer != null) TransformBuffer.Release();

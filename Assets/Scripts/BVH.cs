@@ -4,12 +4,6 @@ using UnityEngine;
 using System.Linq;
 
 
-//BLAS 对应于场景中的单个 3D 模型。BLASes 存储实际的顶点数据
-//MeshNode 代表每一个Mesh的属性，包括包围盒、Transform索引。 NodeRootIdx是这个Mesh的BLAS节点的起始索引
-//TLASNode 有点怪，感觉应该删掉，或者把MeshNode改名为TLASNode
-//TODO: 重构这个文件，把MeshNode、TLASNode分开，不要混在一起
-
-
 public struct BLASNode
 {
     public Vector3 BoundMax;
@@ -19,8 +13,7 @@ public struct BLASNode
     public int MaterialIdx;
     public int ChildIdx;
 
-    public static int TypeSize = sizeof(float) * 3 * 2 + sizeof(int) * 4;   //40 bytes
-}
+    public static int TypeSize = sizeof(float) * 3 * 2 + sizeof(int) * 4; }
 
 /// <summary>
 /// 含有SubMesh的包围盒、Transform索引
@@ -32,25 +25,10 @@ public struct MeshNode
     public Vector3 BoundMin;
     public int TransformIdx;    // also the index of the object
     public int NodeRootIdx;
-    // public int NodeEndIdx;
+    public int  ChildIdx;
 
-    public static int TypeSize = sizeof(float)*3*2+sizeof(int)*2;   //32 bytes
+    public static int TypeSize = sizeof(float)*3*2+sizeof(int)*3;
 }
-
-/// <summary>
-/// TLAS node built with bvh
-/// </summary>
-public struct TLASNode
-{
-    public Vector3 BoundMax;
-    public Vector3 BoundMin;
-    public int MeshNodeStartIdx;
-    // public int MeshNodeEndIdx;
-    public int ChildIdx;
-
-    public static int TypeSize = sizeof(float) * 3 * 2 + sizeof(int) * 2;   //32 bytes
-}
-
 
 public class AABB
 {
@@ -258,41 +236,68 @@ public abstract class BVH
         
         OrderedPrimitiveIndices.Clear();
     }
+    
+    // TODO : FlattenTLAS和 FlatBLAS好像干了一样的事情
 
-      
-    /// <summary>
-    /// meshNodes代表每一个Mesh的属性，包括包围盒、Transform索引等，而且是世界坐标系下的属性
-    /// BVHRoot是整个场景的BVH根节点，是用meshNodes的信息构建的
-    /// 这里通过meshNodes和BVH生成TLASNode
-    /// </summary>
-    /// <param name="meshNodes"></param>
-    /// <param name="tnodes"></param>
-    public void FlattenTLAS(ref List<MeshNode> meshNodes, ref List<TLASNode> tnodes)
+    public void FlattenTLAS(
+        ref List<MeshNode> dst,
+        List<MeshNode> leafSrc,              // 原 meshNodes（局部包围盒）
+        IReadOnlyList<Matrix4x4> trs)        // 对应 transform
     {
-        List<MeshNode> orderedMeshNodes = new List<MeshNode>();
-        foreach (var meshNodeIdx in OrderedPrimitiveIndices) //实际上，在这里OrderedPrimitiveIndices存储的是meshNode(Mesh)的索引，而不是primitive的索引
+        dst.Clear();
+        Queue<(BVHNode node, int parent, bool leftFlag)> q = new();
+        q.Enqueue((BVHRoot, -1, true));          // 根
+
+        while (q.Count > 0)
         {
-            orderedMeshNodes.Add(meshNodes[meshNodeIdx]);
-        }
-        
-        meshNodes = orderedMeshNodes;
-        Queue<BVHNode> nodes = new Queue<BVHNode>();
-        nodes.Enqueue(BVHRoot);
-        while (nodes.Count > 0)
-        {
-            var node = nodes.Dequeue();
-            tnodes.Add(new TLASNode
+            var (cur, parent, left) = q.Dequeue();
+            int myIdx = dst.Count;
+
+            MeshNode n;
+            if (cur.IsLeaf())                    // ---------- 叶子 ----------
             {
-                BoundMax = node.Bounds.max,
-                BoundMin = node.Bounds.min,
-                MeshNodeStartIdx = node.PrimitiveStartIdx >= 0 ? node.PrimitiveStartIdx : -1,
-                // MeshNodeEndIdx = node.PrimitiveStartIdx >= 0 ? node.PrimitiveEndIdx : -1,
-                ChildIdx = node.PrimitiveStartIdx >= 0 ? -1 : nodes.Count + tnodes.Count + 1
-            });
-            if (node.LeftChild != null) nodes.Enqueue(node.LeftChild);
-            if (node.RightChild != null) nodes.Enqueue(node.RightChild);
+                MeshNode src = leafSrc[cur.PrimitiveStartIdx];
+                Matrix4x4 l2w = trs[src.TransformIdx];
+
+                // 转到世界空间
+                Vector3 wMin = l2w.MultiplyPoint3x4(src.BoundMin);
+                Vector3 wMax = l2w.MultiplyPoint3x4(src.BoundMax);
+
+                n = new MeshNode {
+                    BoundMin     = wMin,
+                    BoundMax     = wMax,
+                    TransformIdx = src.TransformIdx,
+                    NodeRootIdx  = src.NodeRootIdx,
+                    ChildIdx     = -1
+                };
+            }
+            else                                 // ---------- 内部 ----------
+            {
+                n = new MeshNode {
+                    BoundMin     = cur.Bounds.min,
+                    BoundMax     = cur.Bounds.max,
+                    TransformIdx = -1,
+                    NodeRootIdx  = -1,
+                    ChildIdx     = -2          // 占位
+                };
+            }
+
+            dst.Add(n);
+
+            // 回填父节点 childIdx
+            if (parent >= 0) {
+                MeshNode p = dst[parent];
+                if (left) p.ChildIdx = myIdx;    // 左孩子
+                dst[parent] = p;
+            }
+
+            if (!cur.IsLeaf()) {
+                q.Enqueue((cur.LeftChild , myIdx, true ));
+                q.Enqueue((cur.RightChild, myIdx, false));
+            }
         }
     }
+
     
     private static List<PrimitiveInfo> sharedInfos = new List<PrimitiveInfo>();
     // 将顶点和顶点对应的索引转换为PrimitiveInfo，存储AABB和中心点信息

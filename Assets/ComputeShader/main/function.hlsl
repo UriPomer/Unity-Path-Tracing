@@ -96,12 +96,12 @@ float RNG_Next(inout RNG rng)
     return HashToFloat(rng.state);
 }
 
-float rand()
-{
-    float result = frac(sin(_Seed / 100.0f * dot(_Pixel, float2(12.9898f, 78.233f))) * 43758.5453f); // Fraction part
-    _Seed += 1.0f;
-    return result;
-}
+// float rand()
+// {
+//     float result = frac(sin(_Seed / 100.0f * dot(_Pixel, float2(12.9898f, 78.233f))) * 43758.5453f); // Fraction part
+//     _Seed += 1.0f;
+//     return result;
+// }
 
 bool SkipTransparent(Material mat)
 {

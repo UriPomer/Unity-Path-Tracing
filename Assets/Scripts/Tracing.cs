@@ -50,6 +50,13 @@ public class Tracing : MonoBehaviour
 
     private void OnRenderImage(RenderTexture source, RenderTexture destination)
     {
+#if UNITY_EDITOR
+        if (drawGizmos)
+        {
+            Graphics.Blit(source, destination);
+            return;
+        }
+#endif
         Render(destination);
     }
 
@@ -119,7 +126,7 @@ public class Tracing : MonoBehaviour
             tracingShader.SetVector("_PixelOffset", GeneratePixelOffset());
             tracingShader.SetVector("_DirectionalLight", directionalLightInfo);
             tracingShader.SetVector("_DirectionalLightColor", directionalLightColorInfo);
-            tracingShader.SetFloat("_Seed", UnityEngine.Random.value);
+            // tracingShader.SetFloat("_Seed", UnityEngine.Random.value);
             tracingShader.SetVector("_Resolution", new Vector2(Screen.width, Screen.height));
             tracingShader.SetMatrix("_CameraToWorld", cam.cameraToWorldMatrix);
             tracingShader.SetMatrix("_CameraInverseProjection", cam.projectionMatrix.inverse);
@@ -133,7 +140,6 @@ public class Tracing : MonoBehaviour
             if (BVHBuilder.TangentBuffer != null) tracingShader.SetBuffer(0, "_Tangents", BVHBuilder.TangentBuffer);
             if (BVHBuilder.UVBuffer != null) tracingShader.SetBuffer(0, "_UVs", BVHBuilder.UVBuffer);
             if (BVHBuilder.MaterialBuffer != null) tracingShader.SetBuffer(0, "_Materials", BVHBuilder.MaterialBuffer);
-            if (BVHBuilder.TLASBuffer != null) tracingShader.SetBuffer(0, "_TNodes", BVHBuilder.TLASBuffer);
             if (BVHBuilder.MeshNodeBuffer != null) tracingShader.SetBuffer(0, "_MeshNodes", BVHBuilder.MeshNodeBuffer);
             if (BVHBuilder.BLASBuffer != null) tracingShader.SetBuffer(0, "_BNodes", BVHBuilder.BLASBuffer);
             if (BVHBuilder.TransformBuffer != null) tracingShader.SetBuffer(0, "_Transforms", BVHBuilder.TransformBuffer);
@@ -202,6 +208,50 @@ public class Tracing : MonoBehaviour
         {
             return;
         }
+        IReadOnlyList<MeshNode> nodes = BVHBuilder.GetMeshHierarchy();
+        IReadOnlyList<Matrix4x4> trs  = BVHBuilder.GetTransforms();
+        if (nodes == null || nodes.Count == 0) return;
+
+        // -- 深度着色（可选）：越深颜色越暗
+        const float kMaxDepth = 8f;
+
+        Stack<(int idx,int depth)> stk = new();
+        stk.Push((0,0));                         // 根节点 index 0
+
+        while (stk.Count > 0)
+        {
+            var (i, d) = stk.Pop();
+            MeshNode n = nodes[i];
+
+            bool isLeaf = n.ChildIdx < 0;
+
+            // 1. 取出包围盒 (世界坐标)
+            Vector3 min = n.BoundMin, max = n.BoundMax;
+
+            // 2. 设置颜色
+            Color c = isLeaf ? Color.green : Color.yellow;
+            float t = Mathf.Clamp01(d / kMaxDepth);
+            c.a = 0.7f * (1f - t);            // 深度越大透明度越低
+            Gizmos.color = c;
+
+            // 3. 绘制
+            Vector3 center = (min + max) * 0.5f;
+            Vector3 size   =  max - min;
+            Gizmos.DrawWireCube(center, size);
+
+            // 4. 压栈遍历
+            if (!isLeaf)
+            {
+                int left  = n.ChildIdx;
+                int right = n.ChildIdx + 1;
+                stk.Push((right, d+1));       // 先压右再压左 -> 左先绘制
+                stk.Push((left , d+1));
+            }
+        }
+        
+        return;
+        
+        
         var bnodes = BVHBuilder.GetBLASNodes();
         var meshNodes = BVHBuilder.GetMeshNodes();
         var transforms = BVHBuilder.GetTransforms();

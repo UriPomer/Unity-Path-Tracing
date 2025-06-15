@@ -313,175 +313,103 @@ bool IntersectBlasTreeFast(Ray ray, int startIdx, float targetDist)
     return false;
 }
 
+// 栈大小保持与 BLAS 相同
 void IntersectTlas(Ray ray, inout RayHit bestHit)
 {
-    uint size, stride;
-    _MeshNodes.GetDimensions(size, stride);
-    for (uint i = 0; i < size; i++)
+    int stack[BVHTREE_RECURSE_SIZE];
+    int sp = 0;
+    stack[0] = 0;                         // 根始终是 0
+
+    while (sp >= 0)
     {
-        MeshNode node = _MeshNodes[i];
-        Ray localRay = PrepareTreeEnterRay(ray, node.transformIdx);
-        if (IntersectBox2(localRay, node.boundMax, node.boundMin))
+        int idx = stack[sp--];
+        MeshNode n = _MeshNodes[idx];
+
+        // 统一世界坐标包围盒
+        if (!IntersectBox2(ray, n.boundMax, n.boundMin))
+            continue;
+
+        if (n.childIdx < 0)               // ---------- 叶子 ----------
         {
-            // intersect with BLAS tree
-            PrepareTreeEnterHit(localRay, bestHit, node.transformIdx);
-            IntersectBlasTree(localRay, bestHit, node.rootIdx, node.transformIdx);
-            PrepareTreeExit(ray, bestHit, node.transformIdx);
+            Ray localRay = PrepareTreeEnterRay(ray, n.transformIdx);
+            PrepareTreeEnterHit(localRay, bestHit, n.transformIdx);
+            IntersectBlasTree(localRay, bestHit,
+                              n.rootIdx, n.transformIdx);
+            PrepareTreeExit(ray, bestHit, n.transformIdx);
+        }
+        else                              // ---------- 内部 ----------
+        {
+            int left  = n.childIdx;
+            int right = n.childIdx + 1;
+
+            float dstL = RayBoundingBoxDst(ray,
+                                           _MeshNodes[left ].boundMin,
+                                           _MeshNodes[left ].boundMax);
+            float dstR = RayBoundingBoxDst(ray,
+                                           _MeshNodes[right].boundMin,
+                                           _MeshNodes[right].boundMax);
+
+            // 近 -> 远 压栈
+            bool swap = dstR < dstL;
+            int nearIdx = swap ? right : left;
+            int farIdx  = swap ? left  : right;
+            float nearDst = swap ? dstR : dstL;
+            float farDst  = swap ? dstL : dstR;
+
+            if (farDst  < bestHit.distance) stack[++sp] = farIdx;
+            if (nearDst < bestHit.distance) stack[++sp] = nearIdx;
         }
     }
 }
 
-bool IntersectTlasFast(Ray ray, RayHit bestHit, float targetDist)
+
+bool IntersectTlasFast(Ray ray, float targetDist)
 {
-    uint size, stride;
-    _MeshNodes.GetDimensions(size, stride);
-    float dist = targetDist;
-    for (uint i = 0; i < size; i++)
+    int stack[BVHTREE_RECURSE_SIZE];
+    int sp = 0;
+    stack[0] = 0;
+
+    while (sp >= 0)
     {
-        MeshNode node = _MeshNodes[i];
-        Ray localRay = PrepareTreeEnterRay(ray, node.transformIdx);
-        if (IntersectBox2(localRay, node.boundMax, node.boundMin))
+        int idx = stack[sp--];
+        MeshNode n = _MeshNodes[idx];
+
+        if (!IntersectBox2(ray, n.boundMax, n.boundMin))
+            continue;
+
+        if (n.childIdx < 0)               // 叶子
         {
-            // PrepareTreeEnterHit(localRay, bestHit, node.transformIdx); //注释掉的这两行一点用都没有，一个把bestHit传进去，一个把bestHit传出来，但是在这个函数里面并没有用到bestHit
-            dist = PrepareTreeEnterTargetDistance(targetDist, node.transformIdx);   //dist是局部坐标系中的距离
-            if (IntersectBlasTreeFast(localRay, node.rootIdx, dist))
+            float localDist = PrepareTreeEnterTargetDistance(targetDist, n.transformIdx);
+            Ray   localRay  = PrepareTreeEnterRay(ray, n.transformIdx);
+            if (IntersectBlasTreeFast(localRay, n.rootIdx, localDist))
                 return true;
-            // PrepareTreeExit(ray, bestHit, node.transformIdx);
+        }
+        else                              // 内部
+        {
+            int left  = n.childIdx;
+            int right = n.childIdx + 1;
+
+            float dstL = RayBoundingBoxDst(ray,
+                                           _MeshNodes[left ].boundMin,
+                                           _MeshNodes[left ].boundMax);
+            float dstR = RayBoundingBoxDst(ray,
+                                           _MeshNodes[right].boundMin,
+                                           _MeshNodes[right].boundMax);
+
+            bool  swap = dstR < dstL;
+            int   nearIdx = swap ? right : left;
+            int   farIdx  = swap ? left  : right;
+            float nearDst = min(dstL, dstR);
+            float farDst  = max(dstL, dstR);
+
+            if (farDst  < targetDist) stack[++sp] = farIdx;
+            if (nearDst < targetDist) stack[++sp] = nearIdx;
         }
     }
     return false;
 }
 
-// void IntersectTlasTree(Ray ray, inout RayHit bestHit)
-// {
-//     int stack[BVHTREE_RECURSE_SIZE];
-//     int stackPtr = 0;
-//     int rawNodeIdx;
-//     stack[stackPtr] = 0;
-//     while (stackPtr >= 0 && stackPtr < BVHTREE_RECURSE_SIZE)
-//     {
-//         int idx = stack[stackPtr--];
-//         TLASNode node = _TNodes[idx];
-//         bool hit = IntersectBox3(ray, bestHit, node.boundMax, node.boundMin);   // 和TLAS的包围盒求交，同时考虑光线的负向
-//         bool leaf = node.rawNodeStartIdx >= 0;
-//         if(hit)
-//         {
-//             if(leaf)
-//             {
-//                 for (rawNodeIdx = node.rawNodeStartIdx; rawNodeIdx < node.rawNodeEndIdx; rawNodeIdx++)
-//                 {
-//                     MeshNode rawNode = _MeshNodes[rawNodeIdx];
-//                     Ray localRay = PrepareTreeEnterRay(ray, rawNode.transformIdx);
-//                     PrepareTreeEnterHit(localRay, bestHit, rawNode.transformIdx);
-//                     IntersectBlasTree(localRay, bestHit, rawNode.rootIdx, rawNode.transformIdx);
-//                     PrepareTreeExit(ray, bestHit, rawNode.transformIdx);
-//                 }
-//             }
-//             else
-//             {
-//                 stack[++stackPtr] = node.childIdx;
-//                 stack[++stackPtr] = node.childIdx + 1;
-//             }
-//         }
-//     }
-// }
 
-
-// bool IntersectTlasTreeFast(Ray ray, RayHit bestHit, float targetDist)
-// {
-//     int stack[BVHTREE_RECURSE_SIZE];
-//     int stackPtr = 0;
-//     int rawNodeIdx;
-//     stack[stackPtr] = 0;
-//     while (stackPtr >= 0 && stackPtr < BVHTREE_RECURSE_SIZE)
-//     {
-//         int idx = stack[stackPtr--];
-//         TLASNode node = _TNodes[idx];
-//         bool hit = IntersectBox2(ray, node.boundMax, node.boundMin);
-//         bool leaf = node.rawNodeStartIdx >= 0;
-//         if (hit)
-//         {
-//             if (leaf)
-//             {
-//                 for (rawNodeIdx = node.rawNodeStartIdx; rawNodeIdx < node.rawNodeEndIdx; rawNodeIdx++)
-//                 {
-//                     MeshNode rawNode = _MeshNodes[rawNodeIdx];
-//                     Ray localRay = PrepareTreeEnterRay(ray, rawNode.transformIdx);
-//                     PrepareTreeEnterHit(localRay, bestHit, rawNode.transformIdx);
-//                     if (IntersectBlasTreeFast(localRay, rawNode.rootIdx, targetDist))
-//                         return true;
-//                     PrepareTreeExit(ray, bestHit, rawNode.transformIdx);
-//                 }
-//             }
-//             else
-//             {
-//                 stack[++stackPtr] = node.childIdx;
-//                 stack[++stackPtr] = node.childIdx + 1;
-//             }
-//         }
-//     }
-//     return false;
-// }
-
-
-// intersect with mesh object every vertices
-// void IntersectMeshObject(Ray ray, inout RayHit bestHit, MeshData mesh)
-// {
-//     int offset = mesh.indicesStart;
-//     int count = mesh.indicesCount;
-//     for (int i = offset; i < offset + count; i += 3)
-//     {
-//         float3 v0 = _Vertices[_Indices[i]];
-//         float3 v1 = _Vertices[_Indices[i + 1]];
-//         float3 v2 = _Vertices[_Indices[i + 2]];
-//         float2 uv0 = _UVs[_Indices[i]];
-//         float2 uv1 = _UVs[_Indices[i + 1]];
-//         float2 uv2 = _UVs[_Indices[i + 2]];
-//         float t, u, v;
-//         if(IntersectTriangle(ray, v0, v1, v2, t, u, v))
-//         {
-//             if(t > 0.0 && t < bestHit.distance)
-//             {
-//                 MaterialData mat = _Materials[mesh.materialIdx];
-//                 float3 hitPos = ray.origin + t * ray.dir;
-//                 float2 uv = uv1 * u + uv2 * v + uv0 * (1.0 - u - v);
-//                 float3 norm = GetNormal(i, float2(u, v), mat.normIdx, uv);
-//                 Material mats = GenMaterial(
-//                     mat.color.rgb, mat.emission, mat.metallic, mat.smoothness, mat.color.a, mat.ior,
-//                     int4(mat.albedoIdx, mat.metalIdx, mat.emitIdx, mat.roughIdx), uv
-//                 );
-//                 if ((mat.mode == 1.0 && mats.alpha < 1.0) || (mat.mode > 1.0 && SkipTransparent(mats)))
-//                     continue;
-//                 bestHit.distance = t;
-//                 bestHit.position = hitPos;
-//                 bestHit.normal = normalize(norm);
-//                 bestHit.material = mats;
-//             }
-//         }
-//
-//     }
-// }
-//
-// bool IntersectMeshObjectFast(Ray ray, MeshData mesh, float targetDist)
-// {
-//     int offset = mesh.indicesStart;
-//     int count = mesh.indicesCount;
-//     for (int i = offset; i < offset + count; i += 3)
-//     {
-//         float3 v0 = _Vertices[_Indices[i]];
-//         float3 v1 = _Vertices[_Indices[i + 1]];
-//         float3 v2 = _Vertices[_Indices[i + 2]];
-//         float t, u, v;
-//         if (IntersectTriangle(ray, v0, v1, v2, t, u, v))
-//         {
-//             if (t > 0.0 && t < targetDist)
-//             {
-//                 return true; // do not test for back face culling
-//             }
-//         }
-//     }
-//     return false;
-// }
 
 
 #endif

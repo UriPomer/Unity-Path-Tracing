@@ -15,8 +15,7 @@ float3 SampleSkybox(Ray ray)
 // trace a ray and returns hit immediately (for shadow rays)
 bool TraceHit(Ray ray, float targetDist)
 {
-    RayHit bestHit = GenRayHit();
-    return IntersectTlasFast(ray, bestHit, targetDist);
+    return IntersectTlasFast(ray, targetDist);
 }
 
 // trace a ray and detect nearest hit
@@ -157,18 +156,20 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 {
     RNG_SeedPixel(rng, id.xy, _FrameCount);
     Ray r = GenRayByID(id.xy);
-    _Pixel = id.xy;
-    float3 result = float3(0.0f, 0.0f, 0.0f);
-    for(int i = 0; i < 4; i++)
-    {
-        RayHit hit = Trace(r);
-        result += r.energy * SRGB2Linear(Shade(r, hit));
-    
-        if (!any(r.energy))
-        {
-            break;
-        }
-    }
-    _Result[id.xy] = float4(result, 1.0f);
+    // _Pixel = id.xy;
+    // float3 result = float3(0.0f, 0.0f, 0.0f);
+    // for(int i = 0; i < 4; i++)
+    // {
+    //     RayHit hit = Trace(r);
+    //     result += r.energy * SRGB2Linear(Shade(r, hit));
+    //
+    //     if (!any(r.energy))
+    //     {
+    //         break;
+    //     }
+    // }
+    // _Result[id.xy] = float4(result, 1.0f);
+    RayHit hit = Trace(r);
+    _Result[id.xy] = hit.distance / 100.0f;
 }
 

@@ -49,19 +49,8 @@ static const float PI = 3.14159265f;
 #define PI_TWO          6.28318530717958623198
 const float3 LUM = float3(0.2126, 0.7152, 0.0722);
 
-
 float2 _Pixel;
-float _Seed;
-
-// object info
-struct MeshData
-{
-    //float4x4 localToWorld;
-    int indicesStart;
-    int indicesCount;
-    int materialIdx;
-};
-//StructuredBuffer<MeshData> _Meshes;
+// float _Seed;
 
 struct BLASNode
 {
@@ -80,18 +69,9 @@ struct MeshNode
     float3 boundMin;
     int transformIdx;
     int rootIdx;
-};
-StructuredBuffer<MeshNode> _MeshNodes;
-
-struct TLASNode
-{
-    float3 boundMax;
-    float3 boundMin;
-    int meshNodeStartIdx;
-    int meshNodeEndIdx;
     int childIdx;
 };
-StructuredBuffer<TLASNode> _TNodes;
+StructuredBuffer<MeshNode> _MeshNodes;
 
 struct MaterialData
 {
