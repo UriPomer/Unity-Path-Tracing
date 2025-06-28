@@ -50,16 +50,22 @@ float3x3 Inverse3x3(float3x3 m)
 // 仅针对 TRS（平移+旋转+缩放）矩阵的快速求逆
 float4x4 AffineInverse(float4x4 m)
 {
-    float3x3 R  = (float3x3)m;      // 左上 3×3：旋转 × 缩放
-    float3   t  = m[3].xyz;         // 第 4 行前 3 个：平移
-    float3x3 Rinv = Inverse3x3(R);  // 先求 3×3 的逆
-    float3   tinv = mul(-t, Rinv);  // 平移部分：-T * R⁻¹
+    // 提取 3×3 部分（旋转×缩放）
+    float3x3 R    = (float3x3)m;      
+    // 提取平移分量：第 4 行前三个分量
+    float3   t    = m[3].xyz;         
 
+    // 3×3 求逆
+    float3x3 Rinv = Inverse3x3(R);
+    // 求逆平移：-R⁻¹ * t
+    float3   tInv = -mul(Rinv, t);
+
+    // 构造逆矩阵，仍按行传参
     return float4x4(
-        float4(Rinv[0], 0),
-        float4(Rinv[1], 0),
-        float4(Rinv[2], 0),
-        float4(tinv   , 1)
+        float4(Rinv[0][0], Rinv[0][1], Rinv[0][2], 0.0f),
+        float4(Rinv[1][0], Rinv[1][1], Rinv[1][2], 0.0f),
+        float4(Rinv[2][0], Rinv[2][1], Rinv[2][2], 0.0f),
+        float4(tInv.x,      tInv.y,      tInv.z,      1.0f)
     );
 }
 

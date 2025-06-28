@@ -25,7 +25,7 @@ public struct MeshNode
     public Vector3 BoundMin;
     public int TransformIdx;    // also the index of the object
     public int NodeRootIdx;
-    public int  ChildIdx;
+    public int ChildIdx;
 
     public static int TypeSize = sizeof(float)*3*2+sizeof(int)*3;
 }
@@ -143,7 +143,6 @@ public abstract class BVH
         public AABB Bounds;
         public BVHNode LeftChild;
         public BVHNode RightChild;
-        public int SplitAxis;
         public int PrimitiveStartIdx;
         public int PrimitiveEndIdx;
 
@@ -159,21 +158,19 @@ public abstract class BVH
                 Bounds = bounding,
                 LeftChild = null,
                 RightChild = null,
-                SplitAxis = -1,
                 PrimitiveStartIdx = start,
                 PrimitiveEndIdx = start + count
             };
             return node;
         }
 
-        public static BVHNode CreateParent(int splitAxis, BVHNode nodeLeft, BVHNode nodeRight)
+        public static BVHNode CreateParent(BVHNode nodeLeft, BVHNode nodeRight)
         {
             BVHNode node = new BVHNode
             {
                 Bounds = AABB.Combine(nodeLeft.Bounds, nodeRight.Bounds),
                 LeftChild = nodeLeft,
                 RightChild = nodeRight,
-                SplitAxis = splitAxis,
                 PrimitiveStartIdx = -1,
                 PrimitiveEndIdx = -1
             };
@@ -212,18 +209,18 @@ public abstract class BVH
         q.Enqueue(BVHRoot);
         while (q.Count > 0)
         {
-            var n = q.Dequeue();
+            var node = q.Dequeue();
             bnodes.Add(new BLASNode
             {
-                BoundMax         = n.Bounds.max,
-                BoundMin         = n.Bounds.min,
-                PrimitiveStartIdx= n.IsLeaf() ? n.PrimitiveStartIdx + globalPrimitiveBase : -1,
-                PrimitiveEndIdx  = n.IsLeaf() ? n.PrimitiveEndIdx   + globalPrimitiveBase : -1,
-                MaterialIdx      = n.IsLeaf() ? materialIdx : 0,
-                ChildIdx         = n.IsLeaf() ? -1 : q.Count + bnodes.Count + 1
+                BoundMax         = node.Bounds.max,
+                BoundMin         = node.Bounds.min,
+                PrimitiveStartIdx= node.IsLeaf() ? node.PrimitiveStartIdx + globalPrimitiveBase : -1,
+                PrimitiveEndIdx  = node.IsLeaf() ? node.PrimitiveEndIdx   + globalPrimitiveBase : -1,
+                MaterialIdx      = node.IsLeaf() ? materialIdx : 0,
+                ChildIdx         = node.IsLeaf() ? -1 : q.Count + bnodes.Count + 1
             });
-            if (n.LeftChild  != null) q.Enqueue(n.LeftChild);
-            if (n.RightChild != null) q.Enqueue(n.RightChild);
+            if (node.LeftChild  != null) q.Enqueue(node.LeftChild);
+            if (node.RightChild != null) q.Enqueue(node.RightChild);
         }
 
         meshNodes.Add(new MeshNode
@@ -234,67 +231,55 @@ public abstract class BVH
             NodeRootIdx  = blasRootIdx
         });
         
-        OrderedPrimitiveIndices.Clear();
+        OrderedPrimitiveIndices.Clear();    // TODO: 优化OrderedPrimitiveIndices
     }
     
-    // TODO : FlattenTLAS和 FlatBLAS好像干了一样的事情
-
     public void FlattenTLAS(
         ref List<MeshNode> dst,
-        List<MeshNode> leafSrc,              // 原 meshNodes（局部包围盒）
-        IReadOnlyList<Matrix4x4> trs)        // 对应 transform
+        List<MeshNode> leafSrc,
+        IReadOnlyList<Matrix4x4> transforms)
     {
         dst.Clear();
-        Queue<(BVHNode node, int parent, bool leftFlag)> q = new();
-        q.Enqueue((BVHRoot, -1, true));          // 根
+        Queue<BVHNode> q = new();
+        q.Enqueue(BVHRoot);
 
         while (q.Count > 0)
         {
-            var (cur, parent, left) = q.Dequeue();
-            int myIdx = dst.Count;
-
+            var cur = q.Dequeue();
             MeshNode n;
-            if (cur.IsLeaf())                    // ---------- 叶子 ----------
-            {
-                MeshNode src = leafSrc[cur.PrimitiveStartIdx];
-                Matrix4x4 l2w = trs[src.TransformIdx];
 
-                // 转到世界空间
-                Vector3 wMin = l2w.MultiplyPoint3x4(src.BoundMin);
-                Vector3 wMax = l2w.MultiplyPoint3x4(src.BoundMax);
+            if (cur.IsLeaf())
+            {
+                int orderedIdx = OrderedPrimitiveIndices[cur.PrimitiveStartIdx];
+                MeshNode src   = leafSrc[orderedIdx];
+                Matrix4x4 l2w = transforms[src.TransformIdx * 2];
 
                 n = new MeshNode {
-                    BoundMin     = wMin,
-                    BoundMax     = wMax,
+                    BoundMin     = l2w.MultiplyPoint3x4(src.BoundMin),
+                    BoundMax     = l2w.MultiplyPoint3x4(src.BoundMax),
                     TransformIdx = src.TransformIdx,
                     NodeRootIdx  = src.NodeRootIdx,
                     ChildIdx     = -1
                 };
             }
-            else                                 // ---------- 内部 ----------
+            else
             {
                 n = new MeshNode {
                     BoundMin     = cur.Bounds.min,
                     BoundMax     = cur.Bounds.max,
                     TransformIdx = -1,
                     NodeRootIdx  = -1,
-                    ChildIdx     = -2          // 占位
+                    ChildIdx     = dst.Count + q.Count + 1
                 };
+
+                if (cur.LeftChild != null)
+                {
+                    q.Enqueue(cur.LeftChild);
+                    q.Enqueue(cur.RightChild);
+                }
             }
 
             dst.Add(n);
-
-            // 回填父节点 childIdx
-            if (parent >= 0) {
-                MeshNode p = dst[parent];
-                if (left) p.ChildIdx = myIdx;    // 左孩子
-                dst[parent] = p;
-            }
-
-            if (!cur.IsLeaf()) {
-                q.Enqueue((cur.LeftChild , myIdx, true ));
-                q.Enqueue((cur.RightChild, myIdx, false));
-            }
         }
     }
 
@@ -344,8 +329,8 @@ public abstract class BVH
             PrimitiveInfo info;
             info.Bounds = new AABB
             (
-                transforms[n.TransformIdx].MultiplyPoint3x4(n.BoundMin),
-                transforms[n.TransformIdx].MultiplyPoint3x4(n.BoundMax)
+                transforms[n.TransformIdx * 2].MultiplyPoint3x4(n.BoundMin), // localtoworld
+                transforms[n.TransformIdx * 2].MultiplyPoint3x4(n.BoundMax)
             );
             info.Center       = info.Bounds.Center();
             info.PrimitiveIdx = i;
@@ -356,8 +341,7 @@ public abstract class BVH
 
     public BVHNode BVHRoot = null;
 
-    protected static readonly List<int> s_SharedOrderedPrimitiveIndices = new List<int>(4096);
-    public List<int> OrderedPrimitiveIndices { get; protected set; }
+    public List<int> OrderedPrimitiveIndices { get; protected set; } = new List<int>(4096);
 
     public static BVH Construct(Vector3[] vertices, int[] indices, BVHType type)
     {
@@ -403,7 +387,6 @@ public class BVHSAH : BVH
 
     public BVHSAH(Vector3[] vertices,int[] indices)
     {
-        OrderedPrimitiveIndices = s_SharedOrderedPrimitiveIndices;
         OrderedPrimitiveIndices.Clear();
         // generate face info
         var faceInfo = CreatePrimitiveInfo(vertices, indices);
@@ -413,7 +396,6 @@ public class BVHSAH : BVH
 
     public BVHSAH(List<MeshNode> rawNodes, List<Matrix4x4> transforms)
     {
-        OrderedPrimitiveIndices = s_SharedOrderedPrimitiveIndices;
         OrderedPrimitiveIndices.Clear();
         // generate face info
         var faceInfo = CreatePrimitiveInfo(rawNodes, transforms);
@@ -421,7 +403,7 @@ public class BVHSAH : BVH
         BVHRoot = Build(faceInfo, 0, faceInfo.Count);
     }
 
-    protected override BVHNode Build(List<PrimitiveInfo> infos, int start, int end)
+    protected sealed override BVHNode Build(List<PrimitiveInfo> infos, int start, int end)
     {
         AABB bounds = new AABB();
         for (int i = start; i < end; i++) bounds.Extend(infos[i].Bounds);
@@ -515,7 +497,7 @@ public class BVHSAH : BVH
 
         var left  = Build(infos, start, mid);
         var right = Build(infos, mid,   end);
-        return BVHNode.CreateParent(axis, left, right);
+        return BVHNode.CreateParent(left, right);
     }
 
 }

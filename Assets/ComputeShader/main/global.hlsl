@@ -1,5 +1,6 @@
 #ifndef GLOBAL
 #define GLOBAL
+#include <HLSLSupport.cginc>
 
 struct Ray
 {
@@ -63,7 +64,7 @@ struct BLASNode
 };
 StructuredBuffer<BLASNode> _BNodes;
 
-struct MeshNode
+struct TLASNode
 {
     float3 boundMax;
     float3 boundMin;
@@ -71,7 +72,10 @@ struct MeshNode
     int rootIdx;
     int childIdx;
 };
-StructuredBuffer<MeshNode> _MeshNodes;
+StructuredBuffer<TLASNode> _TLASNodes;
+
+uint _TLASNodesCount;
+uint _BNodesCount;
 
 struct MaterialData
 {

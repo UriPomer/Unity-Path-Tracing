@@ -11,7 +11,7 @@
  */
 Ray PrepareTreeEnterRay(Ray ray, int transformIdx)
 {
-    float4x4 worldToLocal = AffineInverse(_Transforms[transformIdx]);
+    float4x4 worldToLocal = _Transforms[transformIdx * 2 + 1];
     float3 origin = mul(worldToLocal, float4(ray.origin, 1.0)).xyz;     // 把光线的起点变换到局部坐标系
     float3 dir = normalize(mul(worldToLocal, float4(ray.dir, 0.0)).xyz);    // 把光线的方向变换到局部坐标系
     return GenRay(origin, dir);
@@ -22,7 +22,7 @@ Ray PrepareTreeEnterRay(Ray ray, int transformIdx)
  */
 float PrepareTreeEnterTargetDistance(float targetDist, int transformIdx)
 {
-    float4x4 worldToLocal = AffineInverse(_Transforms[transformIdx]);
+    float4x4 worldToLocal = _Transforms[transformIdx * 2 + 1];
     if (targetDist >= 1.#INF)
     {
         return targetDist;
@@ -40,7 +40,7 @@ float PrepareTreeEnterTargetDistance(float targetDist, int transformIdx)
  */
 void PrepareTreeEnterHit(Ray rayLocal, inout RayHit hit, int transformIdx)
 {
-    float4x4 worldToLocal = AffineInverse(_Transforms[transformIdx]);
+    float4x4 worldToLocal = _Transforms[transformIdx * 2 + 1];
     if (hit.distance < 1.#INF)
     {
         hit.position = mul(worldToLocal, float4(hit.position, 1.0)).xyz;
@@ -53,7 +53,7 @@ void PrepareTreeEnterHit(Ray rayLocal, inout RayHit hit, int transformIdx)
  */
 void PrepareTreeExit(Ray rayWorld, inout RayHit hit, int transformIdx)
 {
-    float4x4 localToWorld = _Transforms[transformIdx];
+    float4x4 localToWorld = _Transforms[transformIdx * 2];
     if (hit.distance < 1.#INF)
     {
         hit.position = mul(localToWorld, float4(hit.position, 1.0)).xyz;
@@ -162,19 +162,20 @@ bool IntersectBox3(Ray ray, RayHit bestHit, float3 pMax, float3 pMin)
     return intersectForward && intersectBackward;
 }
 
-float RayBoundingBoxDst(Ray ray, float3 boxMin, float3 boxMax)
+float RayBoundingBoxDst(const Ray ray, float3 boxMin, float3 boxMax)
 {
     float3 tMin = (boxMin - ray.origin) * ray.invDir;
     float3 tMax = (boxMax - ray.origin) * ray.invDir;
-    float3 t1 = min(tMin, tMax);
-    float3 t2 = max(tMin, tMax);
-    float tNear = max(max(t1.x, t1.y), t1.z);
-    float tFar = min(min(t2.x, t2.y), t2.z);
-
-    bool hit = tFar >= tNear && tFar > 0;
-    float dst = hit ? tNear > 0 ? tNear : 0 : 1.#INF;
-    return dst;
-};
+    float3 t1   = min(tMin, tMax);
+    float3 t2   = max(tMin, tMax);
+    float  tNear = max(max(t1.x, t1.y), t1.z);
+    float  tFar  = min(min(t2.x, t2.y), t2.z);
+    if (tFar >= tNear && tFar > 0.0f)
+    {
+        return tNear > 0.0f ? tNear : 0.0f;
+    }
+    return -1.0f;
+}
 
 /*
  *与BLAS树中的三角形面求交
@@ -185,7 +186,7 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
     int stackPtr = 0;
     int primitiveIdx;
     stack[stackPtr] = startIdx;
-    float4x4 localToWorld = _Transforms[transformIdx];
+    float4x4 localToWorld = _Transforms[transformIdx * 2];
     while (stackPtr >= 0 && stackPtr < BVHTREE_RECURSE_SIZE)
     {
         int idx = stack[stackPtr--];    //模拟栈
@@ -242,14 +243,25 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
                 float dstA = RayBoundingBoxDst(ray, childA.boundMin, childA.boundMax);
                 float dstB = RayBoundingBoxDst(ray, childB.boundMin, childB.boundMax);
 
-                bool isNearestA = dstA <= dstB;
-                float dstNear = isNearestA ? dstA : dstB;
-                float dstFar = isNearestA ? dstB : dstA;
-                int childIndexNear = isNearestA ? childIndexA : childIndexB;
-                int childIndexFar = isNearestA ? childIndexB : childIndexA;
+                bool hitA = dstA >= 0.0f && dstA < bestHit.distance;
+                bool hitB = dstB >= 0.0f && dstB < bestHit.distance;
 
-                if (dstFar < bestHit.distance) stack[++stackPtr] = childIndexFar;
-                if (dstNear < bestHit.distance) stack[++stackPtr] = childIndexNear;
+                if (!hitA && !hitB)
+                    continue;
+
+                if (hitA && hitB) {
+                    bool isNearestA      = dstA <= dstB;
+                    int  childIndexNear  = isNearestA ? childIndexA : childIndexB;
+                    int  childIndexFar   = isNearestA ? childIndexB : childIndexA;
+                    stack[++stackPtr]    = childIndexFar;
+                    stack[++stackPtr]    = childIndexNear;
+                }
+                else if (hitA) {
+                    stack[++stackPtr] = childIndexA;
+                }
+                else {
+                    stack[++stackPtr] = childIndexB;
+                }
             }
         }
     }
@@ -323,9 +335,9 @@ void IntersectTlas(Ray ray, inout RayHit bestHit)
     while (sp >= 0)
     {
         int idx = stack[sp--];
-        MeshNode n = _MeshNodes[idx];
+        TLASNode n = _TLASNodes[idx];
 
-        // 统一世界坐标包围盒
+        // ray、bounds都是世界坐标
         if (!IntersectBox2(ray, n.boundMax, n.boundMin))
             continue;
 
@@ -343,21 +355,34 @@ void IntersectTlas(Ray ray, inout RayHit bestHit)
             int right = n.childIdx + 1;
 
             float dstL = RayBoundingBoxDst(ray,
-                                           _MeshNodes[left ].boundMin,
-                                           _MeshNodes[left ].boundMax);
+                                           _TLASNodes[left].boundMin,
+                                           _TLASNodes[left].boundMax);
             float dstR = RayBoundingBoxDst(ray,
-                                           _MeshNodes[right].boundMin,
-                                           _MeshNodes[right].boundMax);
+                                           _TLASNodes[right].boundMin,
+                                           _TLASNodes[right].boundMax);
 
-            // 近 -> 远 压栈
-            bool swap = dstR < dstL;
-            int nearIdx = swap ? right : left;
-            int farIdx  = swap ? left  : right;
-            float nearDst = swap ? dstR : dstL;
-            float farDst  = swap ? dstL : dstR;
+            bool hitL = dstL >= 0.0f;
+            bool hitR = dstR >= 0.0f;
 
-            if (farDst  < bestHit.distance) stack[++sp] = farIdx;
-            if (nearDst < bestHit.distance) stack[++sp] = nearIdx;
+            if (!hitL && !hitR)
+                continue;
+
+            if (hitL && hitR) {
+                bool swap     = dstR < dstL;
+                int  nearIdx  = swap ? right : left;
+                int  farIdx   = swap ? left  : right;
+                float nearDst = swap ? dstR   : dstL;
+                float farDst  = swap ? dstL   : dstR;
+
+                if (farDst < bestHit.distance) stack[++sp] = farIdx;
+                if (nearDst< bestHit.distance) stack[++sp] = nearIdx;
+            }
+            else if (hitL) {
+                if (dstL < bestHit.distance) stack[++sp] = left;
+            }
+            else {
+                if (dstR < bestHit.distance) stack[++sp] = right;
+            }
         }
     }
 }
@@ -372,7 +397,7 @@ bool IntersectTlasFast(Ray ray, float targetDist)
     while (sp >= 0)
     {
         int idx = stack[sp--];
-        MeshNode n = _MeshNodes[idx];
+        TLASNode n = _TLASNodes[idx];
 
         if (!IntersectBox2(ray, n.boundMax, n.boundMin))
             continue;
@@ -390,20 +415,31 @@ bool IntersectTlasFast(Ray ray, float targetDist)
             int right = n.childIdx + 1;
 
             float dstL = RayBoundingBoxDst(ray,
-                                           _MeshNodes[left ].boundMin,
-                                           _MeshNodes[left ].boundMax);
+                                           _TLASNodes[left ].boundMin,
+                                           _TLASNodes[left ].boundMax);
             float dstR = RayBoundingBoxDst(ray,
-                                           _MeshNodes[right].boundMin,
-                                           _MeshNodes[right].boundMax);
+                                           _TLASNodes[right].boundMin,
+                                           _TLASNodes[right].boundMax);
 
-            bool  swap = dstR < dstL;
-            int   nearIdx = swap ? right : left;
-            int   farIdx  = swap ? left  : right;
-            float nearDst = min(dstL, dstR);
-            float farDst  = max(dstL, dstR);
+            bool hitL = dstL >= 0.0f && dstL < targetDist;
+            bool hitR = dstR >= 0.0f && dstR < targetDist;
 
-            if (farDst  < targetDist) stack[++sp] = farIdx;
-            if (nearDst < targetDist) stack[++sp] = nearIdx;
+            if (!hitL && !hitR)
+                continue;
+
+            if (hitL && hitR) {
+                bool swap    = dstR < dstL;
+                int  nearIdx = swap ? right : left;
+                int  farIdx  = swap ? left  : right;
+                stack[++sp] = farIdx;
+                stack[++sp] = nearIdx;
+            }
+            else if (hitL) {
+                stack[++sp] = left;
+            }
+            else { // hitR
+                stack[++sp] = right;
+            }
         }
     }
     return false;

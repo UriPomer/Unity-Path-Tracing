@@ -24,6 +24,11 @@ public class Tracing : MonoBehaviour
     
     [SerializeField]
     private bool drawGizmos = false;
+    [SerializeField]
+    private bool DrawTLAS = true;
+    [SerializeField] private bool DrawBLAS = true;
+    [SerializeField] private bool DrawMeshNode = true;
+    [SerializeField] private bool DrawTLASBVH = true;
     
     private int sampleCount = 0;
     
@@ -94,7 +99,7 @@ public class Tracing : MonoBehaviour
 
     private void Update()
     {
-        LightManager.Instance.UpdateLights();
+        // LightManager.Instance.UpdateLights();
         BVHBuilder.Validate();
         if(Camera.main.transform.hasChanged)
         {
@@ -140,8 +145,17 @@ public class Tracing : MonoBehaviour
             if (BVHBuilder.TangentBuffer != null) tracingShader.SetBuffer(0, "_Tangents", BVHBuilder.TangentBuffer);
             if (BVHBuilder.UVBuffer != null) tracingShader.SetBuffer(0, "_UVs", BVHBuilder.UVBuffer);
             if (BVHBuilder.MaterialBuffer != null) tracingShader.SetBuffer(0, "_Materials", BVHBuilder.MaterialBuffer);
-            if (BVHBuilder.MeshNodeBuffer != null) tracingShader.SetBuffer(0, "_MeshNodes", BVHBuilder.MeshNodeBuffer);
-            if (BVHBuilder.BLASBuffer != null) tracingShader.SetBuffer(0, "_BNodes", BVHBuilder.BLASBuffer);
+            if (BVHBuilder.MeshNodeBuffer != null)
+            {
+                tracingShader.SetInt("_TLASNodesCount", BVHBuilder.GetTLASNodes().Count);
+                tracingShader.SetBuffer(0, "_TLASNodes", BVHBuilder.MeshNodeBuffer);
+            }
+
+            if (BVHBuilder.BLASBuffer != null)
+            {
+                tracingShader.SetBuffer(0, "_BNodes", BVHBuilder.BLASBuffer);
+                tracingShader.SetInt("_BNodesCount", BVHBuilder.GetBLASNodes().Count);
+            }
             if (BVHBuilder.TransformBuffer != null) tracingShader.SetBuffer(0, "_Transforms", BVHBuilder.TransformBuffer);
             if (BVHBuilder.AlbedoTextures != null) tracingShader.SetTexture(0, "_AlbedoTextures", BVHBuilder.AlbedoTextures);
             if (BVHBuilder.EmissionTextures != null) tracingShader.SetTexture(0, "_EmitTextures", BVHBuilder.EmissionTextures);
@@ -149,25 +163,6 @@ public class Tracing : MonoBehaviour
             if (BVHBuilder.NormalTextures != null) tracingShader.SetTexture(0, "_NormalTextures", BVHBuilder.NormalTextures);
             if (BVHBuilder.RoughnessTextures != null) tracingShader.SetTexture(0, "_RoughnessTextures", BVHBuilder.RoughnessTextures);
         // }
-    }
-    
-    private void EstimateGroups(int width, int height)
-    {
-        // target dispatch 32x32 groups
-        // each group has 8x8 threads
-        //int pixels = width * height;
-        dispatchGroupXFull = Mathf.CeilToInt(Screen.width / 8.0f);
-        dispatchGroupYFull = Mathf.CeilToInt(Screen.height / 8.0f);
-        dispatchOffsetLimit = new Vector2(
-            width - dispatchGroupX * 8,
-            height - dispatchGroupY * 8
-        );
-        dispatchOffsetLimit = Vector2.Max(dispatchOffsetLimit, Vector2.zero);
-        dispatchCount = new Vector4(
-            0.0f, 0.0f,
-            Mathf.Ceil(width / (float)(dispatchGroupX * 8)),
-            Mathf.Ceil(height / (float)(dispatchGroupY * 8))
-        );
     }
     
     private Vector2 GeneratePixelOffset()
@@ -208,70 +203,107 @@ public class Tracing : MonoBehaviour
         {
             return;
         }
-        IReadOnlyList<MeshNode> nodes = BVHBuilder.GetMeshHierarchy();
-        IReadOnlyList<Matrix4x4> trs  = BVHBuilder.GetTransforms();
-        if (nodes == null || nodes.Count == 0) return;
-
-        // -- 深度着色（可选）：越深颜色越暗
-        const float kMaxDepth = 8f;
-
-        Stack<(int idx,int depth)> stk = new();
-        stk.Push((0,0));                         // 根节点 index 0
-
-        while (stk.Count > 0)
-        {
-            var (i, d) = stk.Pop();
-            MeshNode n = nodes[i];
-
-            bool isLeaf = n.ChildIdx < 0;
-
-            // 1. 取出包围盒 (世界坐标)
-            Vector3 min = n.BoundMin, max = n.BoundMax;
-
-            // 2. 设置颜色
-            Color c = isLeaf ? Color.green : Color.yellow;
-            float t = Mathf.Clamp01(d / kMaxDepth);
-            c.a = 0.7f * (1f - t);            // 深度越大透明度越低
-            Gizmos.color = c;
-
-            // 3. 绘制
-            Vector3 center = (min + max) * 0.5f;
-            Vector3 size   =  max - min;
-            Gizmos.DrawWireCube(center, size);
-
-            // 4. 压栈遍历
-            if (!isLeaf)
-            {
-                int left  = n.ChildIdx;
-                int right = n.ChildIdx + 1;
-                stk.Push((right, d+1));       // 先压右再压左 -> 左先绘制
-                stk.Push((left , d+1));
-            }
-        }
-        
-        return;
-        
         
         var bnodes = BVHBuilder.GetBLASNodes();
         var meshNodes = BVHBuilder.GetMeshNodes();
+        var tlasNodes = BVHBuilder.GetTLASNodes();
         var transforms = BVHBuilder.GetTransforms();
-        if (bnodes != null && meshNodes != null && transforms != null)
+
+        if (DrawTLASBVH && tlasNodes != null && tlasNodes.Count > 0)
+        {
+            var tlasBVH = BVHBuilder.tlasTree;       // 根节点容器
+
+            Queue<BVH.BVHNode> q = new();
+            q.Enqueue(tlasBVH.BVHRoot);
+
+            Color colLeaf  = new(0, 1,   0);         // 叶子 = 绿
+            Color colInner = new(0, 0.4f, 1);        // 内部 = 蓝
+
+            while (q.Count > 0)
+            {
+                BVH.BVHNode n = q.Dequeue();
+
+                Vector3 min  = n.Bounds.min;
+                Vector3 max  = n.Bounds.max;
+                Gizmos.color = n.IsLeaf() ? colLeaf : colInner;
+                if(n.IsLeaf())
+                    Gizmos.DrawWireCube((min + max) * 0.5f, max - min);
+
+                if (!n.IsLeaf())
+                {
+                    if (n.LeftChild != null)
+                    {
+                        q.Enqueue(n.LeftChild);
+                        q.Enqueue(n.RightChild);
+                    }
+                    // if (n.RightChild != null) 
+                }
+            }
+        }
+        
+        if (DrawMeshNode && meshNodes != null && transforms != null)
+        {
+            for (int i = 0; i < meshNodes.Count; ++i)
+            {
+                var n            = meshNodes[i];
+                var l2w          = transforms[n.TransformIdx * 2];
+                Vector3 centerL  = (n.BoundMin + n.BoundMax) * 0.5f;
+                Vector3 sizeL    = (n.BoundMax - n.BoundMin);
+
+                Gizmos.color = Color.yellow;
+                Gizmos.DrawWireCube(
+                    l2w.MultiplyPoint3x4(centerL),
+                    l2w.MultiplyVector(sizeL));
+            }
+        }
+        
+        if (tlasNodes == null || tlasNodes.Count == 0) return;
+
+        if (DrawTLAS)
+        {
+            Span<int> stackTLAS = stackalloc int[64];
+            int sp = 0;
+            stackTLAS[0] = 0;
+
+            while (sp >= 0)
+            {
+                int idx = stackTLAS[sp--];
+                if (idx < 0 || idx >= tlasNodes.Count) continue;
+
+                var n = tlasNodes[idx];
+
+                //--- 画当前节点 -----------------------------------------------------
+                Vector3 center = (n.BoundMin + n.BoundMax) * 0.5f;
+                Vector3 size = n.BoundMax - n.BoundMin;
+                
+                
+                Gizmos.color = (n.ChildIdx < 0) // 叶子 / 内部不同颜色
+                    ? new Color(1.0f, 0.4f, 0.6f)
+                    : new Color(0.0f, 1.0f, 0.0f);
+                if(n.ChildIdx < 0)
+                    Gizmos.DrawWireCube(center, size);
+
+                if (n.ChildIdx >= 0)
+                {
+                    stackTLAS[++sp] = n.ChildIdx + 1; // 右
+                    stackTLAS[++sp] = n.ChildIdx; // 左
+                }
+            }
+        }
+
+        if (bnodes != null && DrawBLAS && transforms != null && meshNodes != null)
         {
             for (int i = 0; i < meshNodes.Count; i++)
             {
                 var meshNode = meshNodes[i];
-                var localToWorld = transforms[meshNode.TransformIdx];
+                var localToWorld = transforms[meshNode.TransformIdx * 2];
     
-                // draw mesh bounds
                 Gizmos.color = Color.green;
-                var boundCenter = (meshNode.BoundMin + meshNode.BoundMax) / 2;
-                var size = meshNode.BoundMax - meshNode.BoundMin;
-                Gizmos.DrawWireCube(localToWorld.MultiplyPoint3x4(boundCenter), localToWorld.MultiplyVector(size));
                 
                 int stackPtr = 0;
                 int[] stack = new int[32];
                 stack[stackPtr] = meshNode.NodeRootIdx;
-    
+                
                 while (stackPtr >= 0 && stackPtr < 32)
                 {
                     var idx = stack[stackPtr--];
@@ -280,7 +312,9 @@ public class Tracing : MonoBehaviour
                     var max = localToWorld.MultiplyPoint3x4(bnode.BoundMax);
                     var center = (min + max) / 2;
                     var s = max - min;
-                    Gizmos.color = Color.red;
+                    Color color = Color.red;
+                    color.a = 0.5f;
+                    Gizmos.color = color;
                     Gizmos.DrawWireCube(center, s);
                     
                     if(bnode.PrimitiveStartIdx < 0)

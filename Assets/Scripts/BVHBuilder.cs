@@ -51,12 +51,12 @@ public class BVHBuilder
     public static ComputeBuffer BLASBuffer;
     public static ComputeBuffer MeshNodeBuffer;
     public static ComputeBuffer TransformBuffer;
+    
     public static Texture2DArray AlbedoTextures = null;
     public static Texture2DArray EmissionTextures = null;
     public static Texture2DArray MetallicTextures = null;
     public static Texture2DArray NormalTextures = null;
     public static Texture2DArray RoughnessTextures = null;
-
 
     private static bool objectUpdated = false;
     private static bool objectTransformUpdated = false;
@@ -137,7 +137,7 @@ public class BVHBuilder
         meshNodes .Clear();
         
         Dictionary<Mesh, (int start, int count)> meshCache = new();
-        Dictionary<(Mesh mesh,int subIdx), (BVH bvh, int indexStart,int triCnt)> subMeshCache = new();
+        Dictionary<(Mesh mesh,int subIdx), (BVH bvh, int indexStart)> subMeshCache = new();
         
         var albedoMap   = new Dictionary<Texture2D,int>();
         var emitMap     = new Dictionary<Texture2D,int>();
@@ -227,7 +227,7 @@ public class BVHBuilder
                         indices.Add(subIdx[p*3+2] + vertexStart);
                     }
 
-                    entry = (bvh, indexStart, bvh.OrderedPrimitiveIndices.Count);
+                    entry = (bvh, indexStart);
                     subMeshCache[key] = entry;
                 }
 
@@ -297,7 +297,7 @@ public class BVHBuilder
         BuildMaterialAndMeshData(objects);
 
         // build TLAS bvh
-        RebuildTLAS();
+        RebuildAS();
 
         SetBuffers();
 
@@ -311,10 +311,12 @@ public class BVHBuilder
 
         transforms.Clear();
 
-
         // 突然发现，由于每次都是使用“foreach(var obj in objects)”遍历所有物体，所以这些数组的索引都是一一对应的
         foreach (var obj in objects)
+        {
             transforms.Add(obj.transform.localToWorldMatrix);
+            transforms.Add(obj.transform.worldToLocalMatrix);
+        }
 
         SetBuffer(ref TransformBuffer, transforms, sizeof(float) * 4 * 4);
 
@@ -333,18 +335,20 @@ public class BVHBuilder
         SetBuffer(ref BLASBuffer, bnodes, BLASNode.TypeSize);
     }
     
-    private static List<MeshNode> meshHierarchy = new List<MeshNode>();
+    private static List<MeshNode> tlasNodes = new List<MeshNode>();
 
-    public static IReadOnlyList<MeshNode> GetMeshHierarchy() => meshHierarchy;
+    public static IReadOnlyList<MeshNode> GetTLASNodes() => tlasNodes;
 
-    public static void RebuildTLAS()
+    public static BVH tlasTree;
+    
+    public static void RebuildAS()
     {
         if (meshNodes.Count <= 0) return;
         if (transforms.Count <= 0) LoadTransforms();
-        BVH tlasTree = BVH.Construct(meshNodes, transforms, BVHType.SAH);
-        meshHierarchy.Clear();
-        tlasTree.FlattenTLAS(ref meshHierarchy, meshNodes, transforms);
-        SetBuffer(ref MeshNodeBuffer, meshHierarchy, MeshNode.TypeSize);
+        tlasTree = BVH.Construct(meshNodes, transforms, BVHType.SAH);
+        tlasNodes.Clear();
+        tlasTree.FlattenTLAS(ref tlasNodes, meshNodes, transforms);
+        SetBuffer(ref MeshNodeBuffer, tlasNodes, MeshNode.TypeSize);
     }
 
     private static void SetBuffer<T>(ref ComputeBuffer buffer, List<T> data, int stride) where T : struct
