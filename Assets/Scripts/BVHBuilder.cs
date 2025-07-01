@@ -220,7 +220,7 @@ public class BVHBuilder
                     BVH   bvh    = BVH.Construct(mesh.vertices, subIdx, BVHType.SAH);
 
                     int indexStart = indices.Count;
-                    foreach (int p in bvh.OrderedPrimitiveIndices)
+                    foreach (int p in bvh.OriginTriOrMeshStartIndices)
                     {
                         indices.Add(subIdx[p*3+0] + vertexStart);
                         indices.Add(subIdx[p*3+1] + vertexStart);

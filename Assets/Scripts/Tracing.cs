@@ -211,7 +211,8 @@ public class Tracing : MonoBehaviour
 
         if (DrawTLASBVH && tlasNodes != null && tlasNodes.Count > 0)
         {
-            var tlasBVH = BVHBuilder.tlasTree;       // 根节点容器
+            var tlasBVH = BVHBuilder.tlasTree;
+            var orderedInfos = BVHBuilder.tlasTree.OriginTriOrMeshStartIndices;
 
             Queue<BVH.BVHNode> q = new();
             q.Enqueue(tlasBVH.BVHRoot);
@@ -226,14 +227,24 @@ public class Tracing : MonoBehaviour
                 Vector3 min  = n.Bounds.min;
                 Vector3 max  = n.Bounds.max;
                 Gizmos.color = n.IsLeaf() ? colLeaf : colInner;
-                var center = (max + min) * 0.5f;
-                var size = max - min;
                 if (n.IsLeaf())
                 {
-                    size.x = Mathf.Abs(size.x);
-                    size.y = Mathf.Abs(size.y);
-                    size.z = Mathf.Abs(size.z);
-                    Gizmos.DrawWireCube(center, size);
+                    for (int i = n.OriginTriOrMeshStartIndex; i < n.OriginTriOrMeshEndIndex; ++i)
+                    {
+                        var mesh = meshNodes[orderedInfos[i]];
+                        var transform = transforms[mesh.TransformIdx * 2]; // local to world
+                        Vector3 LocalCenter  = (mesh.BoundMin + mesh.BoundMax) * 0.5f;
+                        Vector3 LocalSize    = (mesh.BoundMax - mesh.BoundMin);
+                
+                        var WorldCenter = transform.MultiplyPoint3x4(LocalCenter);
+                        var WorldSize = transform.MultiplyVector(LocalSize);
+                
+                        WorldSize.x = Mathf.Abs(WorldSize.x);
+                        WorldSize.y = Mathf.Abs(WorldSize.y);
+                        WorldSize.z = Mathf.Abs(WorldSize.z);
+                        
+                        Gizmos.DrawWireCube(WorldCenter, WorldSize);
+                    }
                 }
 
                 if (!n.IsLeaf())
@@ -248,51 +259,60 @@ public class Tracing : MonoBehaviour
             }
         }
         
+        // GroundTruth
         if (DrawMeshNode && meshNodes != null && transforms != null)
         {
             for (int i = 0; i < meshNodes.Count; ++i)
             {
                 var n            = meshNodes[i];
                 var l2w          = transforms[n.TransformIdx * 2];
-                Vector3 centerL  = (n.BoundMin + n.BoundMax) * 0.5f;
-                Vector3 sizeL    = (n.BoundMax - n.BoundMin);
+                Vector3 LocalCenter  = (n.BoundMin + n.BoundMax) * 0.5f;
+                Vector3 LocalSize    = (n.BoundMax - n.BoundMin);
                 
-                var WorldCenter = l2w.MultiplyPoint3x4(centerL);
-                var WorldSize = l2w.MultiplyVector(sizeL);
+                var WorldCenter = l2w.MultiplyPoint3x4(LocalCenter);
+                var WorldSize = l2w.MultiplyVector(LocalSize);
                 
-                // 如果是负数，就转换为正数
                 WorldSize.x = Mathf.Abs(WorldSize.x);
                 WorldSize.y = Mathf.Abs(WorldSize.y);
                 WorldSize.z = Mathf.Abs(WorldSize.z);
-
+            
                 Gizmos.color = Color.yellow;
                 Gizmos.DrawWireCube(
                     WorldCenter,
                     WorldSize);
             }
+            
+            
         }
         
         if (tlasNodes == null || tlasNodes.Count == 0) return;
 
         if (DrawTLAS)
         {
+            // var sharedInfos = BVHBuilder.tlasTree.GetSharedPrimitiveInfo();
+            // for (int i = 0; i < sharedInfos.Count; ++i)
+            // {
+            //     var info = sharedInfos[i];
+            //     Gizmos.color = Color.green;
+            //     var center = info.Center;
+            //     var bounds = info.Bounds;
+            //     Gizmos.DrawWireCube(center, bounds.extent);
+            // }
             Span<int> stackTLAS = stackalloc int[64];
             int sp = 0;
             stackTLAS[0] = 0;
-
+            
             while (sp >= 0)
             {
                 int idx = stackTLAS[sp--];
                 if (idx < 0 || idx >= tlasNodes.Count) continue;
-
+            
                 var n = tlasNodes[idx];
-
-                //--- 画当前节点 -----------------------------------------------------
+            
                 Vector3 center = (n.BoundMin + n.BoundMax) * 0.5f;
                 Vector3 size = n.BoundMax - n.BoundMin;
                 
-                
-                Gizmos.color = (n.ChildIdx < 0) // 叶子 / 内部不同颜色
+                Gizmos.color = (n.ChildIdx < 0) // 叶子 / 父节点不同颜色
                     ? new Color(1.0f, 0.4f, 0.6f)
                     : new Color(0.0f, 1.0f, 0.0f);
                 if(n.ChildIdx < 0)
@@ -303,7 +323,7 @@ public class Tracing : MonoBehaviour
                     size.z = Mathf.Abs(size.z);
                     Gizmos.DrawWireCube(center, size);
                 }
-
+            
                 if (n.ChildIdx >= 0)
                 {
                     stackTLAS[++sp] = n.ChildIdx + 1; // 右

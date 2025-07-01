@@ -143,8 +143,8 @@ public abstract class BVH
         public AABB Bounds;
         public BVHNode LeftChild;
         public BVHNode RightChild;
-        public int PrimitiveStartIdx;
-        public int PrimitiveEndIdx;
+        public int OriginTriOrMeshStartIndex;
+        public int OriginTriOrMeshEndIndex;
 
         public bool IsLeaf()
         {
@@ -158,8 +158,8 @@ public abstract class BVH
                 Bounds = bounding,
                 LeftChild = null,
                 RightChild = null,
-                PrimitiveStartIdx = start,
-                PrimitiveEndIdx = start + count
+                OriginTriOrMeshStartIndex = start,
+                OriginTriOrMeshEndIndex = start + count
             };
             return node;
         }
@@ -171,25 +171,24 @@ public abstract class BVH
                 Bounds = AABB.Combine(nodeLeft.Bounds, nodeRight.Bounds),
                 LeftChild = nodeLeft,
                 RightChild = nodeRight,
-                PrimitiveStartIdx = -1,
-                PrimitiveEndIdx = -1
+                OriginTriOrMeshStartIndex = -1,
+                OriginTriOrMeshEndIndex = -1
             };
             return node;
         }
     }
 
-    // 只有AABB和中心点信息，而没有顶点信息
-    protected struct PrimitiveInfo
+    public struct PrimitiveBoundInfo
     {
         public AABB Bounds;
         public Vector3 Center;
-        public int PrimitiveIdx;
+        public int OriginTriOrMeshIndex;
     }
 
 
     protected abstract BVHNode Build(
-        List<PrimitiveInfo> faceInfo,
-        int faceInfoStart, int faceInfoEnd
+        List<PrimitiveBoundInfo> Infos,
+        int PrimitiveBoundInfoStart, int PrimitiveBoundInfoEnd
     );
 
     /// <summary>
@@ -214,8 +213,8 @@ public abstract class BVH
             {
                 BoundMax         = node.Bounds.max,
                 BoundMin         = node.Bounds.min,
-                PrimitiveStartIdx= node.IsLeaf() ? node.PrimitiveStartIdx + globalPrimitiveBase : -1,
-                PrimitiveEndIdx  = node.IsLeaf() ? node.PrimitiveEndIdx   + globalPrimitiveBase : -1,
+                PrimitiveStartIdx= node.IsLeaf() ? node.OriginTriOrMeshStartIndex + globalPrimitiveBase : -1,
+                PrimitiveEndIdx  = node.IsLeaf() ? node.OriginTriOrMeshEndIndex   + globalPrimitiveBase : -1,
                 MaterialIdx      = node.IsLeaf() ? materialIdx : 0,
                 ChildIdx         = node.IsLeaf() ? -1 : q.Count + bnodes.Count + 1
             });
@@ -231,7 +230,7 @@ public abstract class BVH
             NodeRootIdx  = blasRootIdx
         });
         
-        OrderedPrimitiveIndices.Clear();    // TODO: 优化OrderedPrimitiveIndices
+        OriginTriOrMeshStartIndices.Clear();    // TODO: 优化OrderedPrimitiveIndices
     }
     
     public void FlattenTLAS(
@@ -250,7 +249,7 @@ public abstract class BVH
 
             if (cur.IsLeaf())
             {
-                int orderedIdx = OrderedPrimitiveIndices[cur.PrimitiveStartIdx];
+                int orderedIdx = OriginTriOrMeshStartIndices[cur.OriginTriOrMeshStartIndex];
                 MeshNode src   = leafSrc[orderedIdx];
                 Matrix4x4 l2w = transforms[src.TransformIdx * 2];
 
@@ -284,10 +283,16 @@ public abstract class BVH
     }
 
     
-    private static List<PrimitiveInfo> sharedInfos = new List<PrimitiveInfo>();
-    // 将顶点和顶点对应的索引转换为PrimitiveInfo，存储AABB和中心点信息
-    // 此处生成的PrimitiveInfo的PrimitiveIdx与顶点的索引的对应关系是，PrimitiveIdx = 顶点索引 / 3 取整
-    protected List<PrimitiveInfo> CreatePrimitiveInfo(Vector3[] vertices, int[] indices)
+    private List<PrimitiveBoundInfo> sharedInfos = new List<PrimitiveBoundInfo>();
+    
+    public List<PrimitiveBoundInfo> GetSharedPrimitiveInfo()
+    {
+        return sharedInfos;
+    }
+    
+    // 将顶点和顶点对应的索引转换为一个个小bounding box(PrimitiveBoundInfo)，存储AABB和中心点信息
+    // 此处生成的PrimitiveInfo的PrimitiveIdx与顶点的索引的对应关系是，OriginTriOrMeshIndex = 顶点索引 / 3 取整
+    protected List<PrimitiveBoundInfo> CreatePrimitiveBoundInfo(Vector3[] vertices, int[] indices)
     {
         sharedInfos.Clear();
         int triCount = indices.Length / 3;
@@ -298,17 +303,17 @@ public abstract class BVH
         {
             int i0 = indices[i * 3], i1 = indices[i * 3 + 1], i2 = indices[i * 3 + 2];
             var bounds = new AABB(vertices[i0], vertices[i1], vertices[i2]);
-            sharedInfos.Add(new PrimitiveInfo
+            sharedInfos.Add(new PrimitiveBoundInfo
             {
                 Bounds = bounds,
                 Center = bounds.Center(),
-                PrimitiveIdx = i
+                OriginTriOrMeshIndex = i
             });
         }
         return sharedInfos;
     }
 
-    protected List<PrimitiveInfo> CreatePrimitiveInfo
+    protected List<PrimitiveBoundInfo> CreatePrimitiveBoundInfo
         (List<MeshNode> meshNodes, List<Matrix4x4> transforms)
     {
         sharedInfos.Clear();
@@ -318,22 +323,22 @@ public abstract class BVH
         for (int i = 0; i < meshNodes.Count; i++)
         {
             var n = meshNodes[i];
-            PrimitiveInfo info;
-            info.Bounds = new AABB
+            PrimitiveBoundInfo boundInfo;
+            boundInfo.Bounds = new AABB
             (
                 transforms[n.TransformIdx * 2].MultiplyPoint3x4(n.BoundMin), // localtoworld
                 transforms[n.TransformIdx * 2].MultiplyPoint3x4(n.BoundMax)
             );
-            info.Center       = info.Bounds.Center();
-            info.PrimitiveIdx = i;
-            sharedInfos.Add(info);
+            boundInfo.Center       = boundInfo.Bounds.Center();
+            boundInfo.OriginTriOrMeshIndex = i;
+            sharedInfos.Add(boundInfo);
         }
         return sharedInfos;
     }
 
     public BVHNode BVHRoot = null;
 
-    public List<int> OrderedPrimitiveIndices { get; protected set; } = new List<int>(4096);
+    public List<int> OriginTriOrMeshStartIndices { get; protected set; } = new List<int>(4096);
 
     public static BVH Construct(Vector3[] vertices, int[] indices, BVHType type)
     {
@@ -375,118 +380,122 @@ public class BVHSAH : BVH
         }
     }
     
+    // used to reduce memory allocation in recursive build
     private static readonly SAHBucket[] bucketsCache = new SAHBucket[nBuckets];
 
     public BVHSAH(Vector3[] vertices,int[] indices)
     {
-        OrderedPrimitiveIndices.Clear();
-        // generate face info
-        var faceInfo = CreatePrimitiveInfo(vertices, indices);
-        // build tree
-        BVHRoot = Build(faceInfo, 0, faceInfo.Count);
+        OriginTriOrMeshStartIndices.Clear();
+        var primitiveBoundInfo = CreatePrimitiveBoundInfo(vertices, indices);
+        BVHRoot = Build(primitiveBoundInfo, 0, primitiveBoundInfo.Count);
     }
 
     public BVHSAH(List<MeshNode> rawNodes, List<Matrix4x4> transforms)
     {
-        OrderedPrimitiveIndices.Clear();
-        var primitiveInfos = CreatePrimitiveInfo(rawNodes, transforms);
-        BVHRoot = Build(primitiveInfos, 0, primitiveInfos.Count);
+        OriginTriOrMeshStartIndices.Clear();
+        var primitiveBoundInfo = CreatePrimitiveBoundInfo(rawNodes, transforms);
+        BVHRoot = Build(primitiveBoundInfo, 0, primitiveBoundInfo.Count);
     }
 
-    protected sealed override BVHNode Build(List<PrimitiveInfo> infos, int start, int end)
+    protected sealed override BVHNode Build(List<PrimitiveBoundInfo> Infos, int PrimitiveBoundInfoStart, int PrimitiveBoundInfoEnd)
     {
-        AABB bounds = new AABB();
-        for (int i = start; i < end; i++) bounds.Extend(infos[i].Bounds);
+        //// ------------- //// Total Bounds
+        AABB BoundingBox = new AABB();
+        for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++) BoundingBox.Extend(Infos[i].Bounds);
 
-        int count = end - start;
+        int count = PrimitiveBoundInfoEnd - PrimitiveBoundInfoStart;
         if (count == 1)
         {
-            int dst = OrderedPrimitiveIndices.Count;
-            OrderedPrimitiveIndices.Add(infos[start].PrimitiveIdx);
-            return BVHNode.CreateLeaf(dst, 1, bounds);
+            int dst = OriginTriOrMeshStartIndices.Count;
+            OriginTriOrMeshStartIndices.Add(Infos[PrimitiveBoundInfoStart].OriginTriOrMeshIndex);
+            return BVHNode.CreateLeaf(dst, 1, BoundingBox);
         }
 
-        AABB centerBounds = new AABB();
-        for (int i = start; i < end; i++) centerBounds.Extend(infos[i].Center);
-        int axis = centerBounds.MaxDimension();
+        AABB CenterBoundingBox = new AABB();
+        for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++) CenterBoundingBox.Extend(Infos[i].Center);
+        int SplitAxis = CenterBoundingBox.MaxDimension();
 
-        if (Mathf.Approximately(centerBounds.extent[axis], 0f))
+        if (CenterBoundingBox.extent[SplitAxis] < 1e-4f)
         {
-            int dst = OrderedPrimitiveIndices.Count;
-            for (int i = start; i < end; i++)
-                OrderedPrimitiveIndices.Add(infos[i].PrimitiveIdx);
-            return BVHNode.CreateLeaf(dst, count, bounds);
+            int dst = OriginTriOrMeshStartIndices.Count;
+            for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++)
+                OriginTriOrMeshStartIndices.Add(Infos[i].OriginTriOrMeshIndex);
+            return BVHNode.CreateLeaf(dst, count, BoundingBox);
         }
+        //// ------------- ////
 
+        //// ------------- //// Calculate Buckets
         for (int i = 0; i < nBuckets; i++) bucketsCache[i].Reset();
 
-        float invExtent = 1f / centerBounds.extent[axis];
+        float invSplitAxisLength = 1f / CenterBoundingBox.extent[SplitAxis];
 
-        for (int i = start; i < end; i++)
+        for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++)
         {
-            int b = (int)((infos[i].Center[axis] - centerBounds.min[axis]) * invExtent * nBuckets);
+            int b = (int)((Infos[i].Center[SplitAxis] - CenterBoundingBox.min[SplitAxis]) * invSplitAxisLength * nBuckets);
             b = Mathf.Clamp(b, 0, nBuckets - 1);
 
             ref SAHBucket bucket = ref bucketsCache[b];
             bucket.Count++;
-            bucket.Bounds.Extend(infos[i].Bounds);
+            bucket.Bounds.Extend(Infos[i].Bounds);
         }
 
         Span<float> areaL = stackalloc float[nBuckets - 1];
         Span<float> areaR = stackalloc float[nBuckets - 1];
-        Span<int>   cntL  = stackalloc int  [nBuckets - 1];
-        Span<int>   cntR  = stackalloc int  [nBuckets - 1];
+        Span<int>   countL  = stackalloc int  [nBuckets - 1];
+        Span<int>   countR  = stackalloc int  [nBuckets - 1];
 
-        AABB tmp = new AABB();
-        int acc = 0;
+        AABB tempBoundingBox = new AABB();
+        int accumulateCount = 0;
         for (int i = 0; i < nBuckets - 1; i++)
         {
-            acc += bucketsCache[i].Count;
-            cntL[i] = acc;
-            tmp.Extend(bucketsCache[i].Bounds);
-            areaL[i] = tmp.SurfaceArea();
+            accumulateCount += bucketsCache[i].Count;
+            countL[i] = accumulateCount;
+            tempBoundingBox.Extend(bucketsCache[i].Bounds);
+            areaL[i] = tempBoundingBox.SurfaceArea();
         }
-        tmp.Reset(); acc = 0;
-        for (int i = nBuckets - 1; --i >= 0;)
+        tempBoundingBox.Reset(); accumulateCount = 0;
+        for (int i = nBuckets - 1; i > 0; i--)
         {
-            acc += bucketsCache[i + 1].Count;
-            cntR[i] = acc;
-            tmp.Extend(bucketsCache[i + 1].Bounds);
-            areaR[i] = tmp.SurfaceArea();
+            accumulateCount += bucketsCache[i].Count;
+            countR[i - 1] = accumulateCount;
+            tempBoundingBox.Extend(bucketsCache[i].Bounds);
+            areaR[i - 1] = tempBoundingBox.SurfaceArea();
         }
 
         float bestCost = float.MaxValue; int bestSplit = -1;
-        float invSA = 1f / bounds.SurfaceArea();
+        float invSA = 1f / BoundingBox.SurfaceArea();
+
+        const float TraversalCost = 1f;
         for (int i = 0; i < nBuckets - 1; i++)
         {
-            if (cntL[i] == 0 || cntR[i] == 0) continue;
-            float cost = 0.5f + (cntL[i] * areaL[i] + cntR[i] * areaR[i]) * invSA;
+            if (countL[i] == 0 || countR[i] == 0) continue;
+            float cost = TraversalCost + (countL[i] * areaL[i] + countR[i] * areaR[i]) * invSA;
             if (cost < bestCost) { bestCost = cost; bestSplit = i; }
         }
 
         if (bestCost >= count)
         {
-            int dst = OrderedPrimitiveIndices.Count;
-            for (int i = start; i < end; i++)
-                OrderedPrimitiveIndices.Add(infos[i].PrimitiveIdx);
-            return BVHNode.CreateLeaf(dst, count, bounds);
+            int dst = OriginTriOrMeshStartIndices.Count;
+            for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++)
+                OriginTriOrMeshStartIndices.Add(Infos[i].OriginTriOrMeshIndex);
+            return BVHNode.CreateLeaf(dst, count, BoundingBox);
         }
 
-        infos.Sort(start, count, Comparer<PrimitiveInfo>.Create((a, b) =>
+        Infos.Sort(PrimitiveBoundInfoStart, count, Comparer<PrimitiveBoundInfo>.Create((a, b) =>
         {
             int ba = Mathf.Clamp(
-                (int)((a.Center[axis] - centerBounds.min[axis]) * invExtent * nBuckets), 0, nBuckets - 1);
+                (int)((a.Center[SplitAxis] - CenterBoundingBox.min[SplitAxis]) * invSplitAxisLength * nBuckets), 0, nBuckets - 1);
             int bb = Mathf.Clamp(
-                (int)((b.Center[axis] - centerBounds.min[axis]) * invExtent * nBuckets), 0, nBuckets - 1);
+                (int)((b.Center[SplitAxis] - CenterBoundingBox.min[SplitAxis]) * invSplitAxisLength * nBuckets), 0, nBuckets - 1);
             return ba.CompareTo(bb);
         }));
 
-        int mid = start;
+        int mid = PrimitiveBoundInfoStart;
         for (int i = 0; i <= bestSplit; i++) mid += bucketsCache[i].Count;
-        if (mid == start || mid == end) mid = (start + end) >> 1;   // 防御
+        if (mid == PrimitiveBoundInfoStart || mid == PrimitiveBoundInfoEnd) mid = (PrimitiveBoundInfoStart + PrimitiveBoundInfoEnd) >> 1;
 
-        var left  = Build(infos, start, mid);
-        var right = Build(infos, mid,   end);
+        var left  = Build(Infos, PrimitiveBoundInfoStart, mid);
+        var right = Build(Infos, mid,   PrimitiveBoundInfoEnd);
         return BVHNode.CreateParent(left, right);
     }
 
