@@ -308,14 +308,6 @@ public abstract class BVH
         return sharedInfos;
     }
 
-    
-    /// <summary>
-    /// 通过TLASRawNode和Transforms生成PrimitiveInfo
-    /// 这里的rawNodes，通常情况下，场景中有几个物体，就有几个rawNodes，但如何一个mesh有多个submesh，那么这个mesh就会有多个rawNodes
-    /// </summary>
-    /// <param name="meshNodes"></param>
-    /// <param name="transforms"></param>
-    /// <returns></returns>
     protected List<PrimitiveInfo> CreatePrimitiveInfo
         (List<MeshNode> meshNodes, List<Matrix4x4> transforms)
     {
@@ -397,10 +389,8 @@ public class BVHSAH : BVH
     public BVHSAH(List<MeshNode> rawNodes, List<Matrix4x4> transforms)
     {
         OrderedPrimitiveIndices.Clear();
-        // generate face info
-        var faceInfo = CreatePrimitiveInfo(rawNodes, transforms);
-        // build tree
-        BVHRoot = Build(faceInfo, 0, faceInfo.Count);
+        var primitiveInfos = CreatePrimitiveInfo(rawNodes, transforms);
+        BVHRoot = Build(primitiveInfos, 0, primitiveInfos.Count);
     }
 
     protected sealed override BVHNode Build(List<PrimitiveInfo> infos, int start, int end)

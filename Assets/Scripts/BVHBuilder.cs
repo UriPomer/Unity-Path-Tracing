@@ -297,7 +297,7 @@ public class BVHBuilder
         BuildMaterialAndMeshData(objects);
 
         // build TLAS bvh
-        RebuildAS();
+        RebuildTLAS();
 
         SetBuffers();
 
@@ -341,7 +341,7 @@ public class BVHBuilder
 
     public static BVH tlasTree;
     
-    public static void RebuildAS()
+    public static void RebuildTLAS()
     {
         if (meshNodes.Count <= 0) return;
         if (transforms.Count <= 0) LoadTransforms();

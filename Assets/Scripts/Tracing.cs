@@ -226,8 +226,15 @@ public class Tracing : MonoBehaviour
                 Vector3 min  = n.Bounds.min;
                 Vector3 max  = n.Bounds.max;
                 Gizmos.color = n.IsLeaf() ? colLeaf : colInner;
-                if(n.IsLeaf())
-                    Gizmos.DrawWireCube((min + max) * 0.5f, max - min);
+                var center = (max + min) * 0.5f;
+                var size = max - min;
+                if (n.IsLeaf())
+                {
+                    size.x = Mathf.Abs(size.x);
+                    size.y = Mathf.Abs(size.y);
+                    size.z = Mathf.Abs(size.z);
+                    Gizmos.DrawWireCube(center, size);
+                }
 
                 if (!n.IsLeaf())
                 {
@@ -249,11 +256,19 @@ public class Tracing : MonoBehaviour
                 var l2w          = transforms[n.TransformIdx * 2];
                 Vector3 centerL  = (n.BoundMin + n.BoundMax) * 0.5f;
                 Vector3 sizeL    = (n.BoundMax - n.BoundMin);
+                
+                var WorldCenter = l2w.MultiplyPoint3x4(centerL);
+                var WorldSize = l2w.MultiplyVector(sizeL);
+                
+                // 如果是负数，就转换为正数
+                WorldSize.x = Mathf.Abs(WorldSize.x);
+                WorldSize.y = Mathf.Abs(WorldSize.y);
+                WorldSize.z = Mathf.Abs(WorldSize.z);
 
                 Gizmos.color = Color.yellow;
                 Gizmos.DrawWireCube(
-                    l2w.MultiplyPoint3x4(centerL),
-                    l2w.MultiplyVector(sizeL));
+                    WorldCenter,
+                    WorldSize);
             }
         }
         
@@ -281,7 +296,13 @@ public class Tracing : MonoBehaviour
                     ? new Color(1.0f, 0.4f, 0.6f)
                     : new Color(0.0f, 1.0f, 0.0f);
                 if(n.ChildIdx < 0)
+                {
+                    // size 变为正数
+                    size.x = Mathf.Abs(size.x);
+                    size.y = Mathf.Abs(size.y);
+                    size.z = Mathf.Abs(size.z);
                     Gizmos.DrawWireCube(center, size);
+                }
 
                 if (n.ChildIdx >= 0)
                 {
