@@ -819,7 +819,14 @@ MonoBehaviour:
   skyboxTexture: {fileID: 2800000, guid: 6ae478bd6a07f014c8a40b932c2acf59, type: 3}
   SkyboxIntensity: 1
   TraceDepth: 5
+  OnlyDrawAlbedo: 0
+  OnlyDrawNormals: 0
+  OnlyDrawDepth: 1
   drawGizmos: 0
+  DrawTLAS: 1
+  DrawBLAS: 1
+  DrawMeshNode: 1
+  DrawTLASBVH: 1
 --- !u!114 &1907011391
 MonoBehaviour:
   m_ObjectHideFlags: 0

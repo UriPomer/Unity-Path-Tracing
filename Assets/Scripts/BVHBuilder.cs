@@ -1,7 +1,7 @@
-using System.Collections;
+// #define DEBUG_TEXTURE
+
 using System.Collections.Generic;
 using System.Linq;
-using System.Runtime.InteropServices;
 using UnityEngine;
 
 public struct MaterialData
@@ -128,25 +128,21 @@ public class BVHBuilder
         public override bool Equals(object obj) =>
             obj is SubMeshKey o && o.Mesh == Mesh && o.SubMeshIndex == SubMeshIndex;
     }
+    
+    static Dictionary<SubMeshKey, (BVH bvh, int indexStart)> subMeshCache = new();
 
-    private static void BuildMaterialAndMeshData(List<GameObject> objects)
+    private static void BuildMaterialAndMeshData(List<GameObject> SceneObjects)
     {
         materials.Clear();
         indices   .Clear();
         bnodes    .Clear();
         meshNodes .Clear();
         
-        Dictionary<Mesh, (int start, int count)> meshCache = new();
-        Dictionary<(Mesh mesh,int subIdx), (BVH bvh, int indexStart)> subMeshCache = new();
-        
         var albedoMap   = new Dictionary<Texture2D,int>();
         var emitMap     = new Dictionary<Texture2D,int>();
         var metalMap    = new Dictionary<Texture2D,int>();
         var normalMap   = new Dictionary<Texture2D,int>();
         var roughMap    = new Dictionary<Texture2D,int>();
-        var objIndexMap = new Dictionary<GameObject,int>(objects.Count);
-        for (int i = 0; i < objects.Count; i++)
-            objIndexMap[objects[i]] = i;
 
         materials.Add(new MaterialData()
         {
@@ -168,9 +164,9 @@ public class BVHBuilder
         var normTex   = new List<Texture2D>();
         var roughTex  = new List<Texture2D>();
 
-        for (int objIdx = 0; objIdx < objects.Count; objIdx++)
+        for (int objIdx = 0; objIdx < SceneObjects.Count; objIdx++)
         {
-            GameObject obj       = objects[objIdx];
+            GameObject obj       = SceneObjects[objIdx];
             Renderer renderer = obj.GetComponent<Renderer>();
             var sharedMats = renderer.sharedMaterials;
             int matStart   = materials.Count;
@@ -197,26 +193,23 @@ public class BVHBuilder
             }
 
             Mesh mesh = obj.GetComponent<MeshFilter>().sharedMesh;
+            int vertexStart = vertices.Count;
+            vertices.AddRange(mesh.vertices);
+            normals .AddRange(mesh.normals);
+            verticesEnsure(uvs, mesh.uv, mesh.vertexCount, Vector2.zero);
+            verticesEnsure(tangents, mesh.tangents, mesh.vertexCount, Vector4.zero);
             
-            if (!meshCache.TryGetValue(mesh, out var vRange))
+            for (int submeshidx = 0; submeshidx < mesh.subMeshCount; submeshidx++)
             {
-                int vStart = vertices.Count;
-                vertices.AddRange(mesh.vertices);
-                normals .AddRange(mesh.normals);
-                var u  = mesh.uv;       verticesEnsure(uvs,     u,  mesh.vertexCount, Vector2.zero);
-                var tg = mesh.tangents; verticesEnsure(tangents, tg, mesh.vertexCount, Vector4.zero);
-                vRange = (vStart, mesh.vertexCount);
-                meshCache[mesh] = vRange;
-            }
-            int vertexStart = vRange.start;
-            
-            for (int s = 0; s < mesh.subMeshCount; s++)
-            {
-                var key = (mesh, s);
+                var key = new SubMeshKey
+                {
+                    Mesh = mesh,
+                    SubMeshIndex = submeshidx
+                };
 
                 if (!subMeshCache.TryGetValue(key, out var entry))
                 {
-                    int[] subIdx = mesh.GetIndices(s);
+                    int[] subIdx = mesh.GetIndices(submeshidx);
                     BVH   bvh    = BVH.Construct(mesh.vertices, subIdx, BVHType.SAH);
 
                     int indexStart = indices.Count;
@@ -236,22 +229,36 @@ public class BVHBuilder
                 entry.bvh.FlattenBLAS(
                     ref bnodes,
                     ref meshNodes,
-                    s < sharedMats.Length ? matStart + s : 0,
+                    submeshidx < sharedMats.Length ? matStart + submeshidx : 0,
                     objIdx,                       // TransformIdx == object idx
                     primitiveBase
                 );
             }
         }
-        // if not UV is used, insert empty one
         if (uvs.Count == 0) uvs.Add(Vector2.zero);
         
         // create texture 2d array
-        if (AlbedoTextures != null) UnityEngine.Object.Destroy(AlbedoTextures);
-        if (EmissionTextures != null) UnityEngine.Object.Destroy(EmissionTextures);
-        if (MetallicTextures != null) UnityEngine.Object.Destroy(MetallicTextures);
-        if (NormalTextures != null) UnityEngine.Object.Destroy(NormalTextures);
-        if (RoughnessTextures != null) UnityEngine.Object.Destroy(RoughnessTextures);
+        if (AlbedoTextures) UnityEngine.Object.Destroy(AlbedoTextures);
+        if (EmissionTextures) UnityEngine.Object.Destroy(EmissionTextures);
+        if (MetallicTextures) UnityEngine.Object.Destroy(MetallicTextures);
+        if (NormalTextures) UnityEngine.Object.Destroy(NormalTextures);
+        if (RoughnessTextures) UnityEngine.Object.Destroy(RoughnessTextures);
         AlbedoTextures = CreateTextureArray(ref albedoTex);
+#if UNITY_EDITOR && DEBUG_TEXTURE
+        UnityEditor.EditorApplication.delayCall += () =>
+        {
+            var win = UnityEditor.EditorWindow.GetWindow<TextureArrayPreviewWindow>("Texture2DArray 预览");
+            win.array = AlbedoTextures;
+            win.Repaint();
+        };
+        
+        UnityEditor.EditorApplication.delayCall += () =>
+        {
+            var win = UnityEditor.EditorWindow.GetWindow<TexturePreviewWindow>("Texture2D 预览");
+            win.texture2D = albedoTex[0];
+            win.Repaint();
+        };
+#endif
         EmissionTextures = CreateTextureArray(ref emitTex);
         MetallicTextures = CreateTextureArray(ref metalTex);
         NormalTextures = CreateTextureArray(ref normTex);
@@ -412,48 +419,35 @@ public class BVHBuilder
 
     private static Texture2DArray CreateTextureArray(ref List<Texture2D> textures)
     {
-        int sliceCount = Mathf.Max(1, textures.Count);
-
-        int maxW = 1, maxH = 1;
-        foreach (var tex in textures)
+        int texWidth = 1, texHeight = 1;
+        foreach (Texture tex in textures)
         {
-            if (tex == null) continue;
-            maxW = Mathf.Max(maxW, tex.width);
-            maxH = Mathf.Max(maxH, tex.height);
+            texWidth = Mathf.Max(texWidth, tex.width);
+            texHeight = Mathf.Max(texHeight, tex.height);
         }
-
-        int maxDim = GetMaxDimension(sliceCount, Mathf.Max(maxW, maxH));
-        int targetW = Mathf.Clamp(maxW, 1, maxDim);
-        int targetH = Mathf.Clamp(maxH, 1, maxDim);
-
-        var array = new Texture2DArray(
-            targetW, targetH, sliceCount,
-            TextureFormat.ARGB32, /*mip*/ true, /*linear*/ false
+        int maxDim = GetMaxDimension(textures.Count, Mathf.Max(texWidth, texHeight));
+        texWidth = Mathf.Min(texWidth, maxDim);
+        texHeight = Mathf.Min(texHeight, maxDim);
+        var newTexture = new Texture2DArray(
+            texWidth, texHeight, Mathf.Max(1, textures.Count),
+            TextureFormat.ARGB32, true, false
         );
-        Color32[] clearColors = Enumerable.Repeat<Color32>(new Color32(255, 255, 255, 255), targetW * targetH).ToArray();
-        for (int i = 0; i < sliceCount; ++i)
-            array.SetPixels32(clearColors, i, 0);
-
-        RenderTexture blitRT = new RenderTexture(targetW, targetH, 0, RenderTextureFormat.ARGB32)
+        newTexture.SetPixels(Enumerable.Repeat(Color.white, texWidth * texHeight).ToArray(), 0, 0);
+        RenderTexture rt = new RenderTexture(texWidth, texHeight, 1, RenderTextureFormat.ARGB32);
+        Texture2D tmp = new Texture2D(texWidth, texHeight, TextureFormat.ARGB32, false);
+        for (int i = 0; i < textures.Count; i++)
         {
-            filterMode = FilterMode.Bilinear,
-            useMipMap   = true,
-            autoGenerateMips = false,
-            enableRandomWrite = false
-        };
-        blitRT.Create();
-
-        for (int i = 0; i < sliceCount; i++)
-        {
-            Texture src = (i < textures.Count && textures[i] != null) ? textures[i] : Texture2D.whiteTexture;
-            Graphics.Blit(src, blitRT);
-            Graphics.CopyTexture(blitRT, 0, 0, array, i, 0);
+            RenderTexture.active = rt;
+            Graphics.Blit(textures[i], rt);
+            tmp.ReadPixels(new Rect(0, 0, texWidth, texHeight), 0, 0);
+            tmp.Apply();
+            newTexture.SetPixels(tmp.GetPixels(0), i, 0);
         }
-
-        array.Apply(updateMipmaps: true, makeNoLongerReadable: true);
-        blitRT.Release();
-
-        return array;
+        newTexture.Apply();
+        RenderTexture.active = null;
+        UnityEngine.Object.Destroy(rt);
+        UnityEngine.Object.Destroy(tmp);
+        return newTexture;
     }
 
     private static int GetMaxDimension(int count, int dim)

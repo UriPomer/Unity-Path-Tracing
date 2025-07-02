@@ -35,7 +35,7 @@ float4x4 _CameraToWorld;
 float4x4 _CameraInverseProjection;
 Texture2D<float4> _SkyboxTexture;
 SamplerState sampler_SkyboxTexture;
-float3 _DirectionalLight;
+float3 _InverseDirectionalLight;
 float4 _DirectionalLightColor;
 StructuredBuffer<float4> _PointLights;
 int _PointLightsCount;
@@ -74,8 +74,17 @@ struct TLASNode
 };
 StructuredBuffer<TLASNode> _TLASNodes;
 
+/// Debug ///
 uint _TLASNodesCount;
 uint _BNodesCount;
+
+bool _OnlyDrawAlbedo;
+bool _OnlyDrawNormals;
+bool _OnlyDrawDepth;
+
+float _CameraFar;
+
+/// Debug
 
 struct MaterialData
 {

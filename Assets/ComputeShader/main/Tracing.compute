@@ -34,10 +34,10 @@ float3 Shade(inout Ray ray, RayHit hit)
     {
         float3 lightContribution = 0.0;
         {
-            Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, _DirectionalLight); //创建指向光源的阴影射线，用于检测是否被遮挡，这里的_DirectionalLight是光源的方向的负值，在C#代码中已经计算好了，额不明白为什么copy的代码中要这样写，有点混乱
+            Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, _InverseDirectionalLight);
             if (_DirectionalLightColor.a > 0.0 && !TraceHit(shadowRay, 1.#INF))
             {
-                lightContribution += hit.material.albedo * saturate(dot(hit.normal, _DirectionalLight)) *
+                lightContribution += hit.material.albedo * saturate(dot(hit.normal, _InverseDirectionalLight)) *
                     _DirectionalLightColor.rgb * _DirectionalLightColor.a;
             }
         }
@@ -162,6 +162,22 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     for(int i = 0; i < 4; i++)
     {
         RayHit hit = Trace(r);
+        if (_OnlyDrawAlbedo)
+        {
+            _Result[id.xy] = float4(hit.material.albedo, 1.0f);
+            return;
+        }
+        if (_OnlyDrawDepth)
+        {
+            hit.distance = hit.distance / _CameraFar;
+            _Result[id.xy] = float4(hit.distance, hit.distance, hit.distance, 1.0f);
+            return;
+        }
+        if (_OnlyDrawNormals)
+        {
+            _Result[id.xy] = float4(hit.normal * 0.5f + 0.5f, 1.0f);
+            return;
+        }
         result += r.energy * SRGB2Linear(Shade(r, hit));
     
         if (!any(r.energy))

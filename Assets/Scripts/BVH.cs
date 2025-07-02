@@ -13,17 +13,14 @@ public struct BLASNode
     public int MaterialIdx;
     public int ChildIdx;
 
-    public static int TypeSize = sizeof(float) * 3 * 2 + sizeof(int) * 4; }
+    public static int TypeSize = sizeof(float) * 3 * 2 + sizeof(int) * 4; 
+}
 
-/// <summary>
-/// 含有SubMesh的包围盒、Transform索引
-/// NodeRootIdx是这个Mesh的BLAS节点的起始索引
-/// </summary>
 public struct MeshNode
 {
     public Vector3 BoundMax;
     public Vector3 BoundMin;
-    public int TransformIdx;    // also the index of the object
+    public int TransformIdx;
     public int NodeRootIdx;
     public int ChildIdx;
 

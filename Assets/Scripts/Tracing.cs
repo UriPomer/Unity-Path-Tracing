@@ -18,10 +18,15 @@ public class Tracing : MonoBehaviour
     [SerializeField, Range(0.0f, 10.0f)]
     float SkyboxIntensity = 1.0f;
     
-    
     [SerializeField, Range(2, 20)]
     int TraceDepth = 5;
     
+    [Header("Debug")]
+    [SerializeField] bool OnlyDrawAlbedo = false;
+    [SerializeField] bool OnlyDrawNormals = false;
+    [SerializeField] bool OnlyDrawDepth = false;
+    
+    [Header("Draw Gizmos")]
     [SerializeField]
     private bool drawGizmos = false;
     [SerializeField]
@@ -119,6 +124,7 @@ public class Tracing : MonoBehaviour
         
             Vector3 dir = DirectionalLight.transform.forward;
             Vector3 directionalLightInfo = new Vector3(-dir.x, -dir.y, -dir.z);
+            // Vector3 directionalLightInfo = new Vector3(dir.x, dir.y, dir.z);
             Vector3 directionalLightColorInfo = new Vector4(
                 DirectionalLight.color.r,
                 DirectionalLight.color.g,
@@ -129,7 +135,7 @@ public class Tracing : MonoBehaviour
             var pointLightsBuffer = LightManager.Instance.pointLightsBuffer;
             
             tracingShader.SetVector("_PixelOffset", GeneratePixelOffset());
-            tracingShader.SetVector("_DirectionalLight", directionalLightInfo);
+            tracingShader.SetVector("_InverseDirectionalLight", directionalLightInfo);
             tracingShader.SetVector("_DirectionalLightColor", directionalLightColorInfo);
             // tracingShader.SetFloat("_Seed", UnityEngine.Random.value);
             tracingShader.SetVector("_Resolution", new Vector2(Screen.width, Screen.height));
@@ -162,6 +168,11 @@ public class Tracing : MonoBehaviour
             if (BVHBuilder.MetallicTextures != null) tracingShader.SetTexture(0, "_MetallicTextures", BVHBuilder.MetallicTextures);
             if (BVHBuilder.NormalTextures != null) tracingShader.SetTexture(0, "_NormalTextures", BVHBuilder.NormalTextures);
             if (BVHBuilder.RoughnessTextures != null) tracingShader.SetTexture(0, "_RoughnessTextures", BVHBuilder.RoughnessTextures);
+            
+            tracingShader.SetBool("_OnlyDrawDepth", OnlyDrawDepth);
+            tracingShader.SetBool("_OnlyDrawNormals", OnlyDrawNormals);
+            tracingShader.SetBool("_OnlyDrawAlbedo", OnlyDrawAlbedo);
+            tracingShader.SetFloat("_CameraFar", cam.farClipPlane);
         // }
     }
     
