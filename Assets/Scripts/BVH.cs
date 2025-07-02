@@ -188,7 +188,7 @@ public abstract class BVH
 
     protected abstract BVHNode Build(
         List<PrimitiveBoundInfo> Infos,
-        int PrimitiveBoundInfoStart, int PrimitiveBoundInfoEnd
+        int PrimitiveBoundInfoStart, int PrimitiveBoundInfoEnd, bool BLASFlag
     );
 
     /// <summary>
@@ -387,19 +387,20 @@ public class BVHSAH : BVH
     {
         OriginTriOrMeshStartIndices.Clear();
         var primitiveBoundInfo = CreatePrimitiveBoundInfo(vertices, indices);
-        BVHRoot = Build(primitiveBoundInfo, 0, primitiveBoundInfo.Count);
+        BVHRoot = Build(primitiveBoundInfo, 0, primitiveBoundInfo.Count, true);
     }
 
     public BVHSAH(List<MeshNode> rawNodes, List<Matrix4x4> transforms)
     {
         OriginTriOrMeshStartIndices.Clear();
         var primitiveBoundInfo = CreatePrimitiveBoundInfo(rawNodes, transforms);
-        BVHRoot = Build(primitiveBoundInfo, 0, primitiveBoundInfo.Count);
+        BVHRoot = Build(primitiveBoundInfo, 0, primitiveBoundInfo.Count, false);
     }
 
-    protected sealed override BVHNode Build(List<PrimitiveBoundInfo> Infos, int PrimitiveBoundInfoStart, int PrimitiveBoundInfoEnd)
+    protected sealed override BVHNode Build(List<PrimitiveBoundInfo> Infos, int PrimitiveBoundInfoStart, int PrimitiveBoundInfoEnd, bool BLASFlag)
     {
         //// ------------- //// Total Bounds
+        bool IsBuildingBLAS = BLASFlag;
         AABB BoundingBox = new AABB();
         for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++) BoundingBox.Extend(Infos[i].Bounds);
 
@@ -415,7 +416,7 @@ public class BVHSAH : BVH
         for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++) CenterBoundingBox.Extend(Infos[i].Center);
         int SplitAxis = CenterBoundingBox.MaxDimension();
 
-        if (CenterBoundingBox.extent[SplitAxis] < 1e-4f)
+        if (IsBuildingBLAS && CenterBoundingBox.extent[SplitAxis] < 1e-4f)
         {
             int dst = OriginTriOrMeshStartIndices.Count;
             for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++)
@@ -473,7 +474,7 @@ public class BVHSAH : BVH
             if (cost < bestCost) { bestCost = cost; bestSplit = i; }
         }
 
-        if (bestCost >= count)
+        if (IsBuildingBLAS && bestCost >= count)
         {
             int dst = OriginTriOrMeshStartIndices.Count;
             for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++)
@@ -494,9 +495,8 @@ public class BVHSAH : BVH
         for (int i = 0; i <= bestSplit; i++) mid += bucketsCache[i].Count;
         if (mid == PrimitiveBoundInfoStart || mid == PrimitiveBoundInfoEnd) mid = (PrimitiveBoundInfoStart + PrimitiveBoundInfoEnd) >> 1;
 
-        var left  = Build(Infos, PrimitiveBoundInfoStart, mid);
-        var right = Build(Infos, mid,   PrimitiveBoundInfoEnd);
+        var left  = Build(Infos, PrimitiveBoundInfoStart, mid, IsBuildingBLAS);
+        var right = Build(Infos, mid,   PrimitiveBoundInfoEnd, IsBuildingBLAS);
         return BVHNode.CreateParent(left, right);
     }
-
 }
