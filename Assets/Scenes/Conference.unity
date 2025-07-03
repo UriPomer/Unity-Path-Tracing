@@ -507,7 +507,7 @@ MonoBehaviour:
   skyboxTexture: {fileID: 2800000, guid: 6ae478bd6a07f014c8a40b932c2acf59, type: 3}
   SkyboxIntensity: 1
   TraceDepth: 5
-  OnlyDrawAlbedo: 1
+  OnlyDrawAlbedo: 0
   OnlyDrawNormals: 0
   OnlyDrawDepth: 0
   drawGizmos: 0
@@ -529,7 +529,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   moveSpeed: 19.6
   zoomSpeed: 3.69
-  rotationSpeed: 346.5
+  rotationSpeed: 1
 --- !u!1 &1814967921
 GameObject:
   m_ObjectHideFlags: 0

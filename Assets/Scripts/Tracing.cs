@@ -125,7 +125,7 @@ public class Tracing : MonoBehaviour
             Vector3 dir = DirectionalLight.transform.forward;
             Vector3 directionalLightInfo = new Vector3(-dir.x, -dir.y, -dir.z);
             // Vector3 directionalLightInfo = new Vector3(dir.x, dir.y, dir.z);
-            Vector3 directionalLightColorInfo = new Vector4(
+            Vector4 directionalLightColorInfo = new Vector4(
                 DirectionalLight.color.r,
                 DirectionalLight.color.g,
                 DirectionalLight.color.b,

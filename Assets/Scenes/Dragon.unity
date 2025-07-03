@@ -816,12 +816,12 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   tracingShader: {fileID: 7200000, guid: f729f9caa1fdb5140afe66433bd74ff9, type: 3}
-  skyboxTexture: {fileID: 2800000, guid: 6ae478bd6a07f014c8a40b932c2acf59, type: 3}
+  skyboxTexture: {fileID: 2800000, guid: 941c159d55e667a4292d15e1eee1390a, type: 3}
   SkyboxIntensity: 1
   TraceDepth: 5
   OnlyDrawAlbedo: 0
   OnlyDrawNormals: 0
-  OnlyDrawDepth: 1
+  OnlyDrawDepth: 0
   drawGizmos: 0
   DrawTLAS: 1
   DrawBLAS: 1
@@ -841,7 +841,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   moveSpeed: 5
   zoomSpeed: 2
-  rotationSpeed: 100
+  rotationSpeed: 1
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
