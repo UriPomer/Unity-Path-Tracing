@@ -6,7 +6,7 @@ public class CameraMove : MonoBehaviour
 {
     [SerializeField] private float moveSpeed = 5f;       // 平移速度
     [SerializeField] private float zoomSpeed = 2f;       // 缩放速度
-    [SerializeField] private float rotationSpeed = 10f; // 旋转速度
+    [SerializeField] private float rotationSpeed = 1f; // 旋转速度
 
     private void Update()
     {

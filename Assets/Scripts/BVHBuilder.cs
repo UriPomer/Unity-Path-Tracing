@@ -35,6 +35,10 @@ public class BVHBuilder
     // Acceleration structure
     private static List<BLASNode> bnodes = new List<BLASNode>();
     private static List<MeshNode> meshNodes = new List<MeshNode>();
+    private static List<MeshNode> tlasNodes = new List<MeshNode>();
+    public static IReadOnlyList<MeshNode> GetTLASNodes() => tlasNodes;
+
+    public static BVH tlasTree;
 
     // transform data, size of objects * 2, contains local to world and inverse matrix
     private static List<Matrix4x4> transforms = new List<Matrix4x4>();
@@ -342,12 +346,6 @@ public class BVHBuilder
         SetBuffer(ref BLASBuffer, bnodes, BLASNode.TypeSize);
     }
     
-    private static List<MeshNode> tlasNodes = new List<MeshNode>();
-
-    public static IReadOnlyList<MeshNode> GetTLASNodes() => tlasNodes;
-
-    public static BVH tlasTree;
-    
     public static void RebuildTLAS()
     {
         if (meshNodes.Count <= 0) return;
@@ -374,7 +372,6 @@ public class BVHBuilder
         // get info from each object
         foreach (var obj in objects)
         {
-            // load materials
             var meshMats = obj.GetComponent<Renderer>().sharedMaterials;
             foreach (var mat in meshMats)
             {
