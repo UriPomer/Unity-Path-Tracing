@@ -31,6 +31,7 @@ struct RayHit
 
 RWTexture2D<float4> _Result;
 float2 _Resolution;
+int _TraceDepth;
 float4x4 _CameraToWorld;
 float4x4 _CameraInverseProjection;
 Texture2D<float4> _SkyboxTexture;

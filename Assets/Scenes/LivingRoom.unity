@@ -147,6 +147,7 @@ GameObject:
   - component: {fileID: 546119625}
   - component: {fileID: 546119624}
   - component: {fileID: 546119626}
+  - component: {fileID: 546119627}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -235,12 +236,30 @@ MonoBehaviour:
   tracingShader: {fileID: 7200000, guid: f729f9caa1fdb5140afe66433bd74ff9, type: 3}
   skyboxTexture: {fileID: 2800000, guid: 941c159d55e667a4292d15e1eee1390a, type: 3}
   SkyboxIntensity: 1
-  TraceDepth: 5
-  drawGizmos: 1
+  TraceDepth: 2
+  OnlyDrawAlbedo: 0
+  OnlyDrawNormals: 0
+  OnlyDrawDepth: 0
+  drawGizmos: 0
   DrawTLAS: 1
   DrawBLAS: 0
   DrawMeshNode: 1
   DrawTLASBVH: 1
+--- !u!114 &546119627
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 546119622}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1566586f718dd7048acb91c6c162dd64, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  moveSpeed: 5
+  zoomSpeed: 2
+  rotationSpeed: 1
 --- !u!1 &997427345
 GameObject:
   m_ObjectHideFlags: 0
@@ -392,7 +411,7 @@ Light:
   serializedVersion: 11
   m_Type: 1
   m_Color: {r: 1, g: 0.95686275, b: 0.8392157, a: 1}
-  m_Intensity: 4
+  m_Intensity: 1
   m_Range: 10
   m_SpotAngle: 30
   m_InnerSpotAngle: 21.80208

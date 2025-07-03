@@ -18,8 +18,8 @@ public class Tracing : MonoBehaviour
     [SerializeField, Range(0.0f, 10.0f)]
     float SkyboxIntensity = 1.0f;
     
-    [SerializeField, Range(2, 20)]
-    int TraceDepth = 5;
+    [SerializeField, Range(1, 8)]
+    int TraceDepth = 3;
     
     [Header("Debug")]
     [SerializeField] bool OnlyDrawAlbedo = false;
@@ -136,6 +136,7 @@ public class Tracing : MonoBehaviour
         tracingShader.SetVector("_DirectionalLightColor", directionalLightColorInfo);
         // tracingShader.SetFloat("_Seed", UnityEngine.Random.value);
         tracingShader.SetVector("_Resolution", new Vector2(Screen.width, Screen.height));
+        tracingShader.SetInt("_TraceDepth", TraceDepth);
         tracingShader.SetMatrix("_CameraToWorld", cam.cameraToWorldMatrix);
         tracingShader.SetMatrix("_CameraInverseProjection", cam.projectionMatrix.inverse);
         tracingShader.SetTexture(0, "_SkyboxTexture", skyboxTexture);

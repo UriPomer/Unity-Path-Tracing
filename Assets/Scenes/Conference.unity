@@ -506,7 +506,7 @@ MonoBehaviour:
   tracingShader: {fileID: 7200000, guid: f729f9caa1fdb5140afe66433bd74ff9, type: 3}
   skyboxTexture: {fileID: 2800000, guid: 6ae478bd6a07f014c8a40b932c2acf59, type: 3}
   SkyboxIntensity: 1
-  TraceDepth: 5
+  TraceDepth: 3
   OnlyDrawAlbedo: 0
   OnlyDrawNormals: 0
   OnlyDrawDepth: 0
