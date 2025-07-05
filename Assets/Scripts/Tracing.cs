@@ -25,6 +25,8 @@ public class Tracing : MonoBehaviour
     [SerializeField] bool OnlyDrawAlbedo = false;
     [SerializeField] bool OnlyDrawNormals = false;
     [SerializeField] bool OnlyDrawDepth = false;
+    [SerializeField] bool Denoise = true;
+    private bool _OldDenoise = true;
     
     [Header("Draw Gizmos")]
     [SerializeField]
@@ -36,6 +38,7 @@ public class Tracing : MonoBehaviour
     [SerializeField] private bool DrawTLASBVH = true;
     
     private int sampleCount = 0;
+    private Material _addMaterial;
     
     private Material collectMaterial;
     private RenderTexture frameConverged;
@@ -56,6 +59,7 @@ public class Tracing : MonoBehaviour
     {
         cam = GetComponent<Camera>();
         LightManager.Instance.UpdateLights();
+        _OldDenoise = Denoise;
     }
 
     private void OnRenderImage(RenderTexture source, RenderTexture destination)
@@ -99,17 +103,34 @@ public class Tracing : MonoBehaviour
         tracingShader.Dispatch(0, dispatchGroupXFull, dispatchGroupYFull, 1);
         // Graphics.Blit(target, frameConverged, collectMaterial);
         // Graphics.Blit(frameConverged, destination);
-        Graphics.Blit(target, destination);
+        
+        if (_addMaterial == null)
+            _addMaterial = new Material(Shader.Find("Hidden/AddShader"));
+
+        if (Denoise)
+        {
+            _addMaterial.SetFloat("_Sample", sampleCount);
+            Graphics.Blit(target, destination, _addMaterial);
+        }
+        else
+        {
+            Graphics.Blit(target, destination);
+        }
     }
 
     private void Update()
     {
         LightManager.Instance.UpdateLights();
-        BVHBuilder.Validate();
-        if(Camera.main.transform.hasChanged)
+        if(Camera.main != null && (Camera.main.transform.hasChanged || BVHBuilder.Validate()))
         {
             ResetSampleCount();
             Camera.main.transform.hasChanged = false;
+        }
+
+        if (_OldDenoise != Denoise)
+        {
+            _OldDenoise = Denoise;
+            ResetSampleCount();
         }
     }
     

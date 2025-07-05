@@ -510,6 +510,7 @@ MonoBehaviour:
   OnlyDrawAlbedo: 0
   OnlyDrawNormals: 0
   OnlyDrawDepth: 0
+  Denoise: 1
   drawGizmos: 0
   DrawTLAS: 1
   DrawBLAS: 0
