@@ -51,29 +51,38 @@ public class LightManager : MonoBehaviour
     
     public void UpdateLights()
     {
-        if (pointLightsBuffer != null)
-            pointLightsBuffer.Release();
+        pointLightsCount = 0;
         List<Vector4> pointLightsPosColor = new List<Vector4>();
-        foreach(Light light in PointLights)
+
+        foreach (Light light in PointLights)
         {
-            if (light.type != LightType.Point) continue;
-            pointLightsCount++;
+            if (light == null || light.type != LightType.Point) continue;
+
             pointLightsPosColor.Add(new Vector4(
                 light.transform.position.x,
                 light.transform.position.y,
                 light.transform.position.z,
-                light.range
-            ));
+                light.range));
             pointLightsPosColor.Add(new Vector4(
                 light.color.r,
                 light.color.g,
                 light.color.b,
-                light.intensity
-            ));
+                light.intensity));
+
+            ++pointLightsCount;
         }
+
         if (pointLightsCount == 0)
             pointLightsPosColor.Add(Vector4.zero);
-        pointLightsBuffer = new ComputeBuffer(pointLightsPosColor.Count, 4 * sizeof(float));
+
+        int neededCount = pointLightsPosColor.Count;
+
+        if (pointLightsBuffer == null || pointLightsBuffer.count < neededCount)
+        {
+            pointLightsBuffer?.Release();
+            pointLightsBuffer = new ComputeBuffer(neededCount, 4 * sizeof(float));
+        }
+
         pointLightsBuffer.SetData(pointLightsPosColor);
     }
 

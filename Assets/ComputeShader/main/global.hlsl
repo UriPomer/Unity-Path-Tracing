@@ -27,6 +27,7 @@ struct RayHit
     float3 normal;
     Material material;
     float mode;
+    bool should_break;
 };
 
 RWTexture2D<float4> _Result;
@@ -172,6 +173,7 @@ RayHit GenRayHit()
     hit.normal = float3(0.0f, 0.0f, 0.0f);
     hit.material = GenMaterial(float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), 0.0f, 0.0f, 1.0f, 1.0f);
     hit.mode = 0.0f;
+    hit.should_break = false;
     return hit;
 }
 

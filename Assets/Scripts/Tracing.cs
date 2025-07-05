@@ -141,7 +141,7 @@ public class Tracing : MonoBehaviour
         tracingShader.SetMatrix("_CameraInverseProjection", cam.projectionMatrix.inverse);
         tracingShader.SetTexture(0, "_SkyboxTexture", skyboxTexture);
         tracingShader.SetInt("_PointLightsCount", LightManager.Instance.GetPointLightsCount());
-        tracingShader.SetBuffer(0,"_PointLights",pointLightsBuffer);
+        tracingShader.SetBuffer(0,"_PointLights", pointLightsBuffer);
 
 		if (BVHBuilder.VertexBuffer != null) tracingShader.SetBuffer(0, "_Vertices", BVHBuilder.VertexBuffer);
         if (BVHBuilder.IndexBuffer != null) tracingShader.SetBuffer(0, "_Indices", BVHBuilder.IndexBuffer);

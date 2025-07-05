@@ -85,6 +85,7 @@ public class BVHBuilder
         if (objectUpdated)
         {
             BuildBVH();
+            RebuildTLAS();
             LoadTransforms();
             objectUpdated = false;
             objectTransformUpdated = false;
@@ -106,6 +107,7 @@ public class BVHBuilder
         if (anyMoved || objectTransformUpdated)
         {
             LoadTransforms();
+            RebuildTLAS();
             objectTransformUpdated = false;
             return true;
         }
@@ -307,22 +309,16 @@ public class BVHBuilder
 
         BuildMaterialAndMeshData(objects);
 
-        // build TLAS bvh
-        RebuildTLAS();
-
-        SetBuffers();
-
+        SetBLASBuffers();
+        
         objectUpdated = false;
         return true;
     }
 
     private static bool LoadTransforms()
     {
-        if (!objectTransformUpdated) return false;
-
         transforms.Clear();
 
-        // 突然发现，由于每次都是使用“foreach(var obj in objects)”遍历所有物体，所以这些数组的索引都是一一对应的
         foreach (var obj in objects)
         {
             transforms.Add(obj.transform.localToWorldMatrix);
@@ -335,7 +331,7 @@ public class BVHBuilder
         return true;
     }
 
-    private static void SetBuffers()
+    private static void SetBLASBuffers()
     {
         SetBuffer(ref IndexBuffer, indices, sizeof(int));
         SetBuffer(ref VertexBuffer, vertices, sizeof(float) * 3);

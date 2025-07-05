@@ -1,66 +1,22 @@
 #pragma kernel CSMain
 
-#include "intersection.hlsl"
 #include "function.hlsl"
 #include "colors.hlsl"
 #include "bxdf.hlsl"
 #include "test.hlsl"
+#include "trace.hlsl"
 
-float3 SampleSkybox(Ray ray)
-{
-    float theta = acos(ray.dir.y) / -PI;
-    float phi = atan2(ray.dir.x, - ray.dir.z) / - PI * 0.5f;
-    return _SkyboxTexture.SampleLevel(sampler_SkyboxTexture, float2(phi, theta), 0).xyz;
-}
-
-// trace a ray and returns hit immediately (for shadow rays)
-bool TraceHit(Ray ray, float targetDist)
-{
-    return IntersectTlasFast(ray, targetDist);
-}
-
-// trace a ray and detect nearest hit
-RayHit Trace(Ray ray)
-{
-    RayHit bestHit = GenRayHit();
-    IntersectTlas(ray, bestHit);
-    return bestHit;
-}
-
-
-float3 Shade(inout Ray ray, RayHit hit)
+float3 Shade(inout Ray ray, inout RayHit hit)
 {
     if(hit.distance < 1.#INF)
     {
-        float3 lightContribution = 0.0;
-        {
-            Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, _InverseDirectionalLight);
-            if (_DirectionalLightColor.a > 0.0 && !TraceHit(shadowRay, 1.#INF))
-            {
-                lightContribution += hit.material.albedo * saturate(dot(hit.normal, _InverseDirectionalLight)) *
-                    _DirectionalLightColor.rgb * _DirectionalLightColor.a;
-            }
-        }
-    
-        // sample point lights
-        for (int i = 0; i < _PointLightsCount; i++)
-        {
-            float4 lightPos = _PointLights[i * 2];
-            float4 lightColor = _PointLights[i * 2 + 1];
-            if (lightColor.a <= 0.0)
-                continue;
-            float3 rayDir = lightPos.xyz - hit.position;
-            float rayDist = length(rayDir);
-            float distDecay = max(0.0, rayDist - lightPos.w);
-            distDecay = pow(0.2, distDecay * distDecay);
-            rayDir /= rayDist;
-            Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, rayDir);
-            if (!TraceHit(shadowRay, rayDist))
-            {
-                lightContribution += hit.material.albedo * saturate(dot(hit.normal, rayDir)) *
-                    lightColor.rgb * lightColor.a * distDecay;
-            }
-        }
+        // if (dot(hit.material.emission, float3(1.0, 1.0, 1.0)) > 0.0) {
+        //     ray.energy = 0;
+        //     hit.should_break = true;
+        //     return hit.material.emission;
+        // }
+        
+        float3 lightContribution = GetLightContribution(hit);
 
         float roulette = RNG_Next(rng);
         if (hit.mode >= 3.0)
@@ -89,12 +45,11 @@ float3 Shade(inout Ray ray, RayHit hit)
             }
             else
             {
-                //rayOutDir = -normalize(refract(-ray.dir, H, 1.0 / hit.mat.ior));
                 rayOutDir = normalize(refract(ray.dir, -hit.normal, 1.0 / hit.material.ior));
                 SpecRefrModel(hit, ray.dir, rayOutDir, H, ray.energy);
                 ray.dir = rayOutDir;
                 ray.energy *= 1.0 / clamp((1.0 - reflChance), 1e-2, 1.0);
-                lightContribution *= reflChance;
+                lightContribution *= (1.0 - reflChance);
             }
         }
 
@@ -141,6 +96,7 @@ float3 Shade(inout Ray ray, RayHit hit)
                 ray.energy *= 1.0 / clamp(diffChance, 1e-2, 1.0);
             }
         }
+        // hit.should_break = hit.material.emission >= 0.0;
         return hit.material.emission + lightContribution;
     }
     else
@@ -165,19 +121,27 @@ void CSMain(uint3 id : SV_DispatchThreadID)
             _Result[id.xy] = float4(hit.material.albedo, 1.0f);
             return;
         }
-        if (_OnlyDrawDepth)
-        {
-            hit.distance = hit.distance / _CameraFar;
-            _Result[id.xy] = float4(hit.distance, hit.distance, hit.distance, 1.0f);
-            return;
-        }
+        // if (_OnlyDrawDepth)
+        // {
+        //     hit.distance = hit.distance / _CameraFar;
+        //     _Result[id.xy] = float4(hit.distance, hit.distance, hit.distance, 1.0f);
+        //     return;
+        // }
         if (_OnlyDrawNormals)
         {
             _Result[id.xy] = float4(hit.normal * 0.5f + 0.5f, 1.0f);
             return;
         }
+
+        if (_OnlyDrawDepth)
+        {
+            hit.distance = hit.distance / _CameraFar;
+            result += float4(hit.distance, hit.distance, hit.distance, 1.0f);
+            continue;
+        }
+        
         result += r.energy * SRGB2Linear(Shade(r, hit));
-    
+        
         if (!any(r.energy))
         {
             break;
