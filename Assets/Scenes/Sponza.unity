@@ -405,6 +405,7 @@ GameObject:
   - component: {fileID: 609528809}
   - component: {fileID: 609528811}
   - component: {fileID: 609528812}
+  - component: {fileID: 609528813}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -497,6 +498,7 @@ MonoBehaviour:
   OnlyDrawAlbedo: 0
   OnlyDrawNormals: 0
   OnlyDrawDepth: 0
+  Denoise: 1
   drawGizmos: 0
   DrawTLAS: 1
   DrawBLAS: 0
@@ -517,6 +519,23 @@ MonoBehaviour:
   moveSpeed: 22.7
   zoomSpeed: 12.44
   rotationSpeed: 1
+--- !u!114 &609528813
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 609528807}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 59eadeebd984414880d8895de0f82380, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  cam: {fileID: 609528809}
+  rayCount: 20
+  rayLength: 10
+  missColor: {r: 0, g: 1, b: 1, a: 1}
+  hitColor: {r: 1, g: 0, b: 0, a: 1}
 --- !u!1 &737718085
 GameObject:
   m_ObjectHideFlags: 0

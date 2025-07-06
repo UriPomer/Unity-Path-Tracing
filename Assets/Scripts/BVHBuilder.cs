@@ -25,16 +25,32 @@ public class BVHBuilder
 {
     // object data
     private static List<GameObject> objects = new List<GameObject>();
+    public static IReadOnlyList<GameObject> GetObjects() => objects;
+    
     // material data
     private static List<MaterialData> materials = new List<MaterialData>();
+    public static IReadOnlyList<MaterialData> GetMaterials() => materials;
+    
     // Mesh data
     private static List<Vector3> vertices = new List<Vector3>();
+    public static IReadOnlyList<Vector3> GetVertices() => vertices;
+    
     private static List<Vector2> uvs = new List<Vector2>();
+    public static IReadOnlyList<Vector2> GetUVs() => uvs;
+    
     private static List<Vector3> normals = new List<Vector3>();
+    public static IReadOnlyList<Vector3> GetNormals() => normals;
+    
     private static List<Vector4> tangents = new List<Vector4>();
+    public static IReadOnlyList<Vector4> GetTangents() => tangents;
+    
     // Acceleration structure
     private static List<BLASNode> bnodes = new List<BLASNode>();
+    public static IReadOnlyList<BLASNode> GetBLASNodes() => bnodes;
+    
     private static List<MeshNode> meshNodes = new List<MeshNode>();
+    public static IReadOnlyList<MeshNode> GetMeshNodes() => meshNodes;
+    
     private static List<MeshNode> tlasNodes = new List<MeshNode>();
     public static IReadOnlyList<MeshNode> GetTLASNodes() => tlasNodes;
 
@@ -45,6 +61,7 @@ public class BVHBuilder
 
     // algorithm data
     private static List<int> indices = new List<int>(); // indices of vertices
+    public static List<int> GetIndices() => indices;
 
     public static ComputeBuffer VertexBuffer;
     public static ComputeBuffer UVBuffer;
@@ -458,17 +475,6 @@ public class BVHBuilder
         }
         else return dim;
     }
-
-    public static List<BLASNode> GetBLASNodes()
-    {
-        return bnodes;
-    }
-
-    public static List<MeshNode> GetMeshNodes()
-    {
-        return meshNodes;
-    }
-
     public static List<Matrix4x4> GetTransforms()
     {
         return transforms;

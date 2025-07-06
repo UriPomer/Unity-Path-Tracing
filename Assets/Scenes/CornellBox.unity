@@ -352,7 +352,7 @@ Transform:
   m_GameObject: {fileID: 963194225}
   serializedVersion: 2
   m_LocalRotation: {x: -0.119689405, y: 0.17775239, z: -0.021778287, w: -0.9765266}
-  m_LocalPosition: {x: 1.7310228, y: 2.910541, z: -9.29334}
+  m_LocalPosition: {x: 1.7310228, y: 2.78, z: -9.29334}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -392,10 +392,10 @@ MonoBehaviour:
   OnlyDrawAlbedo: 0
   OnlyDrawNormals: 0
   OnlyDrawDepth: 0
-  Denoise: 1
+  Denoise: 0
   drawGizmos: 1
   DrawTLAS: 0
-  DrawBLAS: 0
+  DrawBLAS: 1
   DrawMeshNode: 0
   DrawTLASBVH: 0
 --- !u!114 &963194231
@@ -411,9 +411,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   cam: {fileID: 963194227}
-  arrowCount: 20
+  rayCount: 20
   rayLength: 5
-  gizmoColor: {r: 0, g: 1, b: 1, a: 1}
+  missColor: {r: 0, g: 1, b: 1, a: 1}
+  hitColor: {r: 1, g: 0, b: 0, a: 1}
 --- !u!1 &1448981423
 GameObject:
   m_ObjectHideFlags: 0

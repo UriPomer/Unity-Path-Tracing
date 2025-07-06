@@ -12,8 +12,8 @@
 Ray PrepareTreeEnterRay(Ray ray, int transformIdx)
 {
     float4x4 worldToLocal = _Transforms[transformIdx * 2 + 1];
-    float3 origin = mul(worldToLocal, float4(ray.origin, 1.0)).xyz;     // 把光线的起点变换到局部坐标系
-    float3 dir = normalize(mul(worldToLocal, float4(ray.dir, 0.0)).xyz);    // 把光线的方向变换到局部坐标系
+    float3 origin = mul(worldToLocal, float4(ray.origin, 1.0));     // 把光线的起点变换到局部坐标系
+    float3 dir = normalize(mul(worldToLocal, float4(ray.dir, 0.0)));    // 把光线的方向变换到局部坐标系
     return GenRay(origin, dir);
 }
 
@@ -174,18 +174,16 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
                 // 遍历BLAS中的每一个面
                 for (primitiveIdx = node.primitiveStartIdx; primitiveIdx < node.primitiveEndIdx; primitiveIdx++)
                 {
-                    // 根据之前得出的结论，这里的_Indices对应OrderedPrimitiveIndices，然后每一个BLASNode的primitiveStartIdx和primitiveEndIdx对应的是OrderedPrimitiveIndices的索引
-                    // 然后再通过OrderedPrimitiveIndices的索引找到实际的面的索引
                     int i = primitiveIdx * 3;   // i是面的索引
                     float3 v0 = _Vertices[_Indices[i]];
                     float3 v1 = _Vertices[_Indices[i + 1]];
                     float3 v2 = _Vertices[_Indices[i + 2]];
-                    float2 uv0 = _UVs[_Indices[i]];
-                    float2 uv1 = _UVs[_Indices[i + 1]];
-                    float2 uv2 = _UVs[_Indices[i + 2]];
                     float t, u, v;
                     if (IntersectTriangle(ray, v0, v1, v2, t, u, v))    //与面求交
                     {
+                        float2 uv0 = _UVs[_Indices[i]];
+                        float2 uv1 = _UVs[_Indices[i + 1]];
+                        float2 uv2 = _UVs[_Indices[i + 2]];
                         if (t > 0.0 && t < bestHit.distance)    //距离更近且不为负数
                         {
                             MaterialData mat = _Materials[node.materialIdx];

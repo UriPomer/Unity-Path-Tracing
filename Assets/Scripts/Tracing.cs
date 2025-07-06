@@ -351,6 +351,13 @@ public class Tracing : MonoBehaviour
                     Gizmos.color = color;
                     Gizmos.DrawWireCube(WorldCenter, WorldSize);
                     
+                    var worldBoundsMin = localToWorld.MultiplyPoint3x4(bnode.BoundMin);
+                    var worldBoundsMax = localToWorld.MultiplyPoint3x4(bnode.BoundMax);
+                    color = Color.blue;
+                    color.a = 0.5f;
+                    Gizmos.color = color;
+                    Gizmos.DrawWireCube((worldBoundsMin + worldBoundsMax)/2, worldBoundsMax - worldBoundsMin);
+                    
                     if(bnode.PrimitiveStartIdx < 0)
                     {
                         stack[++stackPtr] = bnode.ChildIdx;
