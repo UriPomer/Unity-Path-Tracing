@@ -244,7 +244,7 @@ Light:
   serializedVersion: 11
   m_Type: 1
   m_Color: {r: 1, g: 0.95686275, b: 0.8392157, a: 1}
-  m_Intensity: 1.32
+  m_Intensity: 1
   m_Range: 10
   m_SpotAngle: 30
   m_InnerSpotAngle: 21.80208
@@ -406,6 +406,7 @@ GameObject:
   - component: {fileID: 609528811}
   - component: {fileID: 609528812}
   - component: {fileID: 609528813}
+  - component: {fileID: 609528814}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -526,16 +527,32 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 609528807}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 59eadeebd984414880d8895de0f82380, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
   cam: {fileID: 609528809}
   rayCount: 20
-  rayLength: 10
-  missColor: {r: 0, g: 1, b: 1, a: 1}
-  hitColor: {r: 1, g: 0, b: 0, a: 1}
+--- !u!114 &609528814
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 609528807}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 227719f6ed9e01c4483ccb7c1d4cb32d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  DirectionalLightIntensityMultiplier: 1
+  DirectionalLight: {fileID: 347521809}
+  PointLights:
+  - {fileID: 1809187249}
+  - {fileID: 737718086}
+  - {fileID: 33643486}
+  - {fileID: 1127881317}
 --- !u!1 &737718085
 GameObject:
   m_ObjectHideFlags: 0
@@ -628,56 +645,6 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 2, z: 7}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &971902620
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 971902622}
-  - component: {fileID: 971902621}
-  m_Layer: 0
-  m_Name: LightM
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!114 &971902621
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 971902620}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 227719f6ed9e01c4483ccb7c1d4cb32d, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  DirectionalLight: {fileID: 347521809}
-  PointLights:
-  - {fileID: 1809187249}
-  - {fileID: 737718086}
-  - {fileID: 33643486}
-  - {fileID: 1127881317}
---- !u!4 &971902622
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 971902620}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 1.0566187, y: 2.8465433, z: -5.967955}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -905,4 +872,3 @@ SceneRoots:
   - {fileID: 737718087}
   - {fileID: 33643487}
   - {fileID: 1127881318}
-  - {fileID: 971902622}

@@ -7,22 +7,17 @@ using Random = UnityEngine.Random;
 /// 把 20 条随机屏幕射线转换到 BLAS 局部空间并做层次包围盒相交测试。
 /// 命中则射线呈红色并在命中点画小球；未命中则呈青色。
 /// </summary>
-[ExecuteAlways]
 public class RayIntersection_LocalAABB : MonoBehaviour
 {
     public Camera cam;
     [Range(1, 100)] public int rayCount = 20;
-    public float rayLength = 10f;
-    public Color missColor = Color.cyan;
-    public Color hitColor  = Color.red;
 
-    #region ✦ 主流程：编辑器 & 运行时都可见 ✦
     private void OnDrawGizmos()
     {
-        if (!EnsureCamera()) return;
+        if (!RayTestUtils.EnsureCamera(cam)) return;
         Random.InitState(12345);
 
-        List<WorldRay> rays = GenerateWorldRays();
+        List<RayTestUtils.MyRay> rays = RayTestUtils.GenerateWorldRays(cam, rayCount);
 
         var meshNodes  = BVHBuilder.GetMeshNodes();
         var bNodes     = BVHBuilder.GetBLASNodes();
@@ -46,9 +41,8 @@ public class RayIntersection_LocalAABB : MonoBehaviour
                     ? transforms[meshNode.TransformIdx * 2 + 1]
                     : localToWorld.inverse;
 
-                LocalRay localRay = WorldToLocalRay(ray, worldToLocal);
+                RayTestUtils.MyRay localRay = WorldToLocalRay(ray, worldToLocal);
 
-                // ★② 传入 vertices / indices
                 if (TraverseBLAS(localRay, meshNode.NodeRootIdx, bNodes,
                         vertices, indices,
                         out float tLocal))
@@ -66,54 +60,12 @@ public class RayIntersection_LocalAABB : MonoBehaviour
                 }
             }
 
-            DrawRay(ray, hitAny, hitPoint);
+            RayTestUtils.DrawRay(ray, hitAny, hitPoint);
         }
     }
-    #endregion
 
-    #region ✦ 生成世界射线 ✦
-    private List<WorldRay> GenerateWorldRays()
-    {
-        int w = cam.pixelWidth, h = cam.pixelHeight;
-        var list = new List<WorldRay>(rayCount);
-
-        for (int i = 0; i < rayCount; ++i)
-        {
-            Vector2 pixel = new(
-                UnityEngine.Random.Range(0, w),
-                UnityEngine.Random.Range(0, h));
-
-            Vector3 dir = PixelToWorldDir(pixel, w, h).normalized;
-            list.Add(new WorldRay
-            {
-                origin = cam.transform.position,
-                dir    = dir,
-                invDir = new Vector3(
-                    1f / (dir.x == 0 ? 1e-8f : dir.x),
-                    1f / (dir.y == 0 ? 1e-8f : dir.y),
-                    1f / (dir.z == 0 ? 1e-8f : dir.z))
-            });
-        }
-        return list;
-    }
-
-    // 与 ComputeShader 同线性代数流程
-    private Vector3 PixelToWorldDir(Vector2 pixel, int w, int h)
-    {
-        Vector2 screen   = (pixel + Vector2.one * 0.5f) / new Vector2(w, h);
-        Vector2 ndc      = screen * 2f - Vector2.one;
-        Vector4 clipPos  = new(ndc.x, ndc.y, 1f, 1f);
-        Vector4 viewPos4 = cam.projectionMatrix.inverse * clipPos;
-        viewPos4        /= Mathf.Max(viewPos4.w, 1e-6f);
-        Vector3 viewDir  = viewPos4;
-
-        return (cam.cameraToWorldMatrix * new Vector4(viewDir.x, viewDir.y, viewDir.z, 0f));
-    }
-    #endregion
-
-    #region ✦ 射线–BLAS 相交 ✦
     private bool TraverseBLAS(
-        LocalRay ray,
+        RayTestUtils.MyRay ray,
         int rootIdx,
         IReadOnlyList<BLASNode> bnodes,
         IReadOnlyList<Vector3> vertices, IReadOnlyList<int> indices,   // ★② 新参数
@@ -148,7 +100,7 @@ public class RayIntersection_LocalAABB : MonoBehaviour
                     Vector3 v1 = vertices[indices[tri + 1]];
                     Vector3 v2 = vertices[indices[tri + 2]];
 
-                    if (IntersectTriangle(ray, v0, v1, v2, out float tLocal))
+                    if (RayTestUtils.IntersectTriangle(ray, v0, v1, v2, out float tLocal))
                     {
                         if (tLocal > 0f && tLocal < tHit)
                         {
@@ -162,28 +114,7 @@ public class RayIntersection_LocalAABB : MonoBehaviour
         return hitAny;
     }
     
-    private static bool IntersectTriangle(
-        in LocalRay r, Vector3 v0, Vector3 v1, Vector3 v2, out float t)
-    {
-        const float EPS = 1e-6f;
-        Vector3 e1 = v1 - v0;
-        Vector3 e2 = v2 - v0;
-        Vector3 p  = Vector3.Cross(r.dir, e2);
-        float det  = Vector3.Dot(e1, p);
-        if (Mathf.Abs(det) < EPS) { t = 0; return false; }
-        float invDet = 1.0f / det;
-        Vector3 s = r.origin - v0;
-        float u = Vector3.Dot(s, p) * invDet;
-        if (u < 0 || u > 1) { t = 0; return false; }
-        Vector3 q = Vector3.Cross(s, e1);
-        float v = Vector3.Dot(r.dir, q) * invDet;
-        if (v < 0 || u + v > 1) { t = 0; return false; }
-        t = Vector3.Dot(e2, q) * invDet;
-        return t >= 0;
-    }
-
-    // slab 法：返回是否相交 & 最近进入距离
-    private static bool IntersectAABB(LocalRay r, Vector3 min, Vector3 max, out float tEnter)
+    private static bool IntersectAABB(RayTestUtils.MyRay r, Vector3 min, Vector3 max, out float tEnter)
     {
         float tmin = (min.x - r.origin.x) * r.invDir.x;
         float tmax = (max.x - r.origin.x) * r.invDir.x;
@@ -208,42 +139,12 @@ public class RayIntersection_LocalAABB : MonoBehaviour
         tEnter = tmin;
         return tmax >= 0;
     }
-    #endregion
 
-    #region ✦ 可视化 ✦
-    private void DrawRay(in WorldRay ray, bool hit, Vector3 hitPos)
-    {
-        hitColor.a = 0.3f;
-        missColor.a = 0.3f;
-        Color c = hit ? hitColor : missColor;
-        Gizmos.color = c;
-
-        Vector3 end = hit ? hitPos : ray.origin + ray.dir * rayLength;
-        Gizmos.DrawLine(ray.origin, end);
-        if (hit) Gizmos.DrawSphere(hitPos, 0.08f);
-
-        Debug.DrawLine(ray.origin, end, c);
-    }
-    #endregion
-
-    #region ✦ 工具结构体 ✦
-    private struct WorldRay
-    {
-        public Vector3 origin;
-        public Vector3 dir;
-        public Vector3 invDir;
-    }
-    private struct LocalRay
-    {
-        public Vector3 origin;
-        public Vector3 dir;
-        public Vector3 invDir;
-    }
-    private static LocalRay WorldToLocalRay(in WorldRay wr, Matrix4x4 worldToLocal)
+    private static RayTestUtils.MyRay WorldToLocalRay(in RayTestUtils.MyRay wr, Matrix4x4 worldToLocal)
     {
         Vector3 o = worldToLocal.MultiplyPoint3x4(wr.origin);
         Vector3 d = worldToLocal.MultiplyVector(wr.dir);
-        return new LocalRay
+        return new RayTestUtils.MyRay
         {
             origin  = o,
             dir     = d,
@@ -252,12 +153,5 @@ public class RayIntersection_LocalAABB : MonoBehaviour
                 1f / (Mathf.Abs(d.y) < 1e-8f ? 1e-8f : d.y),
                 1f / (Mathf.Abs(d.z) < 1e-8f ? 1e-8f : d.z))
         };
-    }
-    #endregion
-
-    private bool EnsureCamera()
-    {
-        if (cam == null) cam = Camera.main;
-        return cam != null;
     }
 }

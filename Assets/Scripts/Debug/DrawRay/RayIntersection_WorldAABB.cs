@@ -3,33 +3,26 @@ using System.Collections.Generic;
 using UnityEngine;
 using Random = UnityEngine.Random;
 
-[ExecuteAlways]
-public class RayBLASIntersection_WorldAABB : MonoBehaviour
+public class RayIntersection_WorldAABB : MonoBehaviour
 {
     public Camera cam;
     [Range(1,100)] public int rayCount = 20;
-    public float rayLength = 10f;
-    public Color missColor = Color.cyan;
-    public Color hitColor  = Color.red;
 
     private void OnDrawGizmos()
     {
-        if (!EnsureCamera()) return;
+        if (!RayTestUtils.EnsureCamera(cam)) return;
         Random.InitState(12345);
 
-        // 1. 生成世界射线 ----------------------------------------------------
-        List<WorldRay> rays = GenerateWorldRays();
+        List<RayTestUtils.MyRay> rays = RayTestUtils.GenerateWorldRays(cam, rayCount);
 
-        // 2. 取得 BVH & 变换 -------------------------------------------------
         var meshNodes  = BVHBuilder.GetMeshNodes();
         var bNodes     = BVHBuilder.GetBLASNodes();
         var transforms = BVHBuilder.GetTransforms();
-        var vertices   = BVHBuilder.GetVertices();          // ❶ 新增
-        var indices    = BVHBuilder.GetIndices();           // ❶ 新增
+        var vertices   = BVHBuilder.GetVertices();
+        var indices    = BVHBuilder.GetIndices();
         if (meshNodes == null || bNodes == null || transforms == null ||
             vertices == null || indices == null) return;
 
-        // 3. 每条射线遍历所有 BLAS -----------------------------------------
         foreach (var ray in rays)
         {
             bool   hitAny   = false;
@@ -41,61 +34,23 @@ public class RayBLASIntersection_WorldAABB : MonoBehaviour
                 var meshNode     = meshNodes[m];
                 var localToWorld = transforms[meshNode.TransformIdx * 2];
 
-                // 遍历当前 mesh 的 BLAS，用世界射线求交
                 TraverseBLAS_World(
                     ray,
                     meshNode.NodeRootIdx,
                     localToWorld,
                     bNodes,
-                    vertices, indices,                // ❶ 传入顶点索引
+                    vertices, indices,
                     ref hitAny,
                     ref hitPos,
                     ref closestT);
             }
 
-            DrawRay(ray, hitAny, hitPos);
+            RayTestUtils.DrawRay(ray, hitAny, hitPos);
         }
     }
 
-    #region —— 生成射线，与前版相同 ——
-    private List<WorldRay> GenerateWorldRays()
-    {
-        int w = cam.pixelWidth, h = cam.pixelHeight;
-        var list = new List<WorldRay>(rayCount);
-        for (int i = 0; i < rayCount; ++i)
-        {
-            Vector2 pix = new(
-                UnityEngine.Random.Range(0, w),
-                UnityEngine.Random.Range(0, h));
-
-            Vector3 dir = PixelToWorldDir(pix, w, h).normalized;
-            list.Add(new WorldRay
-            {
-                origin = cam.transform.position,
-                dir    = dir,
-                invDir = new Vector3(
-                    1f / (Mathf.Abs(dir.x) < 1e-8f ? 1e-8f : dir.x),
-                    1f / (Mathf.Abs(dir.y) < 1e-8f ? 1e-8f : dir.y),
-                    1f / (Mathf.Abs(dir.z) < 1e-8f ? 1e-8f : dir.z))
-            });
-        }
-        return list;
-    }
-    private Vector3 PixelToWorldDir(Vector2 pixel, int w, int h)
-    {
-        Vector2 screen = (pixel + Vector2.one * 0.5f) / new Vector2(w, h);
-        Vector2 ndc    = screen * 2f - Vector2.one;
-        Vector4 clip   = new(ndc.x, ndc.y, 1f, 1f);
-        Vector4 view4  = cam.projectionMatrix.inverse * clip;
-        view4         /= Mathf.Max(view4.w, 1e-6f);
-        Vector3 viewDir = view4;
-        return (cam.cameraToWorldMatrix * new Vector4(viewDir.x, viewDir.y, viewDir.z, 0f));
-    }
-    #endregion
-
-    #region —— BLAS 遍历（节点 AABB → 世界） ——
     private void TraverseBLAS_World(
-        in WorldRay ray,
+        in RayTestUtils.MyRay ray,
         int rootIdx,
         Matrix4x4 l2w,
         IReadOnlyList<BLASNode> bnodes,
@@ -140,7 +95,7 @@ public class RayBLASIntersection_WorldAABB : MonoBehaviour
                     Vector3 v1 = l2w.MultiplyPoint3x4(vertices[indices[tri + 1]]);
                     Vector3 v2 = l2w.MultiplyPoint3x4(vertices[indices[tri + 2]]);
 
-                    if (IntersectTriangle(ray, v0, v1, v2, out float t))
+                    if (RayTestUtils.IntersectTriangle(ray, v0, v1, v2, out float t))
                     {
                         if (t > 0.0f && t < closestT)
                         {
@@ -153,28 +108,8 @@ public class RayBLASIntersection_WorldAABB : MonoBehaviour
             }
         }
     }
-    
-    private static bool IntersectTriangle(in WorldRay r,
-        Vector3 v0, Vector3 v1, Vector3 v2, out float t)
-    {
-        const float EPS = 1e-6f;
-        Vector3 e1 = v1 - v0;
-        Vector3 e2 = v2 - v0;
-        Vector3 p = Vector3.Cross(r.dir, e2);
-        float det = Vector3.Dot(e1, p);
-        if (Mathf.Abs(det) < EPS) { t = 0; return false; }
-        float invDet = 1.0f / det;
-        Vector3 s = r.origin - v0;
-        float u = Vector3.Dot(s, p) * invDet;
-        if (u < 0 || u > 1) { t = 0; return false; }
-        Vector3 q = Vector3.Cross(s, e1);
-        float v = Vector3.Dot(r.dir, q) * invDet;
-        if (v < 0 || u + v > 1) { t = 0; return false; }
-        t = Vector3.Dot(e2, q) * invDet;
-        return t >= 0;
-    }
 
-    private static bool IntersectAABB_World(in WorldRay r, Vector3 min, Vector3 max, out float tEnter)
+    private static bool IntersectAABB_World(in RayTestUtils.MyRay r, Vector3 min, Vector3 max, out float tEnter)
     {
         float tmin = (min.x - r.origin.x) * r.invDir.x;
         float tmax = (max.x - r.origin.x) * r.invDir.x;
@@ -197,24 +132,4 @@ public class RayBLASIntersection_WorldAABB : MonoBehaviour
         tEnter = tmin;
         return tmax >= 0;
     }
-    #endregion
-
-    #region —— 绘制结果 ——
-    private void DrawRay(in WorldRay ray, bool hit, Vector3 hitPoint)
-    {
-        Color c = hit ? hitColor : missColor;
-        Gizmos.color = c;
-        Vector3 end = hit ? hitPoint : ray.origin + ray.dir * rayLength;
-        Gizmos.DrawLine(ray.origin, end);
-        if (hit) Gizmos.DrawSphere(hitPoint, 0.08f);
-
-        Debug.DrawLine(ray.origin, end, c);
-    }
-    #endregion
-
-    #region —— 数据结构 & 工具 ——
-    private struct WorldRay { public Vector3 origin, dir, invDir; }
-
-    private bool EnsureCamera() { if (cam == null) cam = Camera.main; return cam != null; }
-    #endregion
 }

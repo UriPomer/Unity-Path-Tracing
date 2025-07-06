@@ -137,6 +137,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
         
         result += r.energy * SRGB2Linear(Shade(r, hit));
+        r.invDir = 1.0 / r.dir;
         
         if (!any(r.energy))
         {

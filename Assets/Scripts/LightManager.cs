@@ -6,6 +6,9 @@ using UnityEngine;
 public class LightManager : MonoBehaviour
 {
     private static LightManager _instance;
+    
+    [SerializeField, Range(0.0f, 32.0f)]
+    float DirectionalLightIntensityMultiplier = 1f;
 
     public static LightManager Instance
     {
@@ -48,6 +51,23 @@ public class LightManager : MonoBehaviour
     // point lights
     private int pointLightsCount;
     public ComputeBuffer pointLightsBuffer;
+
+    public void UpdateBuffer(ComputeShader tracingShader)
+    {
+        Vector3 dir = DirectionalLight.transform.forward;
+        Vector3 directionalLightInfo = new Vector3(-dir.x, -dir.y, -dir.z);
+        Vector4 directionalLightColorInfo = new Vector4(
+            DirectionalLight.color.r,
+            DirectionalLight.color.g,
+            DirectionalLight.color.b,
+            DirectionalLight.intensity * DirectionalLightIntensityMultiplier
+        );
+        
+        tracingShader.SetVector("_InverseDirectionalLight", directionalLightInfo);
+        tracingShader.SetVector("_DirectionalLightColor", directionalLightColorInfo);
+        tracingShader.SetBuffer(0,"_PointLights", pointLightsBuffer);
+        tracingShader.SetInt("_PointLightsCount", LightManager.Instance.GetPointLightsCount());
+    }
     
     public void UpdateLights()
     {

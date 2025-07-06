@@ -418,6 +418,7 @@ GameObject:
   - component: {fileID: 1621107194}
   - component: {fileID: 1621107197}
   - component: {fileID: 1621107196}
+  - component: {fileID: 1621107198}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -531,50 +532,19 @@ MonoBehaviour:
   moveSpeed: 19.6
   zoomSpeed: 3.69
   rotationSpeed: 1
---- !u!1 &1814967921
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1814967922}
-  - component: {fileID: 1814967923}
-  m_Layer: 0
-  m_Name: LightManager
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &1814967922
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1814967921}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &1814967923
+--- !u!114 &1621107198
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1814967921}
+  m_GameObject: {fileID: 1621107192}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 227719f6ed9e01c4483ccb7c1d4cb32d, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  DirectionalLightIntensityMultiplier: 1
   DirectionalLight: {fileID: 1553247612}
   PointLights:
   - {fileID: 1256422481}
@@ -586,4 +556,3 @@ SceneRoots:
   - {fileID: 295719155}
   - {fileID: 1553247613}
   - {fileID: 1256422482}
-  - {fileID: 1814967922}
