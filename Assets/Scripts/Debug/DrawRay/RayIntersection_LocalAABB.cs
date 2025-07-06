@@ -8,7 +8,7 @@ using Random = UnityEngine.Random;
 /// 命中则射线呈红色并在命中点画小球；未命中则呈青色。
 /// </summary>
 [ExecuteAlways]
-public class RayBLASIntersectionTester : MonoBehaviour
+public class RayIntersection_LocalAABB : MonoBehaviour
 {
     public Camera cam;
     [Range(1, 100)] public int rayCount = 20;
