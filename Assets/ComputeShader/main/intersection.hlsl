@@ -13,7 +13,7 @@ Ray PrepareTreeEnterRay(Ray ray, int transformIdx)
 {
     float4x4 worldToLocal = _Transforms[transformIdx * 2 + 1];
     float3 origin = mul(worldToLocal, float4(ray.origin, 1.0));     // 把光线的起点变换到局部坐标系
-    float3 dir = normalize(mul(worldToLocal, float4(ray.dir, 0.0)));    // 把光线的方向变换到局部坐标系
+    float3 dir = mul(worldToLocal, float4(ray.dir, 0.0));    // 把光线的方向变换到局部坐标系 ， 但不进行normalize，使得三角形求交的t与世界坐标完全相同，所以PrepareTreeEnterHit不需要变换Distance
     return GenRay(origin, dir);
 }
 
@@ -29,7 +29,7 @@ float PrepareTreeEnterTargetDistance(float targetDist, int transformIdx, float3 
     }
     float3 vecWorld = rayDir * targetDist;  
     float3 vecLocal = mul(worldToLocal, float4(vecWorld, 0.0)).xyz;
-    return length(vecLocal);
+    return vecLocal;
 }
 
 /*
@@ -41,7 +41,7 @@ void PrepareTreeEnterHit(Ray rayLocal, inout RayHit hit, int transformIdx)
     {
         float4x4 worldToLocal = _Transforms[transformIdx * 2 + 1];
         hit.position = mul(worldToLocal, float4(hit.position, 1.0)).xyz;
-        hit.distance = length(hit.position - rayLocal.origin);
+        // hit.distance = length(hit.position - rayLocal.origin);
         hit.normal = normalize(mul(worldToLocal, float4(hit.normal, 0.0)).xyz);
     }
 }
@@ -373,9 +373,9 @@ bool IntersectTlasFast(Ray ray, float targetDist)
 
         if (n.childIdx < 0)               // 叶子
         {
-            float localDist = PrepareTreeEnterTargetDistance(targetDist, n.transformIdx, ray.dir);
+            // float localDist = PrepareTreeEnterTargetDistance(targetDist, n.transformIdx, ray.dir);
             Ray   localRay  = PrepareTreeEnterRay(ray, n.transformIdx);
-            if (IntersectBlasTreeFast(localRay, n.rootIdx, localDist))
+            if (IntersectBlasTreeFast(localRay, n.rootIdx, targetDist))
                 return true;
         }
         else

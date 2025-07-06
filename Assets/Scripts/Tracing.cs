@@ -347,9 +347,9 @@ public class Tracing : MonoBehaviour
                     Vector3 WorldCenter = localToWorld.MultiplyPoint3x4((bnode.BoundMin + bnode.BoundMax) * 0.5f);
 
                     Color color = Color.red;
-                    color.a = 0.5f;
-                    Gizmos.color = color;
-                    Gizmos.DrawWireCube(WorldCenter, WorldSize);
+                    // color.a = 0.5f;
+                    // Gizmos.color = color;
+                    // Gizmos.DrawWireCube(WorldCenter, WorldSize);
                     
                     var worldBoundsMin = localToWorld.MultiplyPoint3x4(bnode.BoundMin);
                     var worldBoundsMax = localToWorld.MultiplyPoint3x4(bnode.BoundMax);

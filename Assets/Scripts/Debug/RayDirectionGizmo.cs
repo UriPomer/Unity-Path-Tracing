@@ -213,6 +213,8 @@ public class RayBLASIntersectionTester : MonoBehaviour
     #region ✦ 可视化 ✦
     private void DrawRay(in WorldRay ray, bool hit, Vector3 hitPos)
     {
+        hitColor.a = 0.3f;
+        missColor.a = 0.3f;
         Color c = hit ? hitColor : missColor;
         Gizmos.color = c;
 

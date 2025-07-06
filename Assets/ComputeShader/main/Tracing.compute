@@ -124,26 +124,17 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         if (_OnlyDrawAlbedo)
         {
             _Result[id.xy] = float4(hit.material.albedo, 1.0f);
-            return;
         }
-        // if (_OnlyDrawDepth)
-        // {
-        //     hit.distance = hit.distance / _CameraFar;
-        //     _Result[id.xy] = float4(hit.distance, hit.distance, hit.distance, 1.0f);
-        //     return;
-        // }
-        if (_OnlyDrawNormals)
-        {
-            _Result[id.xy] = float4(hit.normal * 0.5f + 0.5f, 1.0f);
-            return;
-        }
-
         if (_OnlyDrawDepth)
         {
             hit.distance = hit.distance / _CameraFar;
-            result += float4(hit.distance, hit.distance, hit.distance, 1.0f);
-            continue;
+            _Result[id.xy] = float4(hit.distance, hit.distance, hit.distance, 1.0f);
         }
+        if (_OnlyDrawNormals)
+        {
+            _Result[id.xy] = float4(hit.normal * 0.5f + 0.5f, 1.0f);
+        }
+
         
         result += r.energy * SRGB2Linear(Shade(r, hit));
         
@@ -152,6 +143,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
             break;
         }
     }
-    _Result[id.xy] = float4(result, 1.0f);
+    if (!_OnlyDrawNormals && !_OnlyDrawDepth && !_OnlyDrawAlbedo)
+        _Result[id.xy] = float4(result, 1.0f);
 }
 
