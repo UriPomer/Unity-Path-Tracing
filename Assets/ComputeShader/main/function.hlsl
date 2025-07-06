@@ -36,6 +36,54 @@ float3 GetNormal(int idx, float2 data, int normIdx, float2 uv)
     }
 }
 
+// 把局部完整尺寸（localSize）转换成世界空间轴对齐的完整尺寸（worldSize）
+inline void TransformSizeCS(
+    float4x4 localToWorld,
+    float3   localSize,
+    out float3 worldSize)
+{
+    float3 half_ = localSize * 0.5;
+
+    float3 hx = float3(half_.x, 0,      0);
+    float3 hy = float3(0,      half_.y, 0);
+    float3 hz = float3(0,      0,      half_.z);
+
+    float3 wx = mul(localToWorld, float4(hx, 0)).xyz;
+    float3 wy = mul(localToWorld, float4(hy, 0)).xyz;
+    float3 wz = mul(localToWorld, float4(hz, 0)).xyz;
+
+    float3 worldHalf = abs(wx) + abs(wy) + abs(wz);
+
+    worldSize = worldHalf * 2;
+}
+
+// 把局部包围盒(localMin, localMax)变换到世界空间下的轴对齐包围盒(worldMin, worldMax)
+inline void TransformBoundsCS(
+    float4x4 localToWorld,
+    float3   localMin,
+    float3   localMax,
+    out float3 worldMin,
+    out float3 worldMax)
+{
+    float3 localCenter = (localMin + localMax) * 0.5;
+    float3 half_ = (localMax - localMin) * 0.5;
+
+    float3 hx = float3(half_.x, 0,      0);
+    float3 hy = float3(0,      half_.y, 0);
+    float3 hz = float3(0,      0,      half_.z);
+
+    float3 wCenter = mul(localToWorld, float4(localCenter, 1)).xyz;
+
+    float3 wx = mul(localToWorld, float4(hx, 0)).xyz;
+    float3 wy = mul(localToWorld, float4(hy, 0)).xyz;
+    float3 wz = mul(localToWorld, float4(hz, 0)).xyz;
+
+    float3 worldHalf = abs(wx) + abs(wy) + abs(wz);
+
+    worldMin = wCenter - worldHalf;
+    worldMax = wCenter + worldHalf;
+}
+
 // ---------- 4×4 仿 inverse 函数（支持平移 + 任意缩放/旋转，无剪切即可） ----------
 float3x3 Inverse3x3(float3x3 m)
 {

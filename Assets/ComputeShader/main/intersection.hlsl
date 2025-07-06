@@ -20,19 +20,16 @@ Ray PrepareTreeEnterRay(Ray ray, int transformIdx)
 /*
  *变换长度为targetDist的向量到局部坐标系，然后返回新的长度
  */
-float PrepareTreeEnterTargetDistance(float targetDist, int transformIdx)
+float PrepareTreeEnterTargetDistance(float targetDist, int transformIdx, float3 rayDir)
 {
     float4x4 worldToLocal = _Transforms[transformIdx * 2 + 1];
-    if (targetDist >= 1.#INF)
+    if (!isfinite(targetDist))
     {
         return targetDist;
     }
-    else
-    {
-        // 变换长度为targetDist的向量到局部坐标系，然后返回新的长度
-        float3 dir = mul(worldToLocal, float4(targetDist, 0.0, 0.0, 0.0)).xyz;
-        return length(dir);
-    }
+    float3 vecWorld = rayDir * targetDist;  
+    float3 vecLocal = mul(worldToLocal, float4(vecWorld, 0.0)).xyz;
+    return length(vecLocal);
 }
 
 /*
@@ -40,11 +37,12 @@ float PrepareTreeEnterTargetDistance(float targetDist, int transformIdx)
  */
 void PrepareTreeEnterHit(Ray rayLocal, inout RayHit hit, int transformIdx)
 {
-    float4x4 worldToLocal = _Transforms[transformIdx * 2 + 1];
-    if (hit.distance < 1.#INF)
+    if (isfinite(hit.distance))
     {
+        float4x4 worldToLocal = _Transforms[transformIdx * 2 + 1];
         hit.position = mul(worldToLocal, float4(hit.position, 1.0)).xyz;
         hit.distance = length(hit.position - rayLocal.origin);
+        hit.normal = normalize(mul(worldToLocal, float4(hit.normal, 0.0)).xyz);
     }
 }
 
@@ -53,11 +51,12 @@ void PrepareTreeEnterHit(Ray rayLocal, inout RayHit hit, int transformIdx)
  */
 void PrepareTreeExit(Ray rayWorld, inout RayHit hit, int transformIdx)
 {
-    float4x4 localToWorld = _Transforms[transformIdx * 2];
-    if (hit.distance < 1.#INF)
+    if (isfinite(hit.distance))
     {
+        float4x4 localToWorld = _Transforms[transformIdx * 2];
         hit.position = mul(localToWorld, float4(hit.position, 1.0)).xyz;
         hit.distance = length(hit.position - rayWorld.origin);
+        hit.normal = normalize(mul(localToWorld, float4(hit.normal, 0.0)).xyz);
     }
 }
 
@@ -76,7 +75,6 @@ void IntersectGround(Ray ray, inout RayHit bestHit, float yVal = 0.0)
     }
 }
 
-
 /*
  *通过targetDist快速判断光线是否与地面相交
  */
@@ -87,7 +85,6 @@ bool IntersectGroundFast(Ray ray, float targetDist, float yVal = 0.0)
         return true;
     return false;
 }
-
 
 //这里的u和v就是三角形的两个顶点的uv坐标，t是光线与三角形的交点
 bool IntersectTriangle(Ray ray, float3 v0, float3 v1, float3 v2,
@@ -110,29 +107,6 @@ bool IntersectTriangle(Ray ray, float3 v0, float3 v1, float3 v2,
     if(v < 0.0 || v + u > 1.0)
         return false;
     t = dot(e2, qvec) * detInv;
-    return true;
-}
-
-/*
- *判断光线是否与盒子相交
- */
-bool IntersectBox1(Ray ray, float3 pMax, float3 pMin)
-{
-    float t0 = 0.0;
-    float t1 = 1.#INF;
-    float invRayDir, tNear, tFar;
-    for (int i = 0; i < 3; i++)
-    {
-        invRayDir = 1.0 / ray.dir[i];
-        tNear = (pMin[i] - ray.origin[i]) * invRayDir;
-        tFar = (pMax[i] - ray.origin[i]) * invRayDir;
-        t0 = max(t0, tNear);
-        t1 = min(t1, tFar);
-        if (t0 > t1)
-        {
-            return false;
-        }
-    }
     return true;
 }
 
@@ -186,7 +160,6 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
     int stackPtr = 0;
     int primitiveIdx;
     stack[stackPtr] = startIdx;
-    float4x4 localToWorld = _Transforms[transformIdx * 2];
     while (stackPtr >= 0 && stackPtr < BVHTREE_RECURSE_SIZE)
     {
         int idx = stack[stackPtr--];    //模拟栈
@@ -227,7 +200,7 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
                                 continue;
                             bestHit.distance = t;
                             bestHit.position = hitPos;
-                            bestHit.normal = normalize(mul(localToWorld, float4(norm, 0.0)).xyz);
+                            bestHit.normal = norm;
                             bestHit.material = mats;
                         }
                     }
@@ -325,7 +298,6 @@ bool IntersectBlasTreeFast(Ray ray, int startIdx, float targetDist)
     return false;
 }
 
-// 栈大小保持与 BLAS 相同
 void IntersectTlas(Ray ray, inout RayHit bestHit)
 {
     int stack[BVHTREE_RECURSE_SIZE];
@@ -349,7 +321,7 @@ void IntersectTlas(Ray ray, inout RayHit bestHit)
                               n.rootIdx, n.transformIdx);
             PrepareTreeExit(ray, bestHit, n.transformIdx);
         }
-        else                              // ---------- 内部 ----------
+        else
         {
             int left  = n.childIdx;
             int right = n.childIdx + 1;
@@ -387,7 +359,6 @@ void IntersectTlas(Ray ray, inout RayHit bestHit)
     }
 }
 
-
 bool IntersectTlasFast(Ray ray, float targetDist)
 {
     int stack[BVHTREE_RECURSE_SIZE];
@@ -404,12 +375,12 @@ bool IntersectTlasFast(Ray ray, float targetDist)
 
         if (n.childIdx < 0)               // 叶子
         {
-            float localDist = PrepareTreeEnterTargetDistance(targetDist, n.transformIdx);
+            float localDist = PrepareTreeEnterTargetDistance(targetDist, n.transformIdx, ray.dir);
             Ray   localRay  = PrepareTreeEnterRay(ray, n.transformIdx);
             if (IntersectBlasTreeFast(localRay, n.rootIdx, localDist))
                 return true;
         }
-        else                              // 内部
+        else
         {
             int left  = n.childIdx;
             int right = n.childIdx + 1;
@@ -444,8 +415,5 @@ bool IntersectTlasFast(Ray ray, float targetDist)
     }
     return false;
 }
-
-
-
 
 #endif

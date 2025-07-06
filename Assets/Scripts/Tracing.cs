@@ -228,10 +228,10 @@ public class Tracing : MonoBehaviour
 
     private void OnDrawGizmos()
     {
-        if (!drawGizmos)
-        {
-            return;
-        }
+        // if (!drawGizmos)
+        // {
+        //     return;
+        // }
         
         var bnodes = BVHBuilder.GetBLASNodes();
         var meshNodes = BVHBuilder.GetMeshNodes();
@@ -260,14 +260,10 @@ public class Tracing : MonoBehaviour
                         var mesh = meshNodes[orderedInfos[i]];
                         var transform_ = transforms[mesh.TransformIdx * 2]; // local to world
                         Vector3 LocalCenter  = (mesh.BoundMin + mesh.BoundMax) * 0.5f;
-                        Vector3 LocalSize    = (mesh.BoundMax - mesh.BoundMin);
                 
                         var WorldCenter = transform_.MultiplyPoint3x4(LocalCenter);
-                        var WorldSize = transform_.MultiplyVector(LocalSize);
-                
-                        WorldSize.x = Mathf.Abs(WorldSize.x);
-                        WorldSize.y = Mathf.Abs(WorldSize.y);
-                        WorldSize.z = Mathf.Abs(WorldSize.z);
+                        
+                        TransformUtils.TransformSize(transform_, (mesh.BoundMax - mesh.BoundMin), out var WorldSize);
                         
                         Gizmos.DrawWireCube(WorldCenter, WorldSize);
                     }
@@ -292,23 +288,13 @@ public class Tracing : MonoBehaviour
             {
                 var n            = meshNodes[i];
                 var l2w          = transforms[n.TransformIdx * 2];
-                Vector3 LocalCenter  = (n.BoundMin + n.BoundMax) * 0.5f;
-                Vector3 LocalSize    = (n.BoundMax - n.BoundMin);
-                
-                var WorldCenter = l2w.MultiplyPoint3x4(LocalCenter);
-                var WorldSize = l2w.MultiplyVector(LocalSize);
-                
-                WorldSize.x = Mathf.Abs(WorldSize.x);
-                WorldSize.y = Mathf.Abs(WorldSize.y);
-                WorldSize.z = Mathf.Abs(WorldSize.z);
-            
+                TransformUtils.TransformSize(l2w, (n.BoundMax - n.BoundMin), out var WorldSize);
+
+                Vector3 WorldCenter = l2w.MultiplyPoint3x4((n.BoundMin + n.BoundMax) * 0.5f);
+
                 Gizmos.color = Color.yellow;
-                Gizmos.DrawWireCube(
-                    WorldCenter,
-                    WorldSize);
+                Gizmos.DrawWireCube(WorldCenter, WorldSize);
             }
-            
-            
         }
         
         if (tlasNodes == null || tlasNodes.Count == 0) return;
@@ -335,9 +321,9 @@ public class Tracing : MonoBehaviour
                 if(n.ChildIdx < 0)
                 {
                     // size 变为正数
-                    size.x = Mathf.Abs(size.x);
-                    size.y = Mathf.Abs(size.y);
-                    size.z = Mathf.Abs(size.z);
+                    // size.x = Mathf.Abs(size.x);
+                    // size.y = Mathf.Abs(size.y);
+                    // size.z = Mathf.Abs(size.z);
                     Gizmos.DrawWireCube(center, size);
                 }
             
@@ -345,6 +331,11 @@ public class Tracing : MonoBehaviour
                 {
                     stackTLAS[++sp] = n.ChildIdx + 1; // 右
                     stackTLAS[++sp] = n.ChildIdx; // 左
+                    
+                    // size.x = Mathf.Abs(size.x);
+                    // size.y = Mathf.Abs(size.y);
+                    // size.z = Mathf.Abs(size.z);
+                    Gizmos.DrawWireCube(center, size);
                 }
             }
         }
