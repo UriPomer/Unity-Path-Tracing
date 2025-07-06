@@ -327,10 +327,21 @@ public abstract class BVH
         {
             var n = meshNodes[i];
             PrimitiveBoundInfo boundInfo;
+
+            var l2w = transforms[n.TransformIdx * 2];
+            
+            TransformUtils.TransformBounds(
+                l2w,
+                n.BoundMin,
+                n.BoundMax,
+                out var WorldMin,
+                out var WorldMax
+            );
+            
             boundInfo.Bounds = new AABB
             (
-                transforms[n.TransformIdx * 2].MultiplyPoint3x4(n.BoundMin), // localtoworld
-                transforms[n.TransformIdx * 2].MultiplyPoint3x4(n.BoundMax)
+                WorldMin,
+                WorldMax
             );
             boundInfo.Center       = boundInfo.Bounds.Center();
             boundInfo.OriginTriOrMeshIndex = i;
@@ -415,20 +426,13 @@ public class BVHSAH : BVH
             return BVHNode.CreateLeaf(dst, 1, BoundingBox);
         }
 
-        AABB SplitBoundingBox;
-        if (BLASFlag)
-        {
-            SplitBoundingBox = new AABB();
-            for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++)
-                SplitBoundingBox.Extend(Infos[i].Center);
-        }
-        else
-        {
-            SplitBoundingBox = BoundingBox;
-        }
-        int SplitAxis = SplitBoundingBox.MaxDimension();
+        var CenterBoundingBox = new AABB();
+        for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++)
+            CenterBoundingBox.Extend(Infos[i].Center);
+            
+        int SplitAxis = CenterBoundingBox.MaxDimension();
 
-        if (IsBuildingBLAS && SplitBoundingBox.extent[SplitAxis] < 1e-4f)
+        if (IsBuildingBLAS && CenterBoundingBox.extent[SplitAxis] < 1e-4f)
         {
             int dst = OriginTriOrMeshStartIndices.Count;
             for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++)
@@ -440,12 +444,12 @@ public class BVHSAH : BVH
         //// ------------- //// Calculate Buckets
         for (int i = 0; i < nBuckets; i++) bucketsCache[i].Reset();
 
-        float extent = SplitBoundingBox.extent[SplitAxis];
+        float extent = CenterBoundingBox.extent[SplitAxis];
         float invSplitAxisLength = extent > 1e-5f ? 1f / extent : 0f;
 
         for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++)
         {
-            int b = (int)((Infos[i].Center[SplitAxis] - SplitBoundingBox.min[SplitAxis]) * invSplitAxisLength * nBuckets);
+            int b = (int)((Infos[i].Center[SplitAxis] - CenterBoundingBox.min[SplitAxis]) * invSplitAxisLength * nBuckets);
             b = Mathf.Clamp(b, 0, nBuckets - 1);
 
             ref SAHBucket bucket = ref bucketsCache[b];
@@ -498,9 +502,9 @@ public class BVHSAH : BVH
         Infos.Sort(PrimitiveBoundInfoStart, count, Comparer<PrimitiveBoundInfo>.Create((a, b) =>
         {
             int ba = Mathf.Clamp(
-                (int)((a.Center[SplitAxis] - SplitBoundingBox.min[SplitAxis]) * invSplitAxisLength * nBuckets), 0, nBuckets - 1);
+                (int)((a.Center[SplitAxis] - CenterBoundingBox.min[SplitAxis]) * invSplitAxisLength * nBuckets), 0, nBuckets - 1);
             int bb = Mathf.Clamp(
-                (int)((b.Center[SplitAxis] - SplitBoundingBox.min[SplitAxis]) * invSplitAxisLength * nBuckets), 0, nBuckets - 1);
+                (int)((b.Center[SplitAxis] - CenterBoundingBox.min[SplitAxis]) * invSplitAxisLength * nBuckets), 0, nBuckets - 1);
             return ba.CompareTo(bb);
         }));
 

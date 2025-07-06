@@ -64,13 +64,6 @@ public class Tracing : MonoBehaviour
 
     private void OnRenderImage(RenderTexture source, RenderTexture destination)
     {
-#if UNITY_EDITOR
-        if (drawGizmos)
-        {
-            Graphics.Blit(source, destination);
-            return;
-        }
-#endif
         Render(destination);
     }
 
@@ -228,10 +221,10 @@ public class Tracing : MonoBehaviour
 
     private void OnDrawGizmos()
     {
-        // if (!drawGizmos)
-        // {
-        //     return;
-        // }
+        if (!drawGizmos)
+        {
+            return;
+        }
         
         var bnodes = BVHBuilder.GetBLASNodes();
         var meshNodes = BVHBuilder.GetMeshNodes();
@@ -320,10 +313,6 @@ public class Tracing : MonoBehaviour
                     : new Color(0.0f, 1.0f, 0.0f);
                 if(n.ChildIdx < 0)
                 {
-                    // size 变为正数
-                    // size.x = Mathf.Abs(size.x);
-                    // size.y = Mathf.Abs(size.y);
-                    // size.z = Mathf.Abs(size.z);
                     Gizmos.DrawWireCube(center, size);
                 }
             
@@ -332,9 +321,6 @@ public class Tracing : MonoBehaviour
                     stackTLAS[++sp] = n.ChildIdx + 1; // 右
                     stackTLAS[++sp] = n.ChildIdx; // 左
                     
-                    // size.x = Mathf.Abs(size.x);
-                    // size.y = Mathf.Abs(size.y);
-                    // size.z = Mathf.Abs(size.z);
                     Gizmos.DrawWireCube(center, size);
                 }
             }
@@ -357,14 +343,13 @@ public class Tracing : MonoBehaviour
                 {
                     var idx = stack[stackPtr--];
                     var bnode = bnodes[idx];
-                    var min = localToWorld.MultiplyPoint3x4(bnode.BoundMin);
-                    var max = localToWorld.MultiplyPoint3x4(bnode.BoundMax);
-                    var center = (min + max) / 2;
-                    var s = max - min;
+                    TransformUtils.TransformSize(localToWorld, (bnode.BoundMax - bnode.BoundMin), out var WorldSize);
+                    Vector3 WorldCenter = localToWorld.MultiplyPoint3x4((bnode.BoundMin + bnode.BoundMax) * 0.5f);
+
                     Color color = Color.red;
                     color.a = 0.5f;
                     Gizmos.color = color;
-                    Gizmos.DrawWireCube(center, s);
+                    Gizmos.DrawWireCube(WorldCenter, WorldSize);
                     
                     if(bnode.PrimitiveStartIdx < 0)
                     {
@@ -373,7 +358,6 @@ public class Tracing : MonoBehaviour
                         stack[++stackPtr] = bnode.ChildIdx + 1;
                     }
                 }
-                
             }
         }
     }

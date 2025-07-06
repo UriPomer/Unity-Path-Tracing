@@ -18,6 +18,10 @@ public class TransformUtils
             Mathf.Abs(wx.x) + Mathf.Abs(wy.x) + Mathf.Abs(wz.x),
             Mathf.Abs(wx.y) + Mathf.Abs(wy.y) + Mathf.Abs(wz.y),
             Mathf.Abs(wx.z) + Mathf.Abs(wy.z) + Mathf.Abs(wz.z)
+            // wx.x + wy.x + wz.x,
+            // wx.y + wy.y + wz.y,
+            // wx.z + wy.z + wz.z
+            
         );
 
         WorldSize = worldHalf * 2f;
@@ -47,6 +51,9 @@ public class TransformUtils
             Mathf.Abs(wx.x) + Mathf.Abs(wy.x) + Mathf.Abs(wz.x),
             Mathf.Abs(wx.y) + Mathf.Abs(wy.y) + Mathf.Abs(wz.y),
             Mathf.Abs(wx.z) + Mathf.Abs(wy.z) + Mathf.Abs(wz.z)
+            // wx.x + wy.x + wz.x,
+            // wx.y + wy.y + wz.y,
+            // wx.z + wy.z + wz.z
         );
 
         worldMin = wCenter - worldHalf;
