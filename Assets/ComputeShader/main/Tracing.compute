@@ -10,11 +10,10 @@ float3 Shade(inout Ray ray, inout RayHit hit)
 {
     if(hit.distance < 1.#INF)
     {
-        // if (dot(hit.material.emission, float3(1.0, 1.0, 1.0)) > 0.0) {
-        //     ray.energy = 0;
-        //     hit.should_break = true;
-        //     return hit.material.emission;
-        // }
+        if (dot(hit.material.emission, float3(1.0, 1.0, 1.0)) > 0.0) {
+            hit.should_break = true;
+            return hit.material.emission;
+        }
         
         float3 lightContribution = GetLightContribution(hit);
 
@@ -61,11 +60,9 @@ float3 Shade(inout Ray ray, inout RayHit hit)
             ray.origin = hit.position + hit.normal * 1e-5; // Offset the origin slightly to avoid self-intersection
             if(roulette > diffChance)
             {
-                float alpha = SmoothnessToPhongAlpha(hit.material.roughness);
                 float3 rayOutDir = normalize(lerp(
                     reflect(ray.dir,hit.normal),
-                    // SampleReflectionDirectionSphere(hit.normal, alpha),
-                    SampleHemisphere4(hit.normal),
+                    SampleHemisphere(hit.normal),
                     hit.material.roughness * hit.material.roughness
                     ));
 
@@ -82,7 +79,7 @@ float3 Shade(inout Ray ray, inout RayHit hit)
                 lightContribution *= hit.material.roughness * hit.material.roughness;
             }
             else{
-                float3 rayOutDir = normalize(SampleHemisphere4(hit.normal));
+                float3 rayOutDir = normalize(SampleHemisphere(hit.normal));
                 float3 H = normalize(rayOutDir + ray.dir);  // Half vector
 
                 // Diffuse Model
@@ -96,14 +93,11 @@ float3 Shade(inout Ray ray, inout RayHit hit)
                 ray.energy *= 1.0 / clamp(diffChance, 1e-2, 1.0);
             }
         }
-        // hit.should_break = hit.material.emission >= 0.0;
         return hit.material.emission + lightContribution;
     }
-    else
-    {
-        ray.energy = 0.0f;
-        return SampleSkybox(ray);
-    }
+
+    hit.should_break = true;
+    return SampleSkybox(ray);
 }
 
 [numthreads(8,8,1)]
@@ -113,7 +107,6 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     Ray r = GenRayByID(id.xy);
     _Pixel = id.xy;
     float3 result = float3(0.0f, 0.0f, 0.0f);
-
     
     for(int i = 0; i < _TraceDepth; i++)
     {
@@ -137,12 +130,11 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
         
         result += r.energy * SRGB2Linear(Shade(r, hit));
-        r.invDir = 1.0 / r.dir;
-        
-        if (!any(r.energy))
+        if (hit.should_break)
         {
             break;
         }
+        r.invDir = 1.0 / r.dir;
     }
     if (!_OnlyDrawNormals && !_OnlyDrawDepth && !_OnlyDrawAlbedo)
         _Result[id.xy] = float4(result, 1.0f);

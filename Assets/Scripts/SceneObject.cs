@@ -4,7 +4,7 @@ using System.Collections.Generic;
 // add this script as component of the parent of all sub-objects
 public class SceneObject : MonoBehaviour
 {
-    private void OnEnable()
+    private void Start()
     {
         foreach(Transform sub in transform)
         {

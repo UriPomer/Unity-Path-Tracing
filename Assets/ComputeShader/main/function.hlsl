@@ -36,87 +36,6 @@ float3 GetNormal(int idx, float2 data, int normIdx, float2 uv)
     }
 }
 
-// 把局部完整尺寸（localSize）转换成世界空间轴对齐的完整尺寸（worldSize）
-inline void TransformSizeCS(
-    float4x4 localToWorld,
-    float3   localSize,
-    out float3 worldSize)
-{
-    float3 half_ = localSize * 0.5;
-
-    float3 hx = float3(half_.x, 0,      0);
-    float3 hy = float3(0,      half_.y, 0);
-    float3 hz = float3(0,      0,      half_.z);
-
-    float3 wx = mul(localToWorld, float4(hx, 0)).xyz;
-    float3 wy = mul(localToWorld, float4(hy, 0)).xyz;
-    float3 wz = mul(localToWorld, float4(hz, 0)).xyz;
-
-    float3 worldHalf = abs(wx) + abs(wy) + abs(wz);
-
-    worldSize = worldHalf * 2;
-}
-
-// 把局部包围盒(localMin, localMax)变换到世界空间下的轴对齐包围盒(worldMin, worldMax)
-inline void TransformBoundsCS(
-    float4x4 localToWorld,
-    float3   localMin,
-    float3   localMax,
-    out float3 worldMin,
-    out float3 worldMax)
-{
-    float3 localCenter = (localMin + localMax) * 0.5;
-    float3 half_ = (localMax - localMin) * 0.5;
-
-    float3 hx = float3(half_.x, 0,      0);
-    float3 hy = float3(0,      half_.y, 0);
-    float3 hz = float3(0,      0,      half_.z);
-
-    float3 wCenter = mul(localToWorld, float4(localCenter, 1)).xyz;
-
-    float3 wx = mul(localToWorld, float4(hx, 0)).xyz;
-    float3 wy = mul(localToWorld, float4(hy, 0)).xyz;
-    float3 wz = mul(localToWorld, float4(hz, 0)).xyz;
-
-    float3 worldHalf = abs(wx) + abs(wy) + abs(wz);
-
-    worldMin = wCenter - worldHalf;
-    worldMax = wCenter + worldHalf;
-}
-
-// ---------- 4×4 仿 inverse 函数（支持平移 + 任意缩放/旋转，无剪切即可） ----------
-float3x3 Inverse3x3(float3x3 m)
-{
-    // 余子式矩阵的转置 / 行列式
-    float3 r0 = cross(m[1], m[2]);
-    float3 r1 = cross(m[2], m[0]);
-    float3 r2 = cross(m[0], m[1]);
-    float  det = dot(m[0], r0);
-    return transpose(float3x3(r0, r1, r2)) / det;
-}
-
-// 仅针对 TRS（平移+旋转+缩放）矩阵的快速求逆
-float4x4 AffineInverse(float4x4 m)
-{
-    // 提取 3×3 部分（旋转×缩放）
-    float3x3 R    = (float3x3)m;      
-    // 提取平移分量：第 4 行前三个分量
-    float3   t    = m[3].xyz;         
-
-    // 3×3 求逆
-    float3x3 Rinv = Inverse3x3(R);
-    // 求逆平移：-R⁻¹ * t
-    float3   tInv = -mul(Rinv, t);
-
-    // 构造逆矩阵，仍按行传参
-    return float4x4(
-        float4(Rinv[0][0], Rinv[0][1], Rinv[0][2], 0.0f),
-        float4(Rinv[1][0], Rinv[1][1], Rinv[1][2], 0.0f),
-        float4(Rinv[2][0], Rinv[2][1], Rinv[2][2], 0.0f),
-        float4(tInv.x,      tInv.y,      tInv.z,      1.0f)
-    );
-}
-
 float sdot(float3 x, float3 y, float f = 1.0f)
 {
     return saturate(dot(x, y) * f);
@@ -149,13 +68,6 @@ float RNG_Next(inout RNG rng)
     rng.state = WangHash(rng.state);
     return HashToFloat(rng.state);
 }
-
-// float rand()
-// {
-//     float result = frac(sin(_Seed / 100.0f * dot(_Pixel, float2(12.9898f, 78.233f))) * 43758.5453f); // Fraction part
-//     _Seed += 1.0f;
-//     return result;
-// }
 
 bool SkipTransparent(Material mat)
 {
@@ -194,7 +106,7 @@ float3 SampleReflectionDirectionSphere(float3 normal, float alpha)
     return mul(tangentSpaceDir, GetTangentSpace(normal));
 }
 
-float3 SampleHemisphere4(float3 norm)
+float3 SampleHemisphere(float3 norm)
 {
     float2 rand1 = RNG_Next(rng);
     float theta = rand1.x * PI_TWO;

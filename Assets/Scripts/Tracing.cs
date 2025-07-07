@@ -64,7 +64,9 @@ public class Tracing : MonoBehaviour
     {
         Render(destination);
     }
-
+    
+    private bool NeedUpdate = false;
+    
     private void Render(RenderTexture destination)
     {
         if (target == null || target.width != Screen.width || target.height != Screen.height)
@@ -86,7 +88,14 @@ public class Tracing : MonoBehaviour
             frameConverged.Create();
         }
         
-        SetShaderParameters(100);
+        if(Camera.main != null && (Camera.main.transform.hasChanged || BVHBuilder.Validate()))
+        {
+            ResetSampleCount();
+            Camera.main.transform.hasChanged = false;
+            NeedUpdate = true;
+        }
+        
+        SetShaderParameters();
         sampleCount++;
         dispatchGroupXFull = Mathf.CeilToInt(Screen.width / 8.0f);
         dispatchGroupYFull = Mathf.CeilToInt(Screen.height / 8.0f);
@@ -109,17 +118,8 @@ public class Tracing : MonoBehaviour
         }
     }
 
-    private bool NeedUpdate = false;
-
     private void Update()
     {
-        if(Camera.main != null && (Camera.main.transform.hasChanged || BVHBuilder.Validate()))
-        {
-            ResetSampleCount();
-            Camera.main.transform.hasChanged = false;
-            NeedUpdate = true;
-        }
-
         if (_OldDenoise != Denoise)
         {
             _OldDenoise = Denoise;
@@ -132,7 +132,7 @@ public class Tracing : MonoBehaviour
     
     private uint frameId = 0;
 
-    private void SetShaderParameters(int refreshRate)
+    private void SetShaderParameters()
     {
         tracingShader.SetInt("_FrameCount", (int)frameId++);
         
