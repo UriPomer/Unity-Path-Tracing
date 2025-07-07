@@ -38,26 +38,33 @@ float SmithG(float NDotV, float alphaG)
     return (2.0 * NDotV) / (NDotV + sqrt(a + b - a * b));
 }
 
+float DistributionGGX(float3 normal, float3 halfVec, float roughness)
+{
+    float NdotH = saturate(dot(normal, halfVec));
+        float alpha = roughness * roughness;
+    
+    float alpha2 = alpha * alpha;
+    float NdotH2 = NdotH * NdotH;
+    float denom = NdotH2 * (alpha2 - 1.0) + 1.0;
+    return alpha2 / (PI * denom * denom);
+}
+
+
 void SpecReflModel(RayHit hit, float3 V, float3 L, float3 H, inout float3 energy)
 {
     float NdotL = abs(dot(hit.normal, L));
-    //float NdotV = abs(dot(hit.norm, -V));
     float3 specColor = lerp(0.04, hit.material.albedo, hit.material.metallic);
     float3 F = SchlickFresnel(dot(L, H), specColor);
-    //float D = DistributionGGX(hit.norm, H, hit.mat.roughness);
-    //float G = GeometrySmith(hit.norm, -V, L, hit.mat.roughness);
+    float D = DistributionGGX(hit.normal, H, hit.material.roughness);
     float G = SmithG(NdotL, hit.material.roughness);
-    energy *= F * G;
+    energy *= F * G * D;
 }
 
 void SpecRefrModel(RayHit hit, float3 V, float3 L, float3 H, inout float3 energy)
 {
     float NdotL = abs(dot(hit.normal, L));
-    //float NdotV = abs(dot(-hit.norm, -V));
     float F = DielectricFresnel(dot(V, H), hit.material.ior);
-    //float D = DistributionGGX(hit.norm, H, hit.mat.roughness);
     float G = SmithG(NdotL, hit.material.roughness);
-    //float eta2 = hit.mat.ior * hit.mat.ior;
     energy *= pow(hit.material.albedo, 0.5) * (1.0 - hit.material.metallic) *
         (1.0 - F) * G;
 }

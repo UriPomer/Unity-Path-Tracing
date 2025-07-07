@@ -11,6 +11,7 @@ float3 Shade(inout Ray ray, inout RayHit hit)
     if(hit.distance < 1.#INF)
     {
         if (dot(hit.material.emission, float3(1.0, 1.0, 1.0)) > 0.0) {
+            ray.energy = 0.0;
             hit.should_break = true;
             return hit.material.emission;
         }
@@ -95,7 +96,7 @@ float3 Shade(inout Ray ray, inout RayHit hit)
         }
         return hit.material.emission + lightContribution;
     }
-
+    ray.energy = 0.0;
     hit.should_break = true;
     return SampleSkybox(ray);
 }
