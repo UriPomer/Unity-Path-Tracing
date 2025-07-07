@@ -89,7 +89,7 @@ public abstract class BVH
 
     protected abstract BVHNode Build(
         List<PrimitiveBoundInfo> Infos,
-        int PrimitiveBoundInfoStart, int PrimitiveBoundInfoEnd, bool BLASFlag
+        int PrimitiveBoundInfoStart, int PrimitiveBoundInfoEnd, bool BLASFlag, int depth = 0
     );
 
     /// <summary>

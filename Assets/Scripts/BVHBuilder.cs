@@ -110,14 +110,13 @@ public class BVHBuilder
         }
 
         bool anyMoved = false;
-        foreach (var obj in objects)
+        foreach (var obj in objects)    // 性能瓶颈
         {
             if (obj.transform.hasChanged || (obj.transform.parent != null && obj.transform.parent.hasChanged))
             {
                 anyMoved = true;
                 obj.transform.hasChanged = false;
                 if (obj.transform.parent != null) obj.transform.parent.hasChanged = false;
-                break;
             }
         }
 

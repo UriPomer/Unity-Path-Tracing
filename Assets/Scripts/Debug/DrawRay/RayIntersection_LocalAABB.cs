@@ -14,7 +14,7 @@ public class RayIntersection_LocalAABB : MonoBehaviour
 
     private void OnDrawGizmos()
     {
-        if (!RayTestUtils.EnsureCamera(cam)) return;
+        if (!enabled || !RayTestUtils.EnsureCamera(cam)) return;
         Random.InitState(12345);
 
         List<RayTestUtils.MyRay> rays = RayTestUtils.GenerateWorldRays(cam, rayCount);

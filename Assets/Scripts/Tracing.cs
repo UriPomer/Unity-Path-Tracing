@@ -1,9 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Runtime.InteropServices;
-using UnityEditor;
 using UnityEngine;
-using UnityEngine.Profiling;
 
 [RequireComponent(typeof(LightManager))]
 public class Tracing : MonoBehaviour
@@ -328,18 +325,19 @@ public class Tracing : MonoBehaviour
                     var bnode = bnodes[idx];
                     TransformUtils.TransformSize(localToWorld, (bnode.BoundMax - bnode.BoundMin), out var WorldSize);
                     Vector3 WorldCenter = localToWorld.MultiplyPoint3x4((bnode.BoundMin + bnode.BoundMax) * 0.5f);
-
-                    Color color = Color.red;
-                    // color.a = 0.5f;
-                    // Gizmos.color = color;
-                    // Gizmos.DrawWireCube(WorldCenter, WorldSize);
                     
-                    var worldBoundsMin = localToWorld.MultiplyPoint3x4(bnode.BoundMin);
-                    var worldBoundsMax = localToWorld.MultiplyPoint3x4(bnode.BoundMax);
-                    color = Color.blue;
+                    Color color = Color.red;
                     color.a = 0.5f;
                     Gizmos.color = color;
-                    Gizmos.DrawWireCube((worldBoundsMin + worldBoundsMax)/2, worldBoundsMax - worldBoundsMin);
+                    Gizmos.DrawWireCube(WorldCenter, WorldSize);
+                    
+                    // TransformUtils.TransformBounds(localToWorld, bnode.BoundMin, bnode.BoundMax, out var worldMin, out var worldMax);
+                    //
+                    // color = Color.blue;
+                    // color.a = 0.5f;
+                    // Gizmos.color = color;
+                    //
+                    // Gizmos.DrawWireCube((worldMin + worldMax) / 2, (worldMax - worldMin));
                     
                     if(bnode.PrimitiveStartIdx < 0)
                     {

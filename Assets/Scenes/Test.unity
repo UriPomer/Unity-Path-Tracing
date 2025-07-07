@@ -528,8 +528,8 @@ MonoBehaviour:
   OnlyDrawDepth: 0
   Denoise: 0
   drawGizmos: 1
-  DrawTLAS: 0
-  DrawBLAS: 1
+  DrawTLAS: 1
+  DrawBLAS: 0
   DrawMeshNode: 0
   DrawTLASBVH: 0
 --- !u!114 &963194231

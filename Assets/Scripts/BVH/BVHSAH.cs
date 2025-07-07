@@ -9,12 +9,12 @@ using System.Linq;
 /// </summary>
 public class BVHSAH : BVH
 {
-    private static readonly int nBuckets = 12;
+    private static readonly int nBuckets = 6;
     
     /// <summary>
     /// Info for SAH
     /// </summary>
-    public struct SAHBucket
+    private struct SAHBucket
     {
         public int  Count;
         public AABB Bounds;
@@ -48,8 +48,10 @@ public class BVHSAH : BVH
         var primitiveBoundInfo = CreatePrimitiveBoundInfo(rawNodes, transforms);
         BVHRoot = Build(primitiveBoundInfo, 0, primitiveBoundInfo.Count, false);
     }
+    
+    const int MaxDepth = 32;
 
-    protected sealed override BVHNode Build(List<PrimitiveBoundInfo> Infos, int PrimitiveBoundInfoStart, int PrimitiveBoundInfoEnd, bool BLASFlag)
+    protected sealed override BVHNode Build(List<PrimitiveBoundInfo> Infos, int PrimitiveBoundInfoStart, int PrimitiveBoundInfoEnd, bool BLASFlag, int depth = 0)
     {
         //// ------------- //// Total Bounds
         bool IsBuildingBLAS = BLASFlag;
@@ -69,21 +71,23 @@ public class BVHSAH : BVH
             CenterBoundingBox.Extend(Infos[i].Center);
             
         int SplitAxis = CenterBoundingBox.MaxDimension();
+        
+        float extent = CenterBoundingBox.extent[SplitAxis];
 
-        if (IsBuildingBLAS && CenterBoundingBox.extent[SplitAxis] < 1e-4f)
+        if (IsBuildingBLAS && (extent < 1e-4f || depth >= MaxDepth))
         {
             int dst = OriginTriOrMeshStartIndices.Count;
             for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++)
                 OriginTriOrMeshStartIndices.Add(Infos[i].OriginTriOrMeshIndex);
             return BVHNode.CreateLeaf(dst, count, BoundingBox);
         }
+        
+        float invSplitAxisLength = 1f / extent;
         //// ------------- ////
 
         //// ------------- //// Calculate Buckets
         for (int i = 0; i < nBuckets; i++) bucketsCache[i].Reset();
 
-        float extent = CenterBoundingBox.extent[SplitAxis];
-        float invSplitAxisLength = extent > 1e-5f ? 1f / extent : 0f;
 
         for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++)
         {
@@ -136,22 +140,27 @@ public class BVHSAH : BVH
                 OriginTriOrMeshStartIndices.Add(Infos[i].OriginTriOrMeshIndex);
             return BVHNode.CreateLeaf(dst, count, BoundingBox);
         }
+        
+        float splitPos = CenterBoundingBox.min[SplitAxis] + (bestSplit + 1) * (CenterBoundingBox.extent[SplitAxis] / nBuckets);
+        int numOnLeft = 0;
 
-        Infos.Sort(PrimitiveBoundInfoStart, count, Comparer<PrimitiveBoundInfo>.Create((a, b) =>
+        for (int i = PrimitiveBoundInfoStart; i < PrimitiveBoundInfoEnd; i++)
         {
-            int ba = Mathf.Clamp(
-                (int)((a.Center[SplitAxis] - CenterBoundingBox.min[SplitAxis]) * invSplitAxisLength * nBuckets), 0, nBuckets - 1);
-            int bb = Mathf.Clamp(
-                (int)((b.Center[SplitAxis] - CenterBoundingBox.min[SplitAxis]) * invSplitAxisLength * nBuckets), 0, nBuckets - 1);
-            return ba.CompareTo(bb);
-        }));
+            PrimitiveBoundInfo triInfo = Infos[i];
+
+            if (triInfo.Center[SplitAxis] < splitPos)
+            {
+                (Infos[PrimitiveBoundInfoStart + numOnLeft], Infos[i]) = (Infos[i], Infos[PrimitiveBoundInfoStart + numOnLeft]);
+                numOnLeft++;
+            }
+        }
 
         int mid = PrimitiveBoundInfoStart;
         for (int i = 0; i <= bestSplit; i++) mid += bucketsCache[i].Count;
         if (mid == PrimitiveBoundInfoStart || mid == PrimitiveBoundInfoEnd) mid = (PrimitiveBoundInfoStart + PrimitiveBoundInfoEnd) >> 1;
 
-        var left  = Build(Infos, PrimitiveBoundInfoStart, mid, IsBuildingBLAS);
-        var right = Build(Infos, mid,   PrimitiveBoundInfoEnd, IsBuildingBLAS);
+        var left  = Build(Infos, PrimitiveBoundInfoStart, mid, IsBuildingBLAS, depth+1);
+        var right = Build(Infos, mid,   PrimitiveBoundInfoEnd, IsBuildingBLAS, depth+1);
         return BVHNode.CreateParent(left, right);
     }
 }
