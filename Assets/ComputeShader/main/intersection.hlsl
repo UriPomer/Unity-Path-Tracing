@@ -126,14 +126,18 @@ bool IntersectBox2(Ray ray, float3 pMax, float3 pMin)
     return t1 >= t0;
 }
 
-/*
- *判断光线是否与盒子相交，同时考虑光线的双向
- */
-bool IntersectBox3(Ray ray, RayHit bestHit, float3 pMax, float3 pMin)
+float IntersectBox(Ray ray, float3 pMax, float3 pMin)
 {
-    bool intersectForward = IntersectBox2(ray, pMax, pMin);
-    bool intersectBackward = bestHit.distance < 1.#INF ? IntersectBox2(GenRay(bestHit.position, -ray.dir), pMax, pMin) : true;
-    return intersectForward && intersectBackward;
+    // reference: https://github.com/knightcrawler25/GLSL-PathTracer/blob/master/src/shaders/common/intersection.glsl
+    // reference: https://medium.com/@bromanz/another-view-on-the-classic-ray-aabb-intersection-algorithm-for-bvh-traversal-41125138b525
+    float3 f = (pMax - ray.origin) * ray.invDir;
+    float3 n = (pMin - ray.origin) * ray.invDir;
+    float3 tMax = max(f, n);
+    float3 tMin = min(f, n);
+    float dstNear = max(tMin.x, max(tMin.y, tMin.z));
+    float dstFar = min(tMax.x, min(tMax.y, tMax.z));
+    bool hit = dstNear <= dstFar && dstFar >= 0.0;
+    return hit ? dstNear : 1.#INF;
 }
 
 float RayBoundingBoxDst(const Ray ray, float3 boxMin, float3 boxMax)
@@ -165,9 +169,9 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
         int idx = stack[stackPtr--];    //模拟栈
         BLASNode node = _BNodes[idx];   //获取当前BLAS节点
 
-        bool hit = IntersectBox2(ray, node.boundMax, node.boundMin);    // 和BLAS的包围盒求交
+        float dst = IntersectBox(ray, node.boundMax, node.boundMin);    // 和BLAS的包围盒求交
         bool leaf = node.primitiveStartIdx >= 0;
-        if (hit)
+        if (dst < bestHit.distance)
         {
             if (leaf)
             {
@@ -252,9 +256,9 @@ bool IntersectBlasTreeFast(Ray ray, int startIdx, float targetDist)
         int idx = stack[stackPtr--];
         BLASNode node = _BNodes[idx];
         // check if ray intersect with bounding box
-        bool hit = IntersectBox2(ray, node.boundMax, node.boundMin);
+        float dst = IntersectBox(ray, node.boundMax, node.boundMin);
         bool leaf = node.primitiveStartIdx >= 0;
-        if (hit)
+        if (dst < targetDist)
         {
             if (leaf)
             {
@@ -299,59 +303,59 @@ bool IntersectBlasTreeFast(Ray ray, int startIdx, float targetDist)
 void IntersectTlas(Ray ray, inout RayHit bestHit)
 {
     int stack[BVHTREE_RECURSE_SIZE];
-    int sp = 0;
+    int stackIndex = 0;
     stack[0] = 0;                         // 根始终是 0
 
-    while (sp >= 0)
+    while (stackIndex >= 0)
     {
-        int idx = stack[sp--];
+        int idx = stack[stackIndex--];
         TLASNode n = _TLASNodes[idx];
 
         // ray、bounds都是世界坐标
-        if (!IntersectBox2(ray, n.boundMax, n.boundMin))
-            continue;
-
-        if (n.childIdx < 0)               // ---------- 叶子 ----------
+        if (IntersectBox(ray, n.boundMax, n.boundMin) < bestHit.distance)
         {
-            Ray localRay = PrepareTreeEnterRay(ray, n.transformIdx);
-            PrepareTreeEnterHit(localRay, bestHit, n.transformIdx);
-            IntersectBlasTree(localRay, bestHit,
-                              n.rootIdx, n.transformIdx);
-            PrepareTreeExit(ray, bestHit, n.transformIdx);
-        }
-        else
-        {
-            int left  = n.childIdx;
-            int right = n.childIdx + 1;
-
-            float dstL = RayBoundingBoxDst(ray,
-                                           _TLASNodes[left].boundMin,
-                                           _TLASNodes[left].boundMax);
-            float dstR = RayBoundingBoxDst(ray,
-                                           _TLASNodes[right].boundMin,
-                                           _TLASNodes[right].boundMax);
-
-            bool hitL = dstL >= 0.0f;
-            bool hitR = dstR >= 0.0f;
-
-            if (!hitL && !hitR)
-                continue;
-
-            if (hitL && hitR) {
-                bool swap     = dstR < dstL;
-                int  nearIdx  = swap ? right : left;
-                int  farIdx   = swap ? left  : right;
-                float nearDst = swap ? dstR   : dstL;
-                float farDst  = swap ? dstL   : dstR;
-
-                if (farDst < bestHit.distance) stack[++sp] = farIdx;
-                if (nearDst< bestHit.distance) stack[++sp] = nearIdx;
+            if (n.childIdx < 0)               // ---------- 叶子 ----------
+            {
+                Ray localRay = PrepareTreeEnterRay(ray, n.transformIdx);
+                PrepareTreeEnterHit(localRay, bestHit, n.transformIdx);
+                IntersectBlasTree(localRay, bestHit,
+                                  n.rootIdx, n.transformIdx);
+                PrepareTreeExit(ray, bestHit, n.transformIdx);
             }
-            else if (hitL) {
-                if (dstL < bestHit.distance) stack[++sp] = left;
-            }
-            else {
-                if (dstR < bestHit.distance) stack[++sp] = right;
+            else
+            {
+                int left  = n.childIdx;
+                int right = n.childIdx + 1;
+
+                float dstL = RayBoundingBoxDst(ray,
+                                               _TLASNodes[left].boundMin,
+                                               _TLASNodes[left].boundMax);
+                float dstR = RayBoundingBoxDst(ray,
+                                               _TLASNodes[right].boundMin,
+                                               _TLASNodes[right].boundMax);
+
+                bool hitL = dstL >= 0.0f;
+                bool hitR = dstR >= 0.0f;
+
+                if (!hitL && !hitR)
+                    continue;
+
+                if (hitL && hitR) {
+                    bool swap     = dstR < dstL;
+                    int  nearIdx  = swap ? right : left;
+                    int  farIdx   = swap ? left  : right;
+                    float nearDst = swap ? dstR   : dstL;
+                    float farDst  = swap ? dstL   : dstR;
+
+                    if (farDst < bestHit.distance) stack[++stackIndex] = farIdx;
+                    if (nearDst< bestHit.distance) stack[++stackIndex] = nearIdx;
+                }
+                else if (hitL) {
+                    if (dstL < bestHit.distance) stack[++stackIndex] = left;
+                }
+                else {
+                    if (dstR < bestHit.distance) stack[++stackIndex] = right;
+                }
             }
         }
     }
@@ -368,46 +372,48 @@ bool IntersectTlasFast(Ray ray, float targetDist)
         int idx = stack[sp--];
         TLASNode n = _TLASNodes[idx];
 
-        if (!IntersectBox2(ray, n.boundMax, n.boundMin))
-            continue;
+        float dst = IntersectBox(ray, n.boundMax, n.boundMin);
 
-        if (n.childIdx < 0)               // 叶子
+        if (dst < targetDist)
         {
-            // float localDist = PrepareTreeEnterTargetDistance(targetDist, n.transformIdx, ray.dir);
-            Ray   localRay  = PrepareTreeEnterRay(ray, n.transformIdx);
-            if (IntersectBlasTreeFast(localRay, n.rootIdx, targetDist))
-                return true;
-        }
-        else
-        {
-            int left  = n.childIdx;
-            int right = n.childIdx + 1;
-
-            float dstL = RayBoundingBoxDst(ray,
-                                           _TLASNodes[left ].boundMin,
-                                           _TLASNodes[left ].boundMax);
-            float dstR = RayBoundingBoxDst(ray,
-                                           _TLASNodes[right].boundMin,
-                                           _TLASNodes[right].boundMax);
-
-            bool hitL = dstL >= 0.0f && dstL < targetDist;
-            bool hitR = dstR >= 0.0f && dstR < targetDist;
-
-            if (!hitL && !hitR)
-                continue;
-
-            if (hitL && hitR) {
-                bool swap    = dstR < dstL;
-                int  nearIdx = swap ? right : left;
-                int  farIdx  = swap ? left  : right;
-                stack[++sp] = farIdx;
-                stack[++sp] = nearIdx;
+            if (n.childIdx < 0)               // 叶子
+            {
+                // float localDist = PrepareTreeEnterTargetDistance(targetDist, n.transformIdx, ray.dir);
+                Ray   localRay  = PrepareTreeEnterRay(ray, n.transformIdx);
+                if (IntersectBlasTreeFast(localRay, n.rootIdx, targetDist))
+                    return true;
             }
-            else if (hitL) {
-                stack[++sp] = left;
-            }
-            else { // hitR
-                stack[++sp] = right;
+            else
+            {
+                int left  = n.childIdx;
+                int right = n.childIdx + 1;
+
+                float dstL = RayBoundingBoxDst(ray,
+                                               _TLASNodes[left ].boundMin,
+                                               _TLASNodes[left ].boundMax);
+                float dstR = RayBoundingBoxDst(ray,
+                                               _TLASNodes[right].boundMin,
+                                               _TLASNodes[right].boundMax);
+
+                bool hitL = dstL >= 0.0f && dstL < targetDist;
+                bool hitR = dstR >= 0.0f && dstR < targetDist;
+
+                if (!hitL && !hitR)
+                    continue;
+
+                if (hitL && hitR) {
+                    bool swap    = dstR < dstL;
+                    int  nearIdx = swap ? right : left;
+                    int  farIdx  = swap ? left  : right;
+                    stack[++sp] = farIdx;
+                    stack[++sp] = nearIdx;
+                }
+                else if (hitL) {
+                    stack[++sp] = left;
+                }
+                else { // hitR
+                    stack[++sp] = right;
+                }
             }
         }
     }
