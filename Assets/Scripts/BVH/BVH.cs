@@ -6,10 +6,9 @@ public struct BLASNode
     public Vector3 BoundMax;
     public Vector3 BoundMin;
     public int PrimitiveEndIdx;
-    public int MaterialIdx;
     public int Index;   // Child ChildIdx or PrimitiveStart ChildIdx According to whether PrimitiveEndIdx == -1
 
-    public static int TypeSize = sizeof(float) * 3 * 2 + sizeof(int) * 3; 
+    public static int TypeSize = sizeof(float) * 3 * 2 + sizeof(int) * 2; 
 }
 
 public struct MeshNode
@@ -17,9 +16,10 @@ public struct MeshNode
     public Vector3 BoundMax;
     public Vector3 BoundMin;
     public int TransformIdx;
+    public int MaterialIdx;
     public int Index;   // Child Index or BLAS Root Index According to whether TransformIdx == -1
 
-    public static int TypeSize = sizeof(float)*3*2+sizeof(int)*2;
+    public static int TypeSize = sizeof(float)*3*2+sizeof(int)*3;
 }
 
 /// <summary>
@@ -113,7 +113,6 @@ public abstract class BVH
                 BoundMax         = node.Bounds.max,
                 BoundMin         = node.Bounds.min,
                 PrimitiveEndIdx  = node.IsLeaf() ? node.OriginTriOrMeshEndIndex   + globalPrimitiveBase : -1,
-                MaterialIdx      = node.IsLeaf() ? materialIdx : 0,
                 Index         = node.IsLeaf() ? node.OriginTriOrMeshStartIndex + globalPrimitiveBase : q.Count + bnodes.Count + 1
             });
             if (node.LeftChild  != null) q.Enqueue(node.LeftChild);
@@ -125,6 +124,7 @@ public abstract class BVH
             BoundMax     = BVHRoot.Bounds.max,
             BoundMin     = BVHRoot.Bounds.min,
             TransformIdx = objectTransformIdx,
+            MaterialIdx = materialIdx,
             Index  = blasRootIdx
         });
         
@@ -153,6 +153,7 @@ public abstract class BVH
                 
                 n = new MeshNode {
                     TransformIdx = src.TransformIdx,
+                    MaterialIdx = src.MaterialIdx,
                     Index  = src.Index,
                 };
                 
@@ -170,6 +171,7 @@ public abstract class BVH
                     BoundMin     = cur.Bounds.min,
                     BoundMax     = cur.Bounds.max,
                     TransformIdx = -1,
+                    MaterialIdx = -1,
                     Index  = dst.Count + q.Count + 1,
                 };
 

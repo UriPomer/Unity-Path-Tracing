@@ -158,7 +158,7 @@ inline float RayBoundingBoxDst(const Ray ray, float3 boxMin, float3 boxMax)
 /*
  *与BLAS树中的三角形面求交
  */
-void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transformIdx)
+void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int materialIdx)
 {
     int stack[BVHTREE_RECURSE_SIZE];
     int stackPtr = 0;
@@ -190,7 +190,7 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
                         float2 uv2 = _UVs[_Indices[i + 2]];
                         if (t > 0.0 && t < bestHit.distance)    //距离更近且不为负数
                         {
-                            MaterialData mat = _Materials[node.materialIdx];
+                            MaterialData mat = _Materials[materialIdx];
                             float3 hitPos = ray.origin + t * ray.dir;
                             float2 uv = uv1 * u + uv2 * v + uv0 * (1.0 - u - v);    //插值uv
                             float3 norm = GetNormal(i, float2(u, v), mat.normIdx, uv);
@@ -246,7 +246,7 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
 /*
  *判断是否与BLAS树中的三角形面相交
  */
-bool IntersectBlasTreeFast(Ray ray, int startIdx, float targetDist)
+bool IntersectBlasTreeFast(Ray ray, int startIdx, float targetDist, int materialIdx)
 {
     int stack[BVHTREE_RECURSE_SIZE];
     int stackPtr = 0;
@@ -277,7 +277,7 @@ bool IntersectBlasTreeFast(Ray ray, int startIdx, float targetDist)
                     {
                         if (t > 0.0 && t < targetDist)
                         {
-                            MaterialData mat = _Materials[node.materialIdx];
+                            MaterialData mat = _Materials[materialIdx];
                             float2 uv = uv1 * u + uv2 * v + uv0 * (1.0 - u - v);
                             Material mats = GenMaterial(
                                 mat.color.rgb, mat.emission, mat.metallic, mat.smoothness, mat.color.a, mat.ior,
@@ -345,7 +345,7 @@ void IntersectTlas(Ray ray, inout RayHit bestHit)
                 Ray localRay = PrepareTreeEnterRay(ray, n.transformIdx);
                 PrepareTreeEnterHit(localRay, bestHit, n.transformIdx);
                 IntersectBlasTree(localRay, bestHit,
-                                  n.Index, n.transformIdx);
+                                  n.Index, n.materialIdx);
                 PrepareTreeExit(ray, bestHit, n.transformIdx);
             }
             else
@@ -406,7 +406,7 @@ bool IntersectTlasFast(Ray ray, float targetDist)
             {
                 // float localDist = PrepareTreeEnterTargetDistance(targetDist, n.transformIdx, ray.dir);
                 Ray   localRay  = PrepareTreeEnterRay(ray, n.transformIdx);
-                if (IntersectBlasTreeFast(localRay, n.Index, targetDist))
+                if (IntersectBlasTreeFast(localRay, n.Index, targetDist, n.materialIdx))
                     return true;
             }
             else

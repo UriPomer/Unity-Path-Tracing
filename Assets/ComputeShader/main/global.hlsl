@@ -60,7 +60,6 @@ struct BLASNode
     float3 boundMax;
     float3 boundMin;
     int primitiveEndIdx;
-    int materialIdx;
     int Index;  // Child Index Or Primitive Start Index
 };
 StructuredBuffer<BLASNode> _BNodes;
@@ -70,6 +69,7 @@ struct TLASNode
     float3 boundMax;
     float3 boundMin;
     int transformIdx;
+    int materialIdx;
     int Index;  // Child Index Or BLAS Root Index
 };
 StructuredBuffer<TLASNode> _TLASNodes;
