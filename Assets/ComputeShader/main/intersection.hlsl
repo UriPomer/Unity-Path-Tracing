@@ -390,12 +390,12 @@ void IntersectTlas(Ray ray, inout RayHit bestHit)
 bool IntersectTlasFast(Ray ray, float targetDist)
 {
     int stack[BVHTREE_RECURSE_SIZE];
-    int sp = 0;
+    int stackPtr = 0;
     stack[0] = 0;
 
-    while (sp >= 0)
+    while (stackPtr >= 0)
     {
-        int idx = stack[sp--];
+        int idx = stack[stackPtr--];
         TLASNode n = _TLASNodes[idx];
 
         float dst = IntersectBox(ray, n.boundMax, n.boundMin);
@@ -431,14 +431,14 @@ bool IntersectTlasFast(Ray ray, float targetDist)
                     bool swap    = dstR < dstL;
                     int  nearIdx = swap ? right : left;
                     int  farIdx  = swap ? left  : right;
-                    stack[++sp] = farIdx;
-                    stack[++sp] = nearIdx;
+                    stack[++stackPtr] = farIdx;
+                    stack[++stackPtr] = nearIdx;
                 }
                 else if (hitL) {
-                    stack[++sp] = left;
+                    stack[++stackPtr] = left;
                 }
                 else { // hitR
-                    stack[++sp] = right;
+                    stack[++stackPtr] = right;
                 }
             }
         }

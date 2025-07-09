@@ -88,7 +88,7 @@ public class Tracing : MonoBehaviour
             frameConverged.Create();
         }
         
-        if(Camera.main != null && (Camera.main.transform.hasChanged || BVHBuilder.Validate()))
+        if(BVHBuilder.Validate() || (Camera.main != null && Camera.main.transform.hasChanged))
         {
             ResetSampleCount();
             Camera.main.transform.hasChanged = false;

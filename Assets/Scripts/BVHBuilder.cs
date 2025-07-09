@@ -1,6 +1,7 @@
 // #define DEBUG_TEXTURE
 
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using UnityEngine;
 
@@ -314,6 +315,8 @@ public class BVHBuilder
         if (!objectUpdated)
             return false;
         
+        var stopwatch = Stopwatch.StartNew();
+        
         vertices.Clear();
         uvs.Clear();
         indices.Clear();
@@ -328,6 +331,9 @@ public class BVHBuilder
         SetBLASBuffers();
         
         objectUpdated = false;
+        
+        stopwatch.Stop();
+        UnityEngine.Debug.Log($"[BuildBVH] 耗时：{stopwatch.Elapsed.TotalMilliseconds:F2} ms");
         return true;
     }
 

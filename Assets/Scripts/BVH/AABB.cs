@@ -14,17 +14,41 @@ public class AABB
         extent = max - min;
     }
 
-    public AABB(Vector3 min, Vector3 max)
+    public AABB(Vector3 a, Vector3 b)
     {
-        this.min = Vector3.Min(min, max);
-        this.max = Vector3.Max(min, max);
-        extent = this.max - this.min;
+        min = new Vector3(
+            a.x < b.x ? a.x : b.x,
+            a.y < b.y ? a.y : b.y,
+            a.z < b.z ? a.z : b.z
+        );
+        max = new Vector3(
+            a.x > b.x ? a.x : b.x,
+            a.y > b.y ? a.y : b.y,
+            a.z > b.z ? a.z : b.z
+        );
+        extent = max - min;
     }
 
     public AABB(Vector3 v0, Vector3 v1, Vector3 v2)
     {
-        min = Vector3.Min(v0, Vector3.Min(v1, v2));
-        max = Vector3.Max(v0, Vector3.Max(v1, v2));
+        float minX = v0.x < v1.x ? v0.x : v1.x;
+        float minY = v0.y < v1.y ? v0.y : v1.y;
+        float minZ = v0.z < v1.z ? v0.z : v1.z;
+        min = new Vector3(
+            minX < v2.x ? minX : v2.x,
+            minY < v2.y ? minY : v2.y,
+            minZ < v2.z ? minZ : v2.z
+        );
+
+        float maxX = v0.x > v1.x ? v0.x : v1.x;
+        float maxY = v0.y > v1.y ? v0.y : v1.y;
+        float maxZ = v0.z > v1.z ? v0.z : v1.z;
+        max = new Vector3(
+            maxX > v2.x ? maxX : v2.x,
+            maxY > v2.y ? maxY : v2.y,
+            maxZ > v2.z ? maxZ : v2.z
+        );
+
         extent = max - min;
     }
     
@@ -37,15 +61,27 @@ public class AABB
 
     public void Extend(AABB volume)
     {
-        min = Vector3.Min(volume.min, min);
-        max = Vector3.Max(volume.max, max);
+        min.x = volume.min.x < min.x ? volume.min.x : min.x;
+        min.y = volume.min.y < min.y ? volume.min.y : min.y;
+        min.z = volume.min.z < min.z ? volume.min.z : min.z;
+
+        max.x = volume.max.x > max.x ? volume.max.x : max.x;
+        max.y = volume.max.y > max.y ? volume.max.y : max.y;
+        max.z = volume.max.z > max.z ? volume.max.z : max.z;
+
         extent = max - min;
     }
 
     public void Extend(Vector3 p)
     {
-        min = Vector3.Min(p, min);
-        max = Vector3.Max(p, max);
+        min.x = p.x < min.x ? p.x : min.x;
+        min.y = p.y < min.y ? p.y : min.y;
+        min.z = p.z < min.z ? p.z : min.z;
+
+        max.x = p.x > max.x ? p.x : max.x;
+        max.y = p.y > max.y ? p.y : max.y;
+        max.z = p.z > max.z ? p.z : max.z;
+
         extent = max - min;
     }
 
