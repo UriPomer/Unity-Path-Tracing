@@ -135,6 +135,13 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         {
             break;
         }
+        
+        float p = max(r.energy.r, max(r.energy.g, r.energy.b));
+        p = clamp(p, 0.05, 1.0);
+        if (RNG_Next(rng) >= p)
+            break;
+        r.energy *= 1.0 / p;
+        
         r.invDir = 1.0 / r.dir;
     }
     if (!_OnlyDrawNormals && !_OnlyDrawDepth && !_OnlyDrawAlbedo)

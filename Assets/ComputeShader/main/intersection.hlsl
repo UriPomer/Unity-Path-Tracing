@@ -126,7 +126,7 @@ bool IntersectBox2(Ray ray, float3 pMax, float3 pMin)
     return t1 >= t0;
 }
 
-float IntersectBox(Ray ray, float3 pMax, float3 pMin)
+inline float IntersectBox(Ray ray, float3 pMax, float3 pMin)
 {
     // reference: https://github.com/knightcrawler25/GLSL-PathTracer/blob/master/src/shaders/common/intersection.glsl
     // reference: https://medium.com/@bromanz/another-view-on-the-classic-ray-aabb-intersection-algorithm-for-bvh-traversal-41125138b525
@@ -140,7 +140,7 @@ float IntersectBox(Ray ray, float3 pMax, float3 pMin)
     return hit ? dstNear : 1.#INF;
 }
 
-float RayBoundingBoxDst(const Ray ray, float3 boxMin, float3 boxMax)
+inline float RayBoundingBoxDst(const Ray ray, float3 boxMin, float3 boxMax)
 {
     float3 tMin = (boxMin - ray.origin) * ray.invDir;
     float3 tMax = (boxMax - ray.origin) * ray.invDir;
@@ -198,7 +198,8 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
                                 mat.color.rgb, mat.emission, mat.metallic, mat.smoothness, mat.color.a, mat.ior,
                                 int4(mat.albedoIdx, mat.metalIdx, mat.emitIdx, mat.roughIdx), uv
                             );
-                            if (mat.mode == 1.0 && mats.alpha < 1.0)    // 如果这是一个透明材质，那么则忽略它与光线的相交
+                            if (mat.mode == 1.0 && mats.alpha < 1.0 ||
+                                    (mat.mode > 1.0 && SkipTransparent(mats)))   // 如果这是一个透明材质，那么则忽略它与光线的相交
                                 continue;
                             bestHit.distance = t;
                             bestHit.position = hitPos;
@@ -292,8 +293,33 @@ bool IntersectBlasTreeFast(Ray ray, int startIdx, float targetDist)
             }
             else
             {
-                stack[++stackPtr] = node.childIdx;
-                stack[++stackPtr] = node.childIdx + 1;
+                int childIndexA = node.childIdx;
+                int childIndexB = node.childIdx + 1;
+                BLASNode childA = _BNodes[childIndexA];
+                BLASNode childB = _BNodes[childIndexB];
+
+                float dstA = RayBoundingBoxDst(ray, childA.boundMin, childA.boundMax);
+                float dstB = RayBoundingBoxDst(ray, childB.boundMin, childB.boundMax);
+
+                bool hitA = dstA >= 0.0f && dstA < targetDist;
+                bool hitB = dstB >= 0.0f && dstB < targetDist;
+
+                if (!hitA && !hitB)
+                    continue;
+
+                if (hitA && hitB) {
+                    bool isNearestA      = dstA <= dstB;
+                    int  childIndexNear  = isNearestA ? childIndexA : childIndexB;
+                    int  childIndexFar   = isNearestA ? childIndexB : childIndexA;
+                    stack[++stackPtr]    = childIndexFar;
+                    stack[++stackPtr]    = childIndexNear;
+                }
+                else if (hitA) {
+                    stack[++stackPtr] = childIndexA;
+                }
+                else {
+                    stack[++stackPtr] = childIndexB;
+                }
             }
         }
     }
