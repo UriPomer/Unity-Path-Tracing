@@ -86,14 +86,14 @@ public class RayIntersection_LocalAABB : MonoBehaviour
             if (!IntersectAABB(ray, node.BoundMin, node.BoundMax, out float _))
                 continue;
 
-            if (node.PrimitiveStartIdx < 0)          // 内部
+            if (node.PrimitiveEndIdx < 0)          // 内部
             {
-                stack[++sp] = node.ChildIdx;
-                stack[++sp] = node.ChildIdx + 1;
+                stack[++sp] = node.Index;
+                stack[++sp] = node.Index + 1;
             }
             else                                     // 叶子：遍历三角形
             {
-                for (int p = node.PrimitiveStartIdx; p < node.PrimitiveEndIdx; ++p) // ★③
+                for (int p = node.Index; p < node.PrimitiveEndIdx; ++p) // ★③
                 {
                     int tri = p * 3;
                     Vector3 v0 = vertices[indices[tri    ]];

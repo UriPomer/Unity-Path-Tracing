@@ -81,14 +81,14 @@ public class RayIntersection_WorldAABB : MonoBehaviour
                 continue;
 
             // —— 3. 内部 / 叶子 处理 ——
-            if (n.PrimitiveStartIdx < 0)             // 内部
+            if (n.PrimitiveEndIdx < 0)             // 内部
             {
-                stack[++sp] = n.ChildIdx;
-                stack[++sp] = n.ChildIdx + 1;
+                stack[++sp] = n.Index;
+                stack[++sp] = n.Index + 1;
             }
             else                                     // 叶子：真正三角形求交
             {
-                for (int p = n.PrimitiveStartIdx; p < n.PrimitiveEndIdx; ++p)
+                for (int p = n.Index; p < n.PrimitiveEndIdx; ++p)
                 {
                     int tri = p * 3;
                     Vector3 v0 = l2w.MultiplyPoint3x4(vertices[indices[tri]]);

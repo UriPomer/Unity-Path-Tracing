@@ -5,12 +5,11 @@ public struct BLASNode
 {
     public Vector3 BoundMax;
     public Vector3 BoundMin;
-    public int PrimitiveStartIdx;
     public int PrimitiveEndIdx;
     public int MaterialIdx;
-    public int ChildIdx;
+    public int Index;   // Child ChildIdx or PrimitiveStart ChildIdx
 
-    public static int TypeSize = sizeof(float) * 3 * 2 + sizeof(int) * 4; 
+    public static int TypeSize = sizeof(float) * 3 * 2 + sizeof(int) * 3; 
 }
 
 public struct MeshNode
@@ -114,10 +113,9 @@ public abstract class BVH
             {
                 BoundMax         = node.Bounds.max,
                 BoundMin         = node.Bounds.min,
-                PrimitiveStartIdx= node.IsLeaf() ? node.OriginTriOrMeshStartIndex + globalPrimitiveBase : -1,
                 PrimitiveEndIdx  = node.IsLeaf() ? node.OriginTriOrMeshEndIndex   + globalPrimitiveBase : -1,
                 MaterialIdx      = node.IsLeaf() ? materialIdx : 0,
-                ChildIdx         = node.IsLeaf() ? -1 : q.Count + bnodes.Count + 1
+                Index         = node.IsLeaf() ? node.OriginTriOrMeshStartIndex + globalPrimitiveBase : q.Count + bnodes.Count + 1
             });
             if (node.LeftChild  != null) q.Enqueue(node.LeftChild);
             if (node.RightChild != null) q.Enqueue(node.RightChild);

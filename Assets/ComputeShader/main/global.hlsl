@@ -59,10 +59,9 @@ struct BLASNode
 {
     float3 boundMax;
     float3 boundMin;
-    int primitiveStartIdx;
     int primitiveEndIdx;
     int materialIdx;
-    int childIdx;
+    int Index;  // Child Index Or Primitive Start Index
 };
 StructuredBuffer<BLASNode> _BNodes;
 

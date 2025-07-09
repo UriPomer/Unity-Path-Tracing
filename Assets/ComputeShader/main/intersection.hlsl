@@ -170,13 +170,13 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
         BLASNode node = _BNodes[idx];   //获取当前BLAS节点
 
         float dst = IntersectBox(ray, node.boundMax, node.boundMin);    // 和BLAS的包围盒求交
-        bool leaf = node.primitiveStartIdx >= 0;
+        bool leaf = node.primitiveEndIdx >= 0;
         if (dst < bestHit.distance)
         {
             if (leaf)
             {
                 // 遍历BLAS中的每一个面
-                for (primitiveIdx = node.primitiveStartIdx; primitiveIdx < node.primitiveEndIdx; primitiveIdx++)
+                for (primitiveIdx = node.Index; primitiveIdx < node.primitiveEndIdx; primitiveIdx++)
                 {
                     int i = primitiveIdx * 3;   // i是面的索引
                     float3 v0 = _Vertices[_Indices[i]];
@@ -211,8 +211,8 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int transfor
             }
             else
             {
-                int childIndexA = node.childIdx;
-                int childIndexB = node.childIdx + 1;
+                int childIndexA = node.Index;
+                int childIndexB = node.Index + 1;
                 BLASNode childA = _BNodes[childIndexA];
                 BLASNode childB = _BNodes[childIndexB];
 
@@ -258,12 +258,12 @@ bool IntersectBlasTreeFast(Ray ray, int startIdx, float targetDist)
         BLASNode node = _BNodes[idx];
         // check if ray intersect with bounding box
         float dst = IntersectBox(ray, node.boundMax, node.boundMin);
-        bool leaf = node.primitiveStartIdx >= 0;
+        bool leaf = node.primitiveEndIdx >= 0;
         if (dst < targetDist)
         {
             if (leaf)
             {
-                for (primitiveIdx = node.primitiveStartIdx; primitiveIdx < node.primitiveEndIdx; primitiveIdx++)
+                for (primitiveIdx = node.Index; primitiveIdx < node.primitiveEndIdx; primitiveIdx++)
                 {
                     int i = primitiveIdx * 3;
                     float3 v0 = _Vertices[_Indices[i]];
@@ -293,8 +293,8 @@ bool IntersectBlasTreeFast(Ray ray, int startIdx, float targetDist)
             }
             else
             {
-                int childIndexA = node.childIdx;
-                int childIndexB = node.childIdx + 1;
+                int childIndexA = node.Index;
+                int childIndexB = node.Index + 1;
                 BLASNode childA = _BNodes[childIndexA];
                 BLASNode childB = _BNodes[childIndexB];
 

@@ -339,11 +339,11 @@ public class Tracing : MonoBehaviour
                     //
                     // Gizmos.DrawWireCube((worldMin + worldMax) / 2, (worldMax - worldMin));
                     
-                    if(bnode.PrimitiveStartIdx < 0)
+                    if(bnode.PrimitiveEndIdx < 0)
                     {
-                        stack[++stackPtr] = bnode.ChildIdx;
+                        stack[++stackPtr] = bnode.Index;
                         
-                        stack[++stackPtr] = bnode.ChildIdx + 1;
+                        stack[++stackPtr] = bnode.Index + 1;
                     }
                 }
             }
