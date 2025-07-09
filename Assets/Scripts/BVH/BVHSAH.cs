@@ -9,7 +9,7 @@ using System.Linq;
 /// </summary>
 public class BVHSAH : BVH
 {
-    private static readonly int nBuckets = 6;
+    private static readonly int nBuckets = 8;
     
     /// <summary>
     /// Info for SAH
