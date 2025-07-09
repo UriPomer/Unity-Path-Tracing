@@ -43,7 +43,7 @@ public class RayIntersection_LocalAABB : MonoBehaviour
 
                 RayTestUtils.MyRay localRay = WorldToLocalRay(ray, worldToLocal);
 
-                if (TraverseBLAS(localRay, meshNode.NodeRootIdx, bNodes,
+                if (TraverseBLAS(localRay, meshNode.Index, bNodes,
                         vertices, indices,
                         out float tLocal))
                 {

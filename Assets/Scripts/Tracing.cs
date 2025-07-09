@@ -288,18 +288,18 @@ public class Tracing : MonoBehaviour
                 Vector3 center = (n.BoundMin + n.BoundMax) * 0.5f;
                 Vector3 size = n.BoundMax - n.BoundMin;
                 
-                Gizmos.color = (n.ChildIdx < 0) // 叶子 / 父节点不同颜色
+                Gizmos.color = (n.TransformIdx >= 0) // 叶子 / 父节点不同颜色
                     ? new Color(1.0f, 0.4f, 0.6f)
                     : new Color(0.0f, 1.0f, 0.0f);
-                if(n.ChildIdx < 0)
+                if(n.TransformIdx >= 0)
                 {
                     Gizmos.DrawWireCube(center, size);
                 }
             
-                if (n.ChildIdx >= 0)
+                if (n.TransformIdx < 0)
                 {
-                    stackTLAS[++sp] = n.ChildIdx + 1; // 右
-                    stackTLAS[++sp] = n.ChildIdx; // 左
+                    stackTLAS[++sp] = n.Index + 1; // 右
+                    stackTLAS[++sp] = n.Index; // 左
                     
                     Gizmos.DrawWireCube(center, size);
                 }
@@ -317,7 +317,7 @@ public class Tracing : MonoBehaviour
                 
                 int stackPtr = 0;
                 int[] stack = new int[32];
-                stack[stackPtr] = meshNode.NodeRootIdx;
+                stack[stackPtr] = meshNode.Index;
                 
                 while (stackPtr >= 0 && stackPtr < 32)
                 {

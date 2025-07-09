@@ -36,7 +36,7 @@ public class RayIntersection_WorldAABB : MonoBehaviour
 
                 TraverseBLAS_World(
                     ray,
-                    meshNode.NodeRootIdx,
+                    meshNode.Index,
                     localToWorld,
                     bNodes,
                     vertices, indices,

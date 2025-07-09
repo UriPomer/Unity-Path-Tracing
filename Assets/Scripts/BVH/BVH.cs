@@ -7,7 +7,7 @@ public struct BLASNode
     public Vector3 BoundMin;
     public int PrimitiveEndIdx;
     public int MaterialIdx;
-    public int Index;   // Child ChildIdx or PrimitiveStart ChildIdx
+    public int Index;   // Child ChildIdx or PrimitiveStart ChildIdx According to whether PrimitiveEndIdx == -1
 
     public static int TypeSize = sizeof(float) * 3 * 2 + sizeof(int) * 3; 
 }
@@ -17,10 +17,9 @@ public struct MeshNode
     public Vector3 BoundMax;
     public Vector3 BoundMin;
     public int TransformIdx;
-    public int NodeRootIdx;
-    public int ChildIdx;
+    public int Index;   // Child Index or BLAS Root Index According to whether TransformIdx == -1
 
-    public static int TypeSize = sizeof(float)*3*2+sizeof(int)*3;
+    public static int TypeSize = sizeof(float)*3*2+sizeof(int)*2;
 }
 
 /// <summary>
@@ -126,7 +125,7 @@ public abstract class BVH
             BoundMax     = BVHRoot.Bounds.max,
             BoundMin     = BVHRoot.Bounds.min,
             TransformIdx = objectTransformIdx,
-            NodeRootIdx  = blasRootIdx
+            Index  = blasRootIdx
         });
         
         OriginTriOrMeshStartIndices.Clear();    // TODO: 优化OrderedPrimitiveIndices
@@ -154,8 +153,7 @@ public abstract class BVH
                 
                 n = new MeshNode {
                     TransformIdx = src.TransformIdx,
-                    NodeRootIdx  = src.NodeRootIdx,
-                    ChildIdx     = -1
+                    Index  = src.Index,
                 };
                 
                 TransformUtils.TransformBounds(
@@ -172,8 +170,7 @@ public abstract class BVH
                     BoundMin     = cur.Bounds.min,
                     BoundMax     = cur.Bounds.max,
                     TransformIdx = -1,
-                    NodeRootIdx  = -1,
-                    ChildIdx     = dst.Count + q.Count + 1
+                    Index  = dst.Count + q.Count + 1,
                 };
 
                 if (cur.LeftChild != null)

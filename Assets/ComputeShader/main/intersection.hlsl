@@ -340,18 +340,18 @@ void IntersectTlas(Ray ray, inout RayHit bestHit)
         // ray、bounds都是世界坐标
         if (IntersectBox(ray, n.boundMax, n.boundMin) < bestHit.distance)
         {
-            if (n.childIdx < 0)               // ---------- 叶子 ----------
+            if (n.transformIdx >= 0)               // ---------- 叶子 ----------
             {
                 Ray localRay = PrepareTreeEnterRay(ray, n.transformIdx);
                 PrepareTreeEnterHit(localRay, bestHit, n.transformIdx);
                 IntersectBlasTree(localRay, bestHit,
-                                  n.rootIdx, n.transformIdx);
+                                  n.Index, n.transformIdx);
                 PrepareTreeExit(ray, bestHit, n.transformIdx);
             }
             else
             {
-                int left  = n.childIdx;
-                int right = n.childIdx + 1;
+                int left  = n.Index;
+                int right = n.Index + 1;
 
                 float dstL = RayBoundingBoxDst(ray,
                                                _TLASNodes[left].boundMin,
@@ -402,17 +402,17 @@ bool IntersectTlasFast(Ray ray, float targetDist)
 
         if (dst < targetDist)
         {
-            if (n.childIdx < 0)               // 叶子
+            if (n.transformIdx >= 0)               // 叶子
             {
                 // float localDist = PrepareTreeEnterTargetDistance(targetDist, n.transformIdx, ray.dir);
                 Ray   localRay  = PrepareTreeEnterRay(ray, n.transformIdx);
-                if (IntersectBlasTreeFast(localRay, n.rootIdx, targetDist))
+                if (IntersectBlasTreeFast(localRay, n.Index, targetDist))
                     return true;
             }
             else
             {
-                int left  = n.childIdx;
-                int right = n.childIdx + 1;
+                int left  = n.Index;
+                int right = n.Index + 1;
 
                 float dstL = RayBoundingBoxDst(ray,
                                                _TLASNodes[left ].boundMin,

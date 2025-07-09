@@ -70,8 +70,7 @@ struct TLASNode
     float3 boundMax;
     float3 boundMin;
     int transformIdx;
-    int rootIdx;
-    int childIdx;
+    int Index;  // Child Index Or BLAS Root Index
 };
 StructuredBuffer<TLASNode> _TLASNodes;
 

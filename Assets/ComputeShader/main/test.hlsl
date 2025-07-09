@@ -110,16 +110,16 @@ float4 DebugBVH(uint2 pixID)
         {
             bestT   = t;
             // 如果想区分叶子/内部的颜色：
-            bestCol = (tn.childIdx < 0)
+            bestCol = (tn.transformIdx >= 0)
                       ? float3(0,1,0)    // 叶子 = 绿
                       : float3(0,0.4,1); // 内部 = 蓝
         }
 
         // 如果这是内部节点，就把两个子节点压栈
-        if (tn.childIdx >= 0)
+        if (tn.transformIdx < 0)
         {
-            stackTLAS[++spT] = tn.childIdx;       // 左子节点
-            stackTLAS[++spT] = tn.childIdx + 1;   // 右子节点
+            stackTLAS[++spT] = tn.Index;       // 左子节点
+            stackTLAS[++spT] = tn.Index + 1;   // 右子节点
         }
     }
 
