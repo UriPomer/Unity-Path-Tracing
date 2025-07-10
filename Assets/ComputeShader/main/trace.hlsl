@@ -5,9 +5,23 @@
 
 float3 SampleSkybox(Ray ray)
 {
-    float theta = acos(ray.dir.y) / -PI;
-    float phi = atan2(ray.dir.x, - ray.dir.z) / - PI * 0.5f;
-    return _SkyboxTexture.SampleLevel(sampler_SkyboxTexture, float2(phi, theta), 0).xyz;
+    float3 dir = normalize(ray.dir);
+    float theta = acos(dir.y) / -PI;
+    float phi   = atan2(dir.x, -dir.z) / -PI * 0.5;
+    float3 envColor = _SkyboxTexture.SampleLevel(
+        sampler_SkyboxTexture,
+        float2(phi, theta),
+        0
+    ).xyz;
+
+    float3 sunDir = normalize(_InverseDirectionalLight);
+    float cosA = saturate(dot(dir, sunDir));
+    float disk = pow(cosA, 50);
+    float3 sunColor = disk
+                    * _DirectionalLightColor.rgb
+                    * _DirectionalLightColor.a;
+
+    return envColor + sunColor;
 }
 
 // trace a ray and returns hit immediately (for shadow rays)
