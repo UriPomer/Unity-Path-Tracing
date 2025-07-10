@@ -50,6 +50,7 @@ struct RNG
 RNG rng;
 
 static const float PI = 3.14159265f;
+static const float INV_PI = 0.318309886f;
 #define PI_TWO          6.28318530717958623198
 const float3 LUM = float3(0.2126, 0.7152, 0.0722);
 
