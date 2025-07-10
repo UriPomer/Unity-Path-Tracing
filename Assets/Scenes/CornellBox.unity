@@ -136,7 +136,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 26765ad8dbb9ac9459905b26b565b3cc, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  Intensity: 1
+  Intensity: 0.5
 --- !u!1 &705507993
 GameObject:
   m_ObjectHideFlags: 0

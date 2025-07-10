@@ -16,12 +16,12 @@ float3 SampleSkybox(Ray ray)
 
     float3 sunDir = normalize(_InverseDirectionalLight);
     float cosA = saturate(dot(dir, sunDir));
-    float disk = pow(cosA, 50);
+    float disk = pow(cosA, 5);
     float3 sunColor = disk
                     * _DirectionalLightColor.rgb
-                    * _DirectionalLightColor.a;
+                    * _DirectionalLightColor.a * 50;
 
-    return envColor + sunColor;
+    return sunColor;
 }
 
 // trace a ray and returns hit immediately (for shadow rays)
