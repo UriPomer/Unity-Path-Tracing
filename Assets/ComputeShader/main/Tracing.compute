@@ -39,9 +39,12 @@ float3 Shade(inout Ray ray, inout RayHit hit)
             if (roulette < reflChance)
             {
                 //rayOutDir = normalize(reflect(-ray.dir, H));
-                SpecReflModel(hit, ray.dir, rayOutDir, H, ray.energy);
+                float3 brdfCos;
+                float  microPdf;
+                SpecReflModel(hit, ray.dir, rayOutDir, H, brdfCos, microPdf);
+                float pdf = reflChance * microPdf;
                 ray.dir = rayOutDir;
-                ray.energy *= 1.0 / clamp(reflChance, 1e-2, 1.0);
+                ray.energy *= brdfCos / pdf;
                 lightContribution *= reflChance;
             }
             else
