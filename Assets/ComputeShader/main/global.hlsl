@@ -14,6 +14,7 @@ struct Material
 {
     float3 albedo;
     float3 emission;
+    float emissionIntensity;
     float roughness;
     float metallic;
     float alpha;
@@ -90,6 +91,7 @@ struct MaterialData
 {
     float4 color;
     float3 emission;
+    float emissionIntensity;
     float metallic;
     float smoothness;
     float ior;
@@ -122,7 +124,7 @@ SamplerState sampler_RoughnessTextures;
 
 float2 _PixelOffset;
 
-Material GenMaterial(float3 baseColor, float3 emission,
+Material GenMaterial(float3 baseColor, float3 emission, float emissionIntensity,
     float metallic, float smoothness, float alpha, float ior,
     int4 indices = -1, float2 uv = 0.0)
 {
@@ -157,6 +159,7 @@ Material GenMaterial(float3 baseColor, float3 emission,
         // fetch emission value
         emission = emission * _EmitTextures.SampleLevel(sampler_EmitTextures, float3(uv, indices.z), 0.0).xyz;
     }
+    mat.emissionIntensity = emissionIntensity;
     mat.emission = emission;
     mat.roughness = 1.0 - smoothness;
     mat.ior = ior;
@@ -169,7 +172,7 @@ RayHit GenRayHit()
     hit.position = float3(0.0f, 0.0f, 0.0f);
     hit.distance = 1.#INF;
     hit.normal = float3(0.0f, 0.0f, 0.0f);
-    hit.material = GenMaterial(float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), 0.0f, 0.0f, 1.0f, 1.0f);
+    hit.material = GenMaterial(float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), 0, 0.0f, 0.0f, 1.0f, 1.0f);
     hit.mode = 0.0f;
     hit.should_break = false;
     return hit;

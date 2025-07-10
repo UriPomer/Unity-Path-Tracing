@@ -10,10 +10,11 @@ float3 Shade(inout Ray ray, inout RayHit hit)
 {
     if(hit.distance < 1.#INF)
     {
-        if (dot(hit.material.emission, float3(1.0, 1.0, 1.0)) > 0.0) {
-            ray.energy = 0.0;
-            hit.should_break = true;
-            return hit.material.emission;
+        if (hit.material.emissionIntensity > 0.0f) {
+            float3 L = hit.material.emission * hit.material.emissionIntensity;
+            ray.energy = 0.0;        // 不再传播
+            hit.should_break = true; // 直接退出路径
+            return L;
         }
         
         float3 lightContribution = GetLightContribution(hit);

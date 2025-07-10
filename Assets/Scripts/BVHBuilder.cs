@@ -9,6 +9,7 @@ public struct MaterialData
 {
     public Vector4 Color;
     public Vector3 Emission;
+    public float  EmissionIntensity;
     public float Metallic;
     public float Smoothness;
     public float IOR;
@@ -19,7 +20,7 @@ public struct MaterialData
     public int NormalIdx;
     public int RoughIdx;
 
-    public static int TypeSize = sizeof(float)*11+sizeof(int)*5;
+    public static int TypeSize = sizeof(float)*12+sizeof(int)*5;
 }
 
 public class BVHBuilder
@@ -200,11 +201,21 @@ public class BVHBuilder
                 ExtractMaterialTexture(mat, metalMap,  metalTex,   ID_MetallicGlossMap, out int metalIdx);
                 ExtractMaterialTexture(mat, normalMap,   normTex,    ID_BumpMap,          out int normIdx);
                 ExtractMaterialTexture(mat, roughMap,  roughTex,   ID_SpecGlossMap,     out int roughIdx);
-
-                Color emCol = mat.IsKeywordEnabled("_EMISSION") ? mat.GetColor(ID_EmissionColor) : Color.black;
+                
+                Vector3 EmissionColor = Vector3.zero;
+                float Intensity = 0;
+                if (mat.IsKeywordEnabled("_EMISSION"))
+                {
+                    Color hdr = mat.GetColor(ID_EmissionColor);
+                    obj.TryGetComponent<Emission>(out var emission);
+                    EmissionColor = new Vector3(hdr.r, hdr.g, hdr.b);
+                    Intensity = emission?.Intensity ?? 0;
+                }
+                
                 materials.Add(new MaterialData{
                     Color      = mat.color,
-                    Emission   = new Vector3(emCol.r, emCol.g, emCol.b),
+                    Emission   = EmissionColor,
+                    EmissionIntensity = Intensity,
                     Metallic   = mat.HasProperty(ID_Metallic)   ? mat.GetFloat(ID_Metallic)   : 0f,
                     Smoothness = mat.HasProperty(ID_Glossiness) ? mat.GetFloat(ID_Glossiness) : 0f,
                     IOR        = mat.HasProperty(ID_IOR)        ? mat.GetFloat(ID_IOR)        : 1f,

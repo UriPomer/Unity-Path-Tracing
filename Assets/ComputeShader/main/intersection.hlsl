@@ -71,7 +71,7 @@ void IntersectGround(Ray ray, inout RayHit bestHit, float yVal = 0.0)
         bestHit.position = ray.origin + t * ray.dir;
         bestHit.distance = t;
         bestHit.normal = float3(0.0, 1.0, 0.0);
-        bestHit.material = GenMaterial(float3(1.0, 1.0, 1.0), float3(0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1.0);
+        bestHit.material = GenMaterial(float3(1.0, 1.0, 1.0), float3(0.0, 0.0, 0.0), 0, 0.0, 0.0, 1.0, 1.0);
     }
 }
 
@@ -195,7 +195,7 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int material
                             float2 uv = uv1 * u + uv2 * v + uv0 * (1.0 - u - v);    //插值uv
                             float3 norm = GetNormal(i, float2(u, v), mat.normIdx, uv);
                             Material mats = GenMaterial(
-                                mat.color.rgb, mat.emission, mat.metallic, mat.smoothness, mat.color.a, mat.ior,
+                                mat.color.rgb, mat.emission, mat.emissionIntensity, mat.metallic, mat.smoothness, mat.color.a, mat.ior,
                                 int4(mat.albedoIdx, mat.metalIdx, mat.emitIdx, mat.roughIdx), uv
                             );
                             if (mat.mode == 1.0 && mats.alpha < 1.0 ||
@@ -280,7 +280,7 @@ bool IntersectBlasTreeFast(Ray ray, int startIdx, float targetDist, int material
                             MaterialData mat = _Materials[materialIdx];
                             float2 uv = uv1 * u + uv2 * v + uv0 * (1.0 - u - v);
                             Material mats = GenMaterial(
-                                mat.color.rgb, mat.emission, mat.metallic, mat.smoothness, mat.color.a, mat.ior,
+                                mat.color.rgb, mat.emission, mat.emissionIntensity, mat.metallic, mat.smoothness, mat.color.a, mat.ior,
                                 int4(mat.albedoIdx, mat.metalIdx, mat.emitIdx, mat.roughIdx), uv
                             );
                             if (mat.mode == 1.0 && mats.alpha < 1.0 ||
