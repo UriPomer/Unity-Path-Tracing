@@ -485,6 +485,24 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 50, y: -212.971, z: 0}
+--- !u!1 &828200461 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 9041270684128441372, guid: 7b4102c4db4449642b864ee6063b6e9e, type: 3}
+  m_PrefabInstance: {fileID: 1551786122}
+  m_PrefabAsset: {fileID: 0}
+--- !u!114 &828200465
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 828200461}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 26765ad8dbb9ac9459905b26b565b3cc, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  Intensity: 1
 --- !u!1001 &853374330
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -560,7 +578,7 @@ PrefabInstance:
     - target: {fileID: 3261972472372342013, guid: 6464beefe2d727e4db8c1d2b946a29de, type: 3}
       propertyPath: 'm_Materials.Array.data[0]'
       value: 
-      objectReference: {fileID: 2100000, guid: e9eec18e4f8314f488a11c7bc6181bc2, type: 2}
+      objectReference: {fileID: 2100000, guid: 1a61ca6dd67d1744b870a62b423c8c02, type: 2}
     - target: {fileID: 4436805663696350335, guid: 6464beefe2d727e4db8c1d2b946a29de, type: 3}
       propertyPath: m_LocalPosition.y
       value: 0
@@ -880,6 +898,10 @@ PrefabInstance:
       propertyPath: m_Enabled
       value: 1
       objectReference: {fileID: 0}
+    - target: {fileID: 3896294155803048942, guid: 7b4102c4db4449642b864ee6063b6e9e, type: 3}
+      propertyPath: 'm_Materials.Array.data[0]'
+      value: 
+      objectReference: {fileID: 2100000, guid: 38fe6edb5c697ba469149343795b8496, type: 2}
     - target: {fileID: 6999263927671335800, guid: 7b4102c4db4449642b864ee6063b6e9e, type: 3}
       propertyPath: 'm_Materials.Array.data[0]'
       value: 
@@ -902,6 +924,9 @@ PrefabInstance:
     - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 7b4102c4db4449642b864ee6063b6e9e, type: 3}
       insertIndex: -1
       addedObject: {fileID: 1622059072}
+    - targetCorrespondingSourceObject: {fileID: 9041270684128441372, guid: 7b4102c4db4449642b864ee6063b6e9e, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 828200465}
     - targetCorrespondingSourceObject: {fileID: 1796813245130595716, guid: 7b4102c4db4449642b864ee6063b6e9e, type: 3}
       insertIndex: -1
       addedObject: {fileID: 1457834502}

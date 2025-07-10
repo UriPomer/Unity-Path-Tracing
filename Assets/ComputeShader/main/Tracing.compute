@@ -8,54 +8,108 @@
 
 float MaxComponent(float3 v) { return max(v.x, max(v.y, v.z)); }
 
-float3 LinearToSRGB(float3 c)
+float2 RNG_Next2(inout RNG rng)
 {
-    return pow(c, 1.0 / 2.2);
+    return float2(RNG_Next(rng), RNG_Next(rng));
 }
 
 float3 Shade(inout Ray ray, inout RayHit hit)
 {
-    if (hit.distance < 1.#INF)
+    if (hit.distance >= 1.#INF)
+    { hit.should_break = true; return SampleSkybox(ray); }
+
+    if (hit.material.emissionIntensity > 0.0)
+    { hit.should_break = true; return hit.material.emission * hit.material.emissionIntensity; }
+
+    if (dot(ray.dir, hit.normal) > 0.0)
+        hit.normal = -hit.normal;
+
+    float3 N  = hit.normal;
+    float3 V  = -ray.dir;
+    float3 albedo   = hit.material.albedo;
+    float  rough    = saturate(hit.material.roughness);
+    float  metallic = hit.material.metallic;
+    float3 F0       = lerp(float3(0.04,0.04,0.04), albedo, metallic);
+
+    float3  Fv       = SchlickFresnel(saturate(dot(N,V)), F0);
+    float   specProb = max(max(Fv.r, Fv.g), Fv.b);
+    float   diffProb = (1.0 - specProb) * (1.0 - metallic);
+    float   refrProb = max(0.0, 1.0 - specProb - diffProb);
+
+    specProb = max(specProb, 1e-4);
+    diffProb = max(diffProb, 0.0);
+    refrProb = max(refrProb, 0.0);
+
+    float  xi = RNG_Next(rng);
+    float3 L, H;
+    float3 brdfCos = 0;
+    float  pdf     = 1.0;
+
+    bool ideal = rough < 1e-4;
+
+    if (xi < specProb)
     {
-        if (hit.material.emissionIntensity > 0.0f)
+        if (ideal)
         {
-            hit.should_break = true;
-            return hit.material.emission * hit.material.emissionIntensity; // Le
-        }
-
-        ray.origin = hit.position + hit.normal * 1e-4;
-        float  xi      = RNG_Next(rng);
-        float3 N       = hit.normal;
-        float  rough   = hit.material.roughness;
-        float3 albedo  = hit.material.albedo;
-        float  metallic= hit.material.metallic;
-
-        float3 specColor = lerp(float3(0.04,0.04,0.04), albedo, metallic);
-
-        float  diffP = MaxComponent(albedo) * (1.0 - metallic);
-        float  specP = MaxComponent(specColor);
-        float  sumP  = diffP + specP;
-        diffP /= sumP;
-        specP /= sumP;
-
-        if (xi < diffP)
-        {
-            ray.dir   = SampleHemisphere(N); // assume cosine weighted
-            ray.color *= albedo / diffP;     // BRDF*cos/pdf = albedo
+            L        = reflect(ray.dir, N);
+            brdfCos  = F0 * saturate(dot(N, L));
+            pdf      = specProb;
         }
         else
         {
-            float3 refl = reflect(ray.dir, N);
-            float3 jitter= SampleHemisphere(N);
-            ray.dir     = normalize(lerp(refl, jitter, rough));
-            ray.color  *= specColor / specP; // maintain color tint
+            float3 R  = reflect(ray.dir, N);
+            float alphaP = SmoothnessToPhongAlpha(1.0 - rough);
+            L = normalize( lerp(R, SampleReflectionDirectionSphere(N, alphaP), rough * rough) );
+
+            H          = normalize(V + L);
+            float NdotL = saturate(dot(N, L));
+            float NdotV = saturate(dot(N, V));
+            float VdotH = saturate(dot(V, H));
+
+            float D = DistributionGGX(N, H, rough);
+            float G = SmithG(NdotV, rough) * SmithG(NdotL, rough);
+            float3 F = SchlickFresnel(VdotH, F0);
+
+            brdfCos = F * D * G * NdotL / max(4.0 * NdotV, 1e-4);
+            pdf     = specProb;
+        }
+    }
+    else if (xi < specProb + diffProb)
+    {
+        L = SampleHemisphere(N);
+        float NdotL = saturate(dot(N, L));
+        brdfCos = (1.0 - metallic) * albedo * INV_PI * NdotL;  // Lambert
+        pdf     = diffProb;
+    }
+    else
+    {
+        float  eta     = hit.material.ior;
+        float3 N_use   = N;
+
+        float cosI  = -dot(N_use, V);
+        float sin2T = (1.0 - cosI * cosI) / (eta * eta);
+        bool  tir   = sin2T >= 1.0;
+
+        if (tir)
+        {
+            L = reflect(ray.dir, N_use);
+        }
+        else
+        {
+            float cosT = sqrt(1.0 - sin2T);
+            L = normalize(eta * ray.dir + (eta * cosI - cosT) * N_use);
         }
 
-        return 0.0;
+        H = normalize(V + L * eta);
+        brdfCos = 1.0;
+        SpecRefrModel(hit, V, L, H, brdfCos);
+        pdf     = max(refrProb, 1e-4);
     }
 
-    hit.should_break = true;
-    return SampleSkybox(ray);
+    ray.dir    = L;
+    ray.origin = hit.position + ray.dir * 1e-4;
+    ray.color *= brdfCos / pdf;
+    return 0.0;
 }
 
 [numthreads(8,8,1)]
@@ -85,9 +139,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
         if (bounce >= 2)
         {
-            float q = MaxComponent(r.color);
-            if (RNG_Next(rng) >= q) break;
-            r.color *= 1.0 / q;
+            float p = max(0.01, dot(r.color, float3(0.2126,0.7152,0.0722)));
+            if (RNG_Next(rng) > p) break;
+            r.color /= p;
         }
 
         r.invDir = 1.0 / r.dir;
