@@ -2,24 +2,24 @@
 #define BXDF
 
 // refer to: https://github.com/HummaWhite/ZillumGL/blob/main/src/shader/material.shader
-float DielectricFresnel(float cosTi, float eta)
+float DielectricFresnel(float cosTi, float ior)
 {
     cosTi = clamp(cosTi, -1.0, 1.0);
     if (cosTi < 0.0)
     {
-        eta = 1.0 / eta;
+        ior = 1.0 / ior;
         cosTi = -cosTi;
     }
 
     float sinTi = sqrt(1.0 - cosTi * cosTi);
-    float sinTt = sinTi / eta;
+    float sinTt = sinTi / ior;
     if (sinTt >= 1.0)
         return 1.0;
 
     float cosTt = sqrt(1.0 - sinTt * sinTt);
 
-    float rPa = (cosTi - eta * cosTt) / (cosTi + eta * cosTt);
-    float rPe = (eta * cosTi - cosTt) / (eta * cosTi + cosTt);
+    float rPa = (cosTi - ior * cosTt) / (cosTi + ior * cosTt);
+    float rPe = (ior * cosTi - cosTt) / (ior * cosTi + cosTt);
     return (rPa * rPa + rPe * rPe) * 0.5;
 }
 
@@ -31,17 +31,24 @@ float3 SchlickFresnel(float cosTheta, float3 F0)
 }
 
 // Smith GGX shadowing-masking function
-float SmithG(float NDotV, float alphaG)
+float SmithG(float NDotV, float roughness)
 {
-    float a = alphaG * alphaG;
+    float a = roughness * roughness;
     float b = NDotV * NDotV;
     return (2.0 * NDotV) / (NDotV + sqrt(a + b - a * b));
+}
+
+float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
+{
+    float NdotV = saturate(dot(N, V));
+    float NdotL = saturate(dot(N, L));
+    return SmithG(NdotV, roughness) * SmithG(NdotL, roughness);
 }
 
 float DistributionGGX(float3 normal, float3 halfVec, float roughness)
 {
     float NdotH = saturate(dot(normal, halfVec));
-        float alpha = roughness * roughness;
+    float alpha = roughness * roughness;
     
     float alpha2 = alpha * alpha;
     float NdotH2 = NdotH * NdotH;
@@ -61,11 +68,10 @@ void SpecReflModel(
     float VdotH = saturate(dot(V, H));
 
     float3 F0 = lerp(float3(0.04,0.04,0.04), hit.material.albedo, hit.material.metallic);
-    float alpha = max(hit.material.roughness * hit.material.roughness, 1e-4);
 
     float3 F = SchlickFresnel(VdotH, F0);
-    float  D = DistributionGGX(hit.normal, H, sqrt(alpha));
-    float  G = SmithG(NdotV, sqrt(alpha)) * SmithG(NdotL, sqrt(alpha));
+    float  D = DistributionGGX(hit.normal, H, hit.material.roughness);
+    float  G = GeometrySmith(hit.normal, V, L, hit.material.roughness);
     f_brdf = F * G * D / max(4.0 * NdotV * NdotL, 1e-4);
     
     pdf = NdotH * D / max(4.0 * VdotH, 1e-4);
