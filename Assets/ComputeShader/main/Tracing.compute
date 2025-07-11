@@ -89,12 +89,12 @@ float3 Shade(Ray ray)
             {
                 float3 rayOutDir = normalize(SampleHemisphere(hit.normal));
 
-                float NdotV      = saturate(dot(hit.normal, V));
-                float diffusePdf = NdotV / PI;
+                float NdotL      = saturate(dot(hit.normal, rayOutDir));
+                float diffusePdf = NdotL / PI;
 
                 float3 f_diffuse = hit.material.albedo / PI;
                 float pdf = max(diffusePdf * diffProb, 1e-4);
-                throughput *= f_diffuse * NdotV / pdf;
+                throughput *= f_diffuse * NdotL / pdf;
 
                 ray.dir = rayOutDir;
             }
