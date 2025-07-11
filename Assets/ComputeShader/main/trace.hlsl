@@ -38,36 +38,68 @@ RayHit Trace(Ray ray)
     return bestHit;
 }
 
+float3 EvaluateBRDF(RayHit hit, float3 V, float3 L, out float3 f_spec, out float3 f_diffuse)
+{
+    float NdotL = saturate(dot(hit.normal, L));
+    float3 H    = normalize(V + L);
 
-float3 GetLightContribution(RayHit hit)
+    float3 F0;
+    F0 = lerp(float3(0.04,0.04,0.04), hit.material.albedo, hit.material.metallic);
+    float3 F = SchlickFresnel( saturate(dot(H,V)), F0 );
+    float  D = DistributionGGX(hit.normal, H, hit.material.roughness);
+    float  G = SmithG( saturate(dot(hit.normal, V)), hit.material.roughness )
+             * SmithG( saturate(dot(hit.normal, L)), hit.material.roughness );
+    f_spec = (D * G * F) / max(4.0 * dot(hit.normal, V) * dot(hit.normal, L), 1e-4);
+
+    float3 kd      = (1.0 - hit.material.metallic) * hit.material.albedo;
+    f_diffuse = kd / PI;
+
+    return (f_diffuse + f_spec) * NdotL;
+}
+
+float3 GetLightContribution(RayHit hit, float3 V)
 {
     float3 lightContribution = 0.0;
+
+    // —— 环境（方向光）——
+    if (_DirectionalLightColor.a > 0.0)
     {
-        Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, _InverseDirectionalLight);
-        if (_DirectionalLightColor.a > 0.0 && !TraceHit(shadowRay, 1.#INF))
+        // L 是表面到光源的方向
+        float3 L = normalize(_InverseDirectionalLight);
+        // 阴影测试
+        Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, L);
+        if (!TraceHit(shadowRay, 1.#INF))
         {
-            lightContribution += hit.material.albedo * saturate(dot(hit.normal, _InverseDirectionalLight)) *
-                _DirectionalLightColor.rgb * _DirectionalLightColor.a;
+            // 用完整 BRDF 评估
+            float3 f_spec, f_diff;
+            float3 brdfCos = EvaluateBRDF(hit, V, L, f_spec, f_diff);
+            lightContribution += brdfCos * _DirectionalLightColor.rgb * _DirectionalLightColor.a;
         }
     }
     
-    // sample point lights
-    for (int i = 0; i < _PointLightsCount; i++)
+    // —— 点光源合集 —— 
+    for (int i = 0; i < _PointLightsCount; ++i)
     {
-        float4 lightPos = _PointLights[i * 2];
+        float4 lightPos   = _PointLights[i * 2];
         float4 lightColor = _PointLights[i * 2 + 1];
-        if (lightColor.a <= 0.0)
-            continue;
-        float3 rayDir = lightPos.xyz - hit.position;
-        float rayDist = length(rayDir);
-        float distDecay = max(0.0, rayDist - lightPos.w);
-        distDecay = pow(0.2, distDecay * distDecay);
-        rayDir /= rayDist;
-        Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, rayDir);
-        if (!TraceHit(shadowRay, rayDist))
+        if (lightColor.a <= 0.0) continue;
+
+        float3 toLight = lightPos.xyz - hit.position;
+        float  dist    = length(toLight);
+        float3 L       = toLight / dist;
+        // 阴影测试（只检到 lightPos 距离）
+        Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, L);
+        if (!TraceHit(shadowRay, dist))
         {
-            lightContribution += hit.material.albedo * saturate(dot(hit.normal, rayDir)) *
-                lightColor.rgb * lightColor.a * distDecay;
+            // 距离衰减
+            float  d      = max(0.0, dist - lightPos.w);
+            float  decay  = pow(0.2, d * d);
+
+            // 完整 BRDF 评估
+            float3 f_spec, f_diff;
+            float3 brdfCos = EvaluateBRDF(hit, V, L, f_spec, f_diff);
+
+            lightContribution += brdfCos * lightColor.rgb * lightColor.a * decay;
         }
     }
 
