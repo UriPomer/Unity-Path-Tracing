@@ -52,7 +52,7 @@ float DistributionGGX(float3 normal, float3 halfVec, float roughness)
 
 void SpecReflModel(
     RayHit hit, float3 V, float3 L, float3 H,
-    out float3 f_brdf_cos,
+    out float3 f_brdf,
     out float pdf)
 {
     float NdotL = saturate(dot(hit.normal, L));
@@ -61,16 +61,16 @@ void SpecReflModel(
     float VdotH = saturate(dot(V, H));
 
     float3 F0 = lerp(float3(0.04,0.04,0.04), hit.material.albedo, hit.material.metallic);
-
     float alpha = max(hit.material.roughness * hit.material.roughness, 1e-4);
 
     float3 F = SchlickFresnel(VdotH, F0);
-    float  D = DistributionGGX(hit.normal, H, sqrt(alpha)); // 你的 DistributionGGX 里直接用 roughness，传入 sqrt(α)
+    float  D = DistributionGGX(hit.normal, H, sqrt(alpha));
     float  G = SmithG(NdotV, sqrt(alpha)) * SmithG(NdotL, sqrt(alpha));
-
-    f_brdf_cos = F * G * D * NdotL / max(4.0 * NdotV, 1e-4);
+    f_brdf = F * G * D / max(4.0 * NdotV * NdotL, 1e-4);
+    
     pdf = NdotH * D / max(4.0 * VdotH, 1e-4);
 }
+
 
 void SpecRefrModel(RayHit hit, float3 V, float3 L, float3 H, inout float3 energy)
 {

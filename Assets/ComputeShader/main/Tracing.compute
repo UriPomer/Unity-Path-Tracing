@@ -6,25 +6,35 @@
 #include "test.hlsl"
 #include "trace.hlsl"
 
-float3 Shade(inout Ray ray, inout RayHit hit)
+float3 Shade(Ray ray)
 {
-    if(hit.distance < 1.#INF)
-    {
-        if (hit.material.emissionIntensity > 0.0f) {
-            float3 L = hit.material.emission * hit.material.emissionIntensity;
-            ray.color = 0.0;
-            hit.should_break = true;
-            return L;
-        }
-        
-        float3 lightContribution = GetLightContribution(hit);
+    float3 throughput = 1.0;
+    float3 L          = 0.0;
 
+    for (int bounce = 0; bounce < _TraceDepth; ++bounce)
+    {
+        RayHit hit = Trace(ray);
+        if (hit.distance >= 1.#INF)
+        {
+            L += throughput * SampleSkybox(ray);
+            break;
+        }
+        if (hit.material.emissionIntensity > 0.0f)
+        {
+            L += throughput * (hit.material.emission * hit.material.emissionIntensity);
+            break;
+        }
+
+        ray.dir = -ray.dir;
         float roulette = RNG_Next(rng);
+        
+        float3 Lo_direct = GetLightContribution(hit);
+        L += throughput * Lo_direct;
+        
         if (hit.mode >= 3.0)
         {
             float outside = dot(ray.dir, hit.normal);
             hit.normal *= sign(outside);    // Ensure normal points in the right direction
-            ray.origin = hit.position + hit.normal * 1e-5;
             // dielectric workflow
             float alpha = SmoothnessToPhongAlpha(hit.material.roughness);
             hit.normal = normalize(lerp(
@@ -43,25 +53,22 @@ float3 Shade(inout Ray ray, inout RayHit hit)
                 SpecReflModel(hit, ray.dir, rayOutDir, H, brdfCos, microPdf);
                 float pdf = reflChance * microPdf;
                 ray.dir = rayOutDir;
-                ray.color *= brdfCos / pdf;
-                lightContribution *= reflChance;
+                throughput *= brdfCos / pdf;
+                L *= reflChance;
             }
             else
             {
                 rayOutDir = normalize(refract(ray.dir, -hit.normal, 1.0 / hit.material.ior));
-                SpecRefrModel(hit, ray.dir, rayOutDir, H, ray.color);
+                SpecRefrModel(hit, ray.dir, rayOutDir, H, throughput);
                 ray.dir = rayOutDir;
-                ray.color *= 1.0 / clamp((1.0 - reflChance), 1e-2, 1.0);
-                lightContribution *= (1.0 - reflChance);
+                throughput *= 1.0 / clamp((1.0 - reflChance), 1e-2, 1.0);
+                L *= (1.0 - reflChance);
             }
         }
-
         else
         {
             // Calculate chances of diffuse and specular reflection
             float diffChance = dot(hit.material.albedo, LUM) * (1.0 - hit.material.metallic);
-            
-            ray.origin = hit.position + hit.normal * 1e-5; // Offset the origin slightly to avoid self-intersection
             if(roulette > diffChance)
             {
                 float3 rayOutDir = normalize(lerp(
@@ -70,37 +77,48 @@ float3 Shade(inout Ray ray, inout RayHit hit)
                     hit.material.roughness * hit.material.roughness
                     ));
 
-                // Specular Model
-                float3 H = normalize(rayOutDir + ray.dir);  // Half vector
-                float NdotL = abs(dot(hit.normal, ray.dir));
-                float specColor = lerp(0.04, hit.material.albedo, hit.material.metallic);
-                float3 F = SchlickFresnel(dot(rayOutDir, H),specColor);
-                float G = SmithG(NdotL, hit.material.roughness);
-                ray.color *= F * G;
-
+                float3 V = ray.dir;
+                float3 LOUT = rayOutDir;
+                float3 H = normalize(V + LOUT);
+                float3 f_brdf;
+                float specPdf;
+    
+                SpecReflModel(hit, V, LOUT, H, f_brdf, specPdf);
+    
+                float NdotL = saturate(dot(hit.normal, LOUT));
+                float branchPdf = (1.0 - diffChance);
+                float totalPdf = specPdf * branchPdf;
+    
+                throughput *= f_brdf * NdotL / max(totalPdf, 1e-4);
                 ray.dir = rayOutDir;
-                ray.color *= 1.0 / clamp(1.0 - diffChance, 1e-2, 1.0);
-                lightContribution *= hit.material.roughness * hit.material.roughness;
+                L *= hit.material.roughness * hit.material.roughness;
             }
             else{
                 float3 rayOutDir = normalize(SampleHemisphere(hit.normal));
-                float3 H = normalize(rayOutDir + ray.dir);  // Half vector
 
                 // Diffuse Model
                 float NdotL = saturate(dot(hit.normal, rayOutDir));
-                float NdotV = saturate(dot(hit.normal, ray.dir));
-                float fd90 = 0.5 + 2.0 * hit.material.roughness * dot(rayOutDir, H) * dot(rayOutDir, H);
-                float fd = lerp(1.0, fd90, NdotL) * lerp(1.0, fd90, NdotV);
-                ray.color *= (1.0 - hit.material.metallic) * fd * hit.material.albedo;
-
+                float diffusePdf = NdotL / PI; // cosine-weighted hemisphere sampling
+                float branchPdf = diffChance;
+                float totalPdf = diffusePdf * branchPdf;
+    
+                float3 diffuseAlbedo = hit.material.albedo * (1.0 - hit.material.metallic);
+                float3 f_diffuse = diffuseAlbedo / PI;
+    
+                throughput *= f_diffuse * NdotL / max(totalPdf, 1e-4);
+    
                 ray.dir = rayOutDir;
-                ray.color *= 1.0 / clamp(diffChance, 1e-2, 1.0);
             }
         }
-        return hit.material.emission * hit.material.emissionIntensity + lightContribution;
+
+        float p = max(throughput.r, max(throughput.g, throughput.b));
+        if (RNG_Next(rng) >= p)
+            break;
+        throughput *= 1.0 / p;
+        ray.invDir = 1.0 / ray.dir;
+        ray.origin = hit.position + hit.normal * 1e-5;
     }
-    hit.should_break = true;
-    return SampleSkybox(ray);
+    return L;
 }
 
 [numthreads(8,8,1)]
@@ -109,40 +127,26 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     RNG_SeedPixel(rng, id.xy, _FrameCount);
     Ray r = GenRayByID(id.xy);
     _Pixel = id.xy;
-    float3 result = float3(0.0f, 0.0f, 0.0f);
     
-    for(int i = 0; i < _TraceDepth; i++)
+    if (_OnlyDrawAlbedo || _OnlyDrawDepth || _OnlyDrawNormals)
     {
-        RayHit hit = Trace(r);
-        
+        RayHit firstHit = Trace(r);
+
         if (_OnlyDrawAlbedo)
+            _Result[id.xy] = float4(firstHit.material.albedo, 1.0f);
+
+        else if (_OnlyDrawDepth)
         {
-            _Result[id.xy] = float4(hit.material.albedo, 1.0f);
+            float nd = firstHit.distance / _CameraFar;
+            _Result[id.xy] = float4(nd, nd, nd, 1.0f);
         }
-        if (_OnlyDrawDepth)
-        {
-            hit.distance = hit.distance / _CameraFar;
-            _Result[id.xy] = float4(hit.distance, hit.distance, hit.distance, 1.0f);
-        }
-        if (_OnlyDrawNormals)
-        {
-            _Result[id.xy] = float4(hit.normal * 0.5f + 0.5f, 1.0f);
-        }
-        
-        result += r.color * SRGB2Linear(Shade(r, hit));
-        if (hit.should_break)
-        {
-            break;
-        }
-        
-        float p = max(r.color.r, max(r.color.g, r.color.b));
-        if (RNG_Next(rng) >= p)
-            break;
-        r.color *= 1.0 / p;
-        
-        r.invDir = 1.0 / r.dir;
+        else if (_OnlyDrawNormals)
+            _Result[id.xy] = float4(firstHit.normal * 0.5f + 0.5f, 1.0f);
+
+        return;
     }
-    if (!_OnlyDrawNormals && !_OnlyDrawDepth && !_OnlyDrawAlbedo)
-        _Result[id.xy] = float4(result, 1.0f);
+
+    float3 L = Shade(r);
+    _Result[id.xy] = float4(L, 1.0f);
 }
 

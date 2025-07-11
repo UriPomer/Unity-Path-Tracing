@@ -38,6 +38,7 @@ RayHit Trace(Ray ray)
     return bestHit;
 }
 
+
 float3 GetLightContribution(RayHit hit)
 {
     float3 lightContribution = 0.0;

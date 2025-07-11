@@ -6,7 +6,6 @@ struct Ray
 {
     float3 origin;
     float3 dir;
-    float3 color;
     float3 invDir;
 };
 
@@ -184,7 +183,6 @@ Ray GenRay(float3 origin, float3 dir)
     Ray ray;
     ray.origin = origin;
     ray.dir = dir;
-    ray.color = float3(1.0f, 1.0f, 1.0f);
     ray.invDir = 1.0f / ray.dir;
     return ray;
 }
