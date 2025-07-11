@@ -54,7 +54,6 @@ float3 Shade(Ray ray)
                 ray.dir = rayOutDir;
                 float NdotL = saturate(dot(hit.normal, rayOutDir));
                 throughput *= brdfCos * NdotL / pdf;
-                // L_Contribution *= reflChance;
             }
             else
             {
@@ -62,7 +61,6 @@ float3 Shade(Ray ray)
                 SpecRefrModel(hit, V, rayOutDir, H, throughput);
                 ray.dir = rayOutDir;
                 throughput *= 1.0 / clamp((1.0 - reflChance), 1e-2, 1.0);
-                // L_Contribution *= (1.0 - reflChance);
             }
         }
         else
@@ -91,12 +89,12 @@ float3 Shade(Ray ray)
             {
                 float3 rayOutDir = normalize(SampleHemisphere(hit.normal));
 
-                float NdotL      = saturate(dot(hit.normal, rayOutDir));
-                float diffusePdf = NdotL / PI;
-                float branchPdf  = diffProb;
+                float NdotV      = saturate(dot(hit.normal, V));
+                float diffusePdf = NdotV / PI;
 
-                float3 f_diffuse     = hit.material.albedo * (1.0 - hit.material.metallic) / PI;
-                throughput *= f_diffuse * NdotL / max(diffusePdf * branchPdf, 1e-4);
+                float3 f_diffuse = hit.material.albedo / PI;
+                float pdf = max(diffusePdf * diffProb, 1e-4);
+                throughput *= f_diffuse * NdotV / pdf;
 
                 ray.dir = rayOutDir;
             }
