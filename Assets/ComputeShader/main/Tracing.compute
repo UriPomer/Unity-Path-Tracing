@@ -79,7 +79,7 @@ float3 Shade(Ray ray)
                 float3 f_brdf;
                 float microPdf;
                 SpecReflModel(hit, V, rayOutDir, H, f_brdf, microPdf);
-                float pdf = specProb * microPdf;
+                float pdf = max(specProb * microPdf, 1e-4);
                 float NdotL = saturate(dot(hit.normal, rayOutDir));
                 throughput *= f_brdf * NdotL / pdf;
 
