@@ -12,8 +12,8 @@ float3 Shade(inout Ray ray, inout RayHit hit)
     {
         if (hit.material.emissionIntensity > 0.0f) {
             float3 L = hit.material.emission * hit.material.emissionIntensity;
-            ray.energy = 0.0;        // 不再传播
-            hit.should_break = true; // 直接退出路径
+            ray.color = 0.0;
+            hit.should_break = true;
             return L;
         }
         
@@ -44,15 +44,15 @@ float3 Shade(inout Ray ray, inout RayHit hit)
                 SpecReflModel(hit, ray.dir, rayOutDir, H, brdfCos, microPdf);
                 float pdf = reflChance * microPdf;
                 ray.dir = rayOutDir;
-                ray.energy *= brdfCos / pdf;
+                ray.color *= brdfCos / pdf;
                 lightContribution *= reflChance;
             }
             else
             {
                 rayOutDir = normalize(refract(ray.dir, -hit.normal, 1.0 / hit.material.ior));
-                SpecRefrModel(hit, ray.dir, rayOutDir, H, ray.energy);
+                SpecRefrModel(hit, ray.dir, rayOutDir, H, ray.color);
                 ray.dir = rayOutDir;
-                ray.energy *= 1.0 / clamp((1.0 - reflChance), 1e-2, 1.0);
+                ray.color *= 1.0 / clamp((1.0 - reflChance), 1e-2, 1.0);
                 lightContribution *= (1.0 - reflChance);
             }
         }
@@ -77,10 +77,10 @@ float3 Shade(inout Ray ray, inout RayHit hit)
                 float specColor = lerp(0.04, hit.material.albedo, hit.material.metallic);
                 float3 F = SchlickFresnel(dot(rayOutDir, H),specColor);
                 float G = SmithG(NdotL, hit.material.roughness);
-                ray.energy *= F * G;
+                ray.color *= F * G;
 
                 ray.dir = rayOutDir;
-                ray.energy *= 1.0 / clamp(1.0 - diffChance, 1e-2, 1.0);
+                ray.color *= 1.0 / clamp(1.0 - diffChance, 1e-2, 1.0);
                 lightContribution *= hit.material.roughness * hit.material.roughness;
             }
             else{
@@ -92,15 +92,15 @@ float3 Shade(inout Ray ray, inout RayHit hit)
                 float NdotV = saturate(dot(hit.normal, ray.dir));
                 float fd90 = 0.5 + 2.0 * hit.material.roughness * dot(rayOutDir, H) * dot(rayOutDir, H);
                 float fd = lerp(1.0, fd90, NdotL) * lerp(1.0, fd90, NdotV);
-                ray.energy *= (1.0 - hit.material.metallic) * fd * hit.material.albedo;
+                ray.color *= (1.0 - hit.material.metallic) * fd * hit.material.albedo;
 
                 ray.dir = rayOutDir;
-                ray.energy *= 1.0 / clamp(diffChance, 1e-2, 1.0);
+                ray.color *= 1.0 / clamp(diffChance, 1e-2, 1.0);
             }
         }
         return hit.material.emission + lightContribution;
     }
-    ray.energy = 0.0;
+    ray.color = 0.0;
     hit.should_break = true;
     return SampleSkybox(ray);
 }
@@ -134,16 +134,16 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         }
 
         
-        result += r.energy * SRGB2Linear(Shade(r, hit));
+        result += r.color * SRGB2Linear(Shade(r, hit));
         if (hit.should_break)
         {
             break;
         }
         
-        float p = max(r.energy.r, max(r.energy.g, r.energy.b));
+        float p = max(r.color.r, max(r.color.g, r.color.b));
         if (RNG_Next(rng) >= p)
             break;
-        r.energy *= 1.0 / p;
+        r.color *= 1.0 / p;
         
         r.invDir = 1.0 / r.dir;
     }

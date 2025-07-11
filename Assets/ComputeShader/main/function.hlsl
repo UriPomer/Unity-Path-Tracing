@@ -132,7 +132,7 @@ Ray GenRayByID(float2 pixelCoord)
     //TODO: 随机生成光线方向
     
     ray.dir = normalize(worldDir);
-    ray.energy = float3(1.0f, 1.0f, 1.0f);
+    ray.color = float3(1.0f, 1.0f, 1.0f);
     ray.invDir = 1.0f / ray.dir;
 
     return ray;
