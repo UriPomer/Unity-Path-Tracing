@@ -108,11 +108,21 @@ float3 SampleReflectionDirectionSphere(float3 normal, float alpha)
 
 float3 SampleHemisphere(float3 norm)
 {
-    float2 rand1 = RNG_Next(rng);
-    float theta = rand1.x * PI_TWO;
-    float phi = acos(1.0 - 2.0 * rand1.y);
-    float3 v = float3(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi));
-    return v * sign(dot(v, norm));
+    float u1 = RNG_Next(rng);
+    float u2 = RNG_Next(rng);
+
+    float r     = sqrt(u1);
+    float theta = 2 * PI * u2;
+    float x     = r * cos(theta);
+    float y     = r * sin(theta);
+    float z     = sqrt(max(0, 1 - u1));
+
+    float3 tangent   = normalize(cross(abs(norm.z) < 0.999 ? float3(0,0,1) : float3(1,0,0), norm));
+    float3 bitangent = cross(norm, tangent);
+
+    return normalize(x * tangent +
+                     y * bitangent +
+                     z * norm);
 }
 
 Ray GenRayByID(float2 pixelCoord)

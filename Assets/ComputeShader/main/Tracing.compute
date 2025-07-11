@@ -38,7 +38,6 @@ float3 Shade(inout Ray ray, inout RayHit hit)
             float reflChance = 1.0 - (1.0 - fresnel) * (1.0 - hit.material.metallic);
             if (roulette < reflChance)
             {
-                //rayOutDir = normalize(reflect(-ray.dir, H));
                 float3 brdfCos;
                 float  microPdf;
                 SpecReflModel(hit, ray.dir, rayOutDir, H, brdfCos, microPdf);
@@ -98,9 +97,8 @@ float3 Shade(inout Ray ray, inout RayHit hit)
                 ray.color *= 1.0 / clamp(diffChance, 1e-2, 1.0);
             }
         }
-        return hit.material.emission + lightContribution;
+        return hit.material.emission * hit.material.emissionIntensity + lightContribution;
     }
-    ray.color = 0.0;
     hit.should_break = true;
     return SampleSkybox(ray);
 }
@@ -116,8 +114,6 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     for(int i = 0; i < _TraceDepth; i++)
     {
         RayHit hit = Trace(r);
-
-        // _Result[id.xy] = IntersectTlasFast(r, 1.#INF);
         
         if (_OnlyDrawAlbedo)
         {
@@ -132,7 +128,6 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         {
             _Result[id.xy] = float4(hit.normal * 0.5f + 0.5f, 1.0f);
         }
-
         
         result += r.color * SRGB2Linear(Shade(r, hit));
         if (hit.should_break)
