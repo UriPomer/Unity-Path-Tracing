@@ -81,5 +81,37 @@ void SpecRefrModel(RayHit hit, float3 V, float3 L, float3 H, inout float3 energy
         (1.0 - F) * G;
 }
 
+float3 SampleGGXVNDF(float3 N, float3 V, float alpha, float2 Xi)
+{
+    float3 up        = abs(N.z) < 0.999 ? float3(0,0,1) : float3(1,0,0);
+    float3 tangentX  = normalize(cross(up, N));
+    float3 tangentY  = cross(N, tangentX);
+
+    float3 Vh = normalize(float3(alpha * dot(V, tangentX),
+                                 alpha * dot(V, tangentY),
+                                 dot(V, N)));
+    
+    float lensq = Vh.x*Vh.x + Vh.y*Vh.y;
+    float3 T1   = lensq > 0.0
+                  ? float3(-Vh.y, Vh.x, 0) / sqrt(lensq)
+                  : float3(1, 0, 0);
+    float3 T2   = cross(Vh, T1);
+
+    float r   = sqrt(Xi.x);
+    float phi = 2.0 * PI * Xi.y;
+    float t1  = r * cos(phi);
+    float t2  = r * sin(phi);
+
+    float s = 0.5 * (1.0 + Vh.z);
+    t2      = lerp(sqrt(max(0, 1.0 - t1*t1)), t2, s);
+
+    float3 Nh = t1 * T1 + t2 * T2 + sqrt(max(0, 1.0 - t1*t1 - t2*t2)) * Vh;
+
+    float3 H  = normalize(float3(alpha * Nh.x,
+                                 alpha * Nh.y,
+                                 max(0, Nh.z)));
+    return normalize(H.x * tangentX + H.y * tangentY + H.z * N);
+}
+
 
 #endif

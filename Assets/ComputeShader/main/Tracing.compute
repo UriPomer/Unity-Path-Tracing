@@ -9,32 +9,31 @@
 float3 Shade(Ray ray)
 {
     float3 throughput = 1.0;
-    float3 L          = 0.0;
+    float3 L_Contribution          = 0.0;
 
     for (int bounce = 0; bounce < _TraceDepth; ++bounce)
     {
         RayHit hit = Trace(ray);
         if (hit.distance >= 1.#INF)
         {
-            L += throughput * SampleSkybox(ray);
+            L_Contribution += throughput * SampleSkybox(ray);
             break;
         }
         if (hit.material.emissionIntensity > 0.0f)
         {
-            L += throughput * (hit.material.emission * hit.material.emissionIntensity);
+            L_Contribution += throughput * (hit.material.emission * hit.material.emissionIntensity);
             break;
         }
 
-        ray.dir = -ray.dir;
         float roulette = RNG_Next(rng);
         
         float3 Lo_direct = GetLightContribution(hit);
-        L += throughput * Lo_direct;
-        
+        L_Contribution += throughput * Lo_direct;
+        float3 V = -ray.dir;
         if (hit.mode >= 3.0)
         {
-            float outside = dot(ray.dir, hit.normal);
-            hit.normal *= sign(outside);    // Ensure normal points in the right direction
+            if (dot(ray.dir, hit.normal) > 0.0)
+                hit.normal = -hit.normal;
             // dielectric workflow
             float alpha = SmoothnessToPhongAlpha(hit.material.roughness);
             hit.normal = normalize(lerp(
@@ -43,70 +42,62 @@ float3 Shade(Ray ray)
                 hit.material.roughness * hit.material.roughness
             ));
             float3 rayOutDir = normalize(reflect(ray.dir, hit.normal));
-            float3 H = normalize(ray.dir + rayOutDir);
-            float fresnel = DielectricFresnel(dot(H, ray.dir), hit.material.ior);
+            float3 H = normalize(V + rayOutDir);
+            float fresnel = DielectricFresnel(dot(H, V), hit.material.ior);
             float reflChance = 1.0 - (1.0 - fresnel) * (1.0 - hit.material.metallic);
             if (roulette < reflChance)
             {
                 float3 brdfCos;
                 float  microPdf;
-                SpecReflModel(hit, ray.dir, rayOutDir, H, brdfCos, microPdf);
+                SpecReflModel(hit, V, rayOutDir, H, brdfCos, microPdf);
                 float pdf = reflChance * microPdf;
                 ray.dir = rayOutDir;
-                throughput *= brdfCos / pdf;
-                L *= reflChance;
+                float NdotL = saturate(dot(hit.normal, rayOutDir));
+                throughput *= brdfCos * NdotL / pdf;
+                // L_Contribution *= reflChance;
             }
             else
             {
-                rayOutDir = normalize(refract(ray.dir, -hit.normal, 1.0 / hit.material.ior));
-                SpecRefrModel(hit, ray.dir, rayOutDir, H, throughput);
+                rayOutDir = normalize(refract(ray.dir, hit.normal, 1.0 / hit.material.ior));
+                SpecRefrModel(hit, V, rayOutDir, H, throughput);
                 ray.dir = rayOutDir;
                 throughput *= 1.0 / clamp((1.0 - reflChance), 1e-2, 1.0);
-                L *= (1.0 - reflChance);
+                // L_Contribution *= (1.0 - reflChance);
             }
         }
         else
         {
+            float3 F0 = lerp(float3(0.04,0.04,0.04), hit.material.albedo, hit.material.metallic);
+            float  specProb = saturate(max(max(F0.x, F0.y), F0.z));
+            float  diffProb = 1.0 - specProb;
             // Calculate chances of diffuse and specular reflection
-            float diffChance = dot(hit.material.albedo, LUM) * (1.0 - hit.material.metallic);
-            if(roulette > diffChance)
+            if (roulette < specProb)
             {
-                float3 rayOutDir = normalize(lerp(
-                    reflect(ray.dir,hit.normal),
-                    SampleHemisphere(hit.normal),
-                    hit.material.roughness * hit.material.roughness
-                    ));
+                float alpha = hit.material.roughness * hit.material.roughness;
+                float2 xi = float2(RNG_Next(rng), RNG_Next(rng));
+                float3 H = SampleGGXVNDF(hit.normal, V, alpha, xi);
+                float3 rayOutDir = normalize(reflect(-V, H));
 
-                float3 V = ray.dir;
-                float3 LOUT = rayOutDir;
-                float3 H = normalize(V + LOUT);
                 float3 f_brdf;
-                float specPdf;
-    
-                SpecReflModel(hit, V, LOUT, H, f_brdf, specPdf);
-    
-                float NdotL = saturate(dot(hit.normal, LOUT));
-                float branchPdf = (1.0 - diffChance);
-                float totalPdf = specPdf * branchPdf;
-    
-                throughput *= f_brdf * NdotL / max(totalPdf, 1e-4);
+                float microPdf;
+                SpecReflModel(hit, V, rayOutDir, H, f_brdf, microPdf);
+                float pdf = specProb * microPdf;
+                float NdotL = saturate(dot(hit.normal, rayOutDir));
+                throughput *= f_brdf * NdotL / pdf;
+
                 ray.dir = rayOutDir;
-                L *= hit.material.roughness * hit.material.roughness;
             }
-            else{
+            else
+            {
                 float3 rayOutDir = normalize(SampleHemisphere(hit.normal));
 
-                // Diffuse Model
-                float NdotL = saturate(dot(hit.normal, rayOutDir));
-                float diffusePdf = NdotL / PI; // cosine-weighted hemisphere sampling
-                float branchPdf = diffChance;
-                float totalPdf = diffusePdf * branchPdf;
-    
-                float3 diffuseAlbedo = hit.material.albedo * (1.0 - hit.material.metallic);
-                float3 f_diffuse = diffuseAlbedo / PI;
-    
-                throughput *= f_diffuse * NdotL / max(totalPdf, 1e-4);
-    
+                float NdotL      = saturate(dot(hit.normal, rayOutDir));
+                float diffusePdf = NdotL / PI;
+                float branchPdf  = diffProb;
+
+                float3 f_diffuse     = hit.material.albedo * (1.0 - hit.material.metallic) / PI;
+                throughput *= f_diffuse * NdotL / max(diffusePdf * branchPdf, 1e-4);
+
                 ray.dir = rayOutDir;
             }
         }
@@ -118,7 +109,7 @@ float3 Shade(Ray ray)
         ray.invDir = 1.0 / ray.dir;
         ray.origin = hit.position + hit.normal * 1e-5;
     }
-    return L;
+    return L_Contribution;
 }
 
 [numthreads(8,8,1)]
