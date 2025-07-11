@@ -76,7 +76,7 @@ public class LightManager : MonoBehaviour
 
         foreach (Light light in PointLights)
         {
-            if (light == null || light.type != LightType.Point) continue;
+            if (light == null || light.gameObject.activeSelf == false || light.type != LightType.Point) continue;
 
             pointLightsPosColor.Add(new Vector4(
                 light.transform.position.x,
