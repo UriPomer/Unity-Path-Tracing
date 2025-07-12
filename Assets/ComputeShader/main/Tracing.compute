@@ -1,7 +1,6 @@
 #pragma kernel CSMain
 
 #include "function.hlsl"
-#include "colors.hlsl"
 #include "bxdf.hlsl"
 #include "test.hlsl"
 #include "trace.hlsl"
@@ -27,8 +26,6 @@ float3 Shade(Ray ray)
 
         float roulette = RNG_Next(rng);
         float3 V = -ray.dir;
-        float3 Lo_direct = GetLightContribution(hit);
-        L_Contribution += throughput * Lo_direct;
         
         if (hit.mode >= 3.0)
         {
@@ -71,19 +68,29 @@ float3 Shade(Ray ray)
             // Calculate chances of diffuse and specular reflection
             if (roulette < specProb)
             {
-                float alpha = hit.material.roughness * hit.material.roughness;
-                float2 xi = float2(RNG_Next(rng), RNG_Next(rng));
-                float3 H = SampleGGXVNDF(hit.normal, V, alpha, xi);
-                float3 rayOutDir = normalize(reflect(-V, H));
+                if (hit.material.roughness < 1e-4)
+                {
+                    float3 R = reflect(-V, hit.normal);
+                    ray.dir = R;
+                    F0 = lerp(float3(0.04,0.04,0.04), hit.material.albedo, hit.material.metallic);
+                    throughput *= F0;
+                }
+                else
+                {
+                    float alpha = hit.material.roughness * hit.material.roughness;
+                    float2 xi = float2(RNG_Next(rng), RNG_Next(rng));
+                    float3 H = SampleGGXVNDF(hit.normal, V, alpha, xi);
+                    float3 rayOutDir = normalize(reflect(-V, H));
 
-                float3 f_brdf;
-                float microPdf;
-                SpecReflModel(hit, V, rayOutDir, H, f_brdf, microPdf);
-                float pdf = max(specProb * microPdf, 1e-4);
-                float NdotL = saturate(dot(hit.normal, rayOutDir));
-                throughput *= f_brdf * NdotL / pdf;
+                    float3 f_brdf;
+                    float microPdf;
+                    SpecReflModel(hit, V, rayOutDir, H, f_brdf, microPdf);
+                    float pdf = max(specProb * microPdf, 1e-4);
+                    float NdotL = saturate(dot(hit.normal, rayOutDir));
+                    throughput *= f_brdf * NdotL / pdf;
 
-                ray.dir = rayOutDir;
+                    ray.dir = rayOutDir;
+                }
             }
             else
             {
@@ -99,6 +106,9 @@ float3 Shade(Ray ray)
                 ray.dir = rayOutDir;
             }
         }
+        
+        float3 Lo_direct = GetLightContribution(hit, ray.dir);
+        L_Contribution += throughput * Lo_direct;
 
         float p = max(throughput.r, max(throughput.g, throughput.b));
         if (RNG_Next(rng) >= p)

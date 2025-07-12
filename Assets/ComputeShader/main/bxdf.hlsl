@@ -26,29 +26,28 @@ float DielectricFresnel(float cosTi, float ior)
 // Schlick Fresnel 近似
 float3 SchlickFresnel(float cosTheta, float3 F0)
 {
-    //return F0 + (1.0 - F0) * pow(abs(1.0 - cosTheta), 5.0);
-    return lerp(F0, 1.0, pow(abs(1.0 - cosTheta), 5.0));
+    //return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+    return lerp(F0, 1.0, pow(1.0 - cosTheta, 5.0));
 }
 
 // Smith GGX shadowing-masking function
-float SmithG(float NDotV, float roughness)
+float SmithG(float NDotV, float alpha)
 {
-    float a = roughness * roughness;
+    float alpha2 = alpha * alpha;
     float b = NDotV * NDotV;
-    return (2.0 * NDotV) / (NDotV + sqrt(a + b - a * b));
+    return (2.0 * NDotV) / (NDotV + sqrt(alpha2 + b - alpha2 * b));
 }
 
-float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
+float GeometrySmith(float3 N, float3 V, float3 L, float alpha)
 {
     float NdotV = saturate(dot(N, V));
     float NdotL = saturate(dot(N, L));
-    return SmithG(NdotV, roughness) * SmithG(NdotL, roughness);
+    return SmithG(NdotV, alpha) * SmithG(NdotL, alpha);
 }
 
-float DistributionGGX(float3 normal, float3 halfVec, float roughness)
+float DistributionGGX(float3 normal, float3 halfVec, float alpha)
 {
     float NdotH = saturate(dot(normal, halfVec));
-    float alpha = roughness * roughness;
     
     float alpha2 = alpha * alpha;
     float NdotH2 = NdotH * NdotH;
@@ -69,9 +68,10 @@ void SpecReflModel(
 
     float3 F0 = lerp(float3(0.04,0.04,0.04), hit.material.albedo, hit.material.metallic);
 
+    float alpha = hit.material.roughness * hit.material.roughness;
     float3 F = SchlickFresnel(VdotH, F0);
-    float  D = DistributionGGX(hit.normal, H, hit.material.roughness);
-    float  G = GeometrySmith(hit.normal, V, L, hit.material.roughness);
+    float  D = DistributionGGX(hit.normal, H, alpha);
+    float  G = GeometrySmith(hit.normal, V, L, alpha);
     f_brdf = F * G * D / max(4.0 * NdotV * NdotL, 1e-4);
     
     pdf = NdotH * D / max(4.0 * VdotH, 1e-4);
@@ -82,7 +82,8 @@ void SpecRefrModel(RayHit hit, float3 V, float3 L, float3 H, inout float3 energy
 {
     float NdotL = abs(dot(hit.normal, L));
     float F = DielectricFresnel(dot(V, H), hit.material.ior);
-    float G = SmithG(NdotL, hit.material.roughness);
+    float alpha = hit.material.roughness * hit.material.roughness;
+    float G = SmithG(NdotL, alpha);
     energy *= pow(hit.material.albedo, 0.5) * (1.0 - hit.material.metallic) *
         (1.0 - F) * G;
 }

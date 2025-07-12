@@ -13,15 +13,15 @@ float3 SampleSkybox(Ray ray)
         float2(phi, theta),
         0
     ).xyz;
+    //
+    // float3 sunDir = normalize(_InverseDirectionalLight);
+    // float cosA = saturate(dot(dir, sunDir));
+    // float disk = pow(cosA, 50);
+    // float3 sunColor = disk
+    //                 * _DirectionalLightColor.rgb
+    //                 * _DirectionalLightColor.a;
 
-    float3 sunDir = normalize(_InverseDirectionalLight);
-    float cosA = saturate(dot(dir, sunDir));
-    float disk = pow(cosA, 50);
-    float3 sunColor = disk
-                    * _DirectionalLightColor.rgb
-                    * _DirectionalLightColor.a;
-
-    return envColor + sunColor;
+    return envColor;
 }
 
 // trace a ray and returns hit immediately (for shadow rays)
@@ -38,16 +38,26 @@ RayHit Trace(Ray ray)
     return bestHit;
 }
 
-float3 GetLightContribution(RayHit hit)
+float3 GetLightContribution(RayHit hit, float3 dir)
 {
     float3 lightContribution = 0.0;
     {
         Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, _InverseDirectionalLight);
         if (_DirectionalLightColor.a > 0.0 && !TraceHit(shadowRay, 1.#INF))
         {
-            lightContribution += _DirectionalLightColor.rgb * _DirectionalLightColor.a;
+            // lightContribution += _DirectionalLightColor.rgb * _DirectionalLightColor.a;
+            float3 sunDir = normalize(_InverseDirectionalLight);
+            float cosA = saturate(dot(dir, sunDir));
+            float disk = pow(cosA, _SunFocus);
+            float3 sunColor = disk
+                            * _DirectionalLightColor.rgb
+                            * _DirectionalLightColor.a;
+            lightContribution += sunColor;
         }
     }
+
+    float u = RNG_Next(rng);
+    uint idx = min(uint(u * _PointLightsCount), _PointLightsCount - 1);
     
     // sample point lights
     for (int i = 0; i < _PointLightsCount; i++)

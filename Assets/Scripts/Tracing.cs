@@ -15,6 +15,8 @@ public class Tracing : MonoBehaviour
     private Texture skyboxTexture;
     [SerializeField, Range(0.0f, 10.0f)]
     float SkyboxIntensity = 1.0f;
+    [SerializeField, Range(1.0f, 200.0f)]
+    float SunFocus = 5.0f;
     
     [SerializeField, Range(1, 8)]
     int TraceDepth = 3;
@@ -143,6 +145,7 @@ public class Tracing : MonoBehaviour
         tracingShader.SetMatrix("_CameraToWorld", cam.cameraToWorldMatrix);
         tracingShader.SetMatrix("_CameraInverseProjection", cam.projectionMatrix.inverse);
         tracingShader.SetTexture(0, "_SkyboxTexture", skyboxTexture);
+        tracingShader.SetFloat("_SunFocus", SunFocus);
 
         if (NeedUpdate)
         {

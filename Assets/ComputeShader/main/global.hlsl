@@ -39,6 +39,7 @@ Texture2D<float4> _SkyboxTexture;
 SamplerState sampler_SkyboxTexture;
 float3 _InverseDirectionalLight;
 float4 _DirectionalLightColor;
+float _SunFocus;
 StructuredBuffer<float4> _PointLights;
 int _PointLightsCount;
 uint _FrameCount;

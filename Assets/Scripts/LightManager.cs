@@ -97,7 +97,7 @@ public class LightManager : MonoBehaviour
 
         int neededCount = pointLightsPosColor.Count;
 
-        if (pointLightsBuffer == null || pointLightsBuffer.count < neededCount)
+        if (pointLightsBuffer == null || pointLightsBuffer.count != neededCount)
         {
             pointLightsBuffer?.Release();
             pointLightsBuffer = new ComputeBuffer(neededCount, 4 * sizeof(float));
