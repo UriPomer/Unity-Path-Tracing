@@ -135,7 +135,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!108 &33643486
 Light:
   m_ObjectHideFlags: 0
@@ -243,8 +243,8 @@ Light:
   m_Enabled: 1
   serializedVersion: 11
   m_Type: 1
-  m_Color: {r: 1, g: 0.95686275, b: 0.8392157, a: 1}
-  m_Intensity: 1
+  m_Color: {r: 1, g: 1, b: 1, a: 1}
+  m_Intensity: 5
   m_Range: 10
   m_SpotAngle: 30
   m_InnerSpotAngle: 21.80208
@@ -306,13 +306,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 347521808}
   serializedVersion: 2
-  m_LocalRotation: {x: 0.58764553, y: 0.042995192, z: -0.041426398, w: 0.8069126}
+  m_LocalRotation: {x: 0.55941343, y: 0.05255636, z: -0.011495079, w: 0.82714105}
   m_LocalPosition: {x: 0, y: 9.94, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 72.161, y: 3.874, z: -3.054}
+  m_LocalEulerAnglesHint: {x: 67.916, y: 11.364, z: 6.075}
 --- !u!1001 &420170302
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -495,7 +495,8 @@ MonoBehaviour:
   tracingShader: {fileID: 7200000, guid: f729f9caa1fdb5140afe66433bd74ff9, type: 3}
   skyboxTexture: {fileID: 2800000, guid: 941c159d55e667a4292d15e1eee1390a, type: 3}
   SkyboxIntensity: 1
-  SunFocus: 5
+  SunFocus: 1
+  SunAngularRadius: 0.0373
   TraceDepth: 8
   OnlyDrawAlbedo: 0
   OnlyDrawNormals: 0
@@ -570,7 +571,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!108 &737718086
 Light:
   m_ObjectHideFlags: 0
@@ -667,7 +668,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!108 &1127881317
 Light:
   m_ObjectHideFlags: 0
@@ -764,7 +765,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!108 &1809187249
 Light:
   m_ObjectHideFlags: 0

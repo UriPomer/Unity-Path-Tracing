@@ -17,6 +17,8 @@ public class Tracing : MonoBehaviour
     float SkyboxIntensity = 1.0f;
     [SerializeField, Range(1.0f, 200.0f)]
     float SunFocus = 5.0f;
+    [SerializeField, Range(0.004f, 0.1f)]
+    float SunAngularRadius = 0.1f;
     
     [SerializeField, Range(1, 8)]
     int TraceDepth = 3;
@@ -146,6 +148,7 @@ public class Tracing : MonoBehaviour
         tracingShader.SetMatrix("_CameraInverseProjection", cam.projectionMatrix.inverse);
         tracingShader.SetTexture(0, "_SkyboxTexture", skyboxTexture);
         tracingShader.SetFloat("_SunFocus", SunFocus);
+        tracingShader.SetFloat("_SunAngularRadius", SunAngularRadius);
 
         if (NeedUpdate)
         {

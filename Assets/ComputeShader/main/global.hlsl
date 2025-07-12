@@ -40,6 +40,7 @@ SamplerState sampler_SkyboxTexture;
 float3 _InverseDirectionalLight;
 float4 _DirectionalLightColor;
 float _SunFocus;
+float _SunAngularRadius;
 StructuredBuffer<float4> _PointLights;
 int _PointLightsCount;
 uint _FrameCount;

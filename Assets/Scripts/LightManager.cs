@@ -66,13 +66,15 @@ public class LightManager : MonoBehaviour
         tracingShader.SetVector("_InverseDirectionalLight", directionalLightInfo);
         tracingShader.SetVector("_DirectionalLightColor", directionalLightColorInfo);
         tracingShader.SetBuffer(0,"_PointLights", pointLightsBuffer);
-        tracingShader.SetInt("_PointLightsCount", LightManager.Instance.GetPointLightsCount());
+        tracingShader.SetInt("_PointLightsCount", GetPointLightsCount());
     }
+
+    private List<Vector4> pointLightsPosColor = new List<Vector4>();
     
     public void UpdateLights()
     {
         pointLightsCount = 0;
-        List<Vector4> pointLightsPosColor = new List<Vector4>();
+        pointLightsPosColor.Clear();
 
         foreach (Light light in PointLights)
         {
