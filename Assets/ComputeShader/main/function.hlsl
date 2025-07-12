@@ -139,7 +139,7 @@ Ray GenRayByID(float2 pixelCoord)
 
     Ray ray;
     ray.origin = mul(_CameraToWorld, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz;
-    //TODO: 随机生成光线方向
+    //TODO: 随机扰动
     
     ray.dir = normalize(worldDir);
     ray.invDir = 1.0f / ray.dir;

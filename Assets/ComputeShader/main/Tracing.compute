@@ -27,7 +27,7 @@ float3 Shade(Ray ray)
 
         float roulette = RNG_Next(rng);
         float3 V = -ray.dir;
-        float3 Lo_direct = GetLightContribution(hit, V);
+        float3 Lo_direct = GetLightContribution(hit);
         L_Contribution += throughput * Lo_direct;
         
         if (hit.mode >= 3.0)

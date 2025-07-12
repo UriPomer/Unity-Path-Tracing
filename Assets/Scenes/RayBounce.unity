@@ -233,8 +233,8 @@ Light:
   serializedVersion: 11
   m_Type: 2
   m_Color: {r: 0.4431373, g: 0.9039103, b: 1, a: 1}
-  m_Intensity: 5
-  m_Range: 100
+  m_Intensity: 1
+  m_Range: 5
   m_SpotAngle: 30
   m_InnerSpotAngle: 21.80208
   m_CookieSize: 10
@@ -502,7 +502,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 26765ad8dbb9ac9459905b26b565b3cc, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  Intensity: 5
+  Intensity: 1
 --- !u!1001 &853374330
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -956,8 +956,8 @@ Light:
   serializedVersion: 11
   m_Type: 2
   m_Color: {r: 1, g: 0.4433961, b: 0.4433961, a: 1}
-  m_Intensity: 5
-  m_Range: 100
+  m_Intensity: 1
+  m_Range: 5
   m_SpotAngle: 30
   m_InnerSpotAngle: 21.80208
   m_CookieSize: 10
