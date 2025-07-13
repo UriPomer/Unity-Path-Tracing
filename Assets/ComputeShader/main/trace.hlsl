@@ -86,58 +86,72 @@ float3 AccumulateSunLight(
     return accum / float(DIRECTIONAL_LIGHT_SAMPLE);
 }
 
-float3 GetLightContribution(RayHit hit, float3 dir)
+float3 AccumulatePointLightSoft(
+    RayHit hit, 
+    uint lightIdx,
+    float inv_pdf
+)
 {
-    float3 lightContribution = AccumulateSunLight(hit, dir);
+    float4 lightPosRad   = _PointLights[lightIdx * 2];
+    float4 lightColorA   = _PointLights[lightIdx * 2 + 1];
+    float radius         = lightPosRad.w;
+    float3 baseColor     = lightColorA.rgb * lightColorA.a;
+    if (lightColorA.a <= 0.0 || radius <= 0.0)
+        return 0;
 
-    // float3 lightContribution = 0.f;
-    // Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, _InverseDirectionalLight);
-    // if (_DirectionalLightColor.a > 0.0 && !TraceHit(shadowRay, 1.#INF))
-    // {
-    //     // lightContribution += _DirectionalLightColor.rgb * _DirectionalLightColor.a;
-    //     float3 sunDir = normalize(_InverseDirectionalLight);
-    //     float cosA = saturate(dot(dir, sunDir));
-    //     float disk = pow(cosA, _SunFocus);
-    //     float3 sunColor = disk
-    //                     * _DirectionalLightColor.rgb
-    //                     * _DirectionalLightColor.a;
-    //     lightContribution += sunColor;
-    // }
-    
-    if (_PointLightsCount == 0)
-    {
-        return lightContribution;
-    }
+    float3 toCenter = lightPosRad.xyz - hit.position;
+    float  distC    = length(toCenter);
+    float3 L0       = toCenter / distC;
 
-    int samples = min(POINT_LIGHT_SAMPLES, _PointLightsCount);
-    float inv_pdf = _PointLightsCount / float(samples);
+    float3 upRef  = abs(L0.y) < 0.99 ? float3(0,1,0) : float3(1,0,0);
+    float3 right  = normalize(cross(upRef, L0));
+    float3 up2    = cross(L0, right);
+
+    float3 accum = float3(0,0,0);
+
     [unroll]
-    for (int i = 0; i < POINT_LIGHT_SAMPLES; ++i)
+    for (int s = 0; s < POINT_LIGHT_SAMPLES; ++s)
     {
-        float u = RNG_Next(rng);
-        uint idx = min(uint(u * _PointLightsCount), _PointLightsCount - 1);
+        float u1 = RNG_Next(rng);
+        float u2 = RNG_Next(rng);
+        float2 d  = SampleDisk(u1, u2) * radius;
 
-        float4 lightPos = _PointLights[idx * 2];
-        float4 lightColor = _PointLights[idx * 2 + 1];
-        if (lightColor.a <= 0.0)
-        {
+        float3 samplePos = lightPosRad.xyz 
+                         + d.x * right 
+                         + d.y * up2;
+
+        float3 toSample = samplePos - hit.position;
+        float  distS    = length(toSample);
+        float3 Ls       = toSample / distS;
+
+        Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, Ls);
+        if (TraceHit(shadowRay, distS))
             continue;
-        }
-        float3 toLight = lightPos.xyz - hit.position;
-        float  dist    = length(toLight);
-        float3 L       = toLight / dist;
 
-        Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, L);
-        if (!TraceHit(shadowRay, dist))
+        float atten = saturate(1.0 - distS / (radius * 2.0));
+        accum += baseColor * atten * inv_pdf;
+    }
+
+    return accum / float(POINT_LIGHT_SAMPLES);
+}
+
+float3 GetLightContribution(RayHit hit, float3 viewDir)
+{
+    float3 lightContribution = AccumulateSunLight(hit, viewDir);
+
+    if (_PointLightsCount > 0)
+    {
+        int samples = min(POINT_LIGHT_SAMPLES, _PointLightsCount);
+        float inv_pdf = _PointLightsCount / float(samples);
+
+        [unroll]
+        for (int i = 0; i < POINT_LIGHT_SAMPLES; ++i)
         {
-            float radius = lightPos.w;
-            if (radius > 0.0)
-            {
-                float x = saturate(1.0 - dist / radius);
-                float attenuation = x * x;
-                lightContribution += lightColor.rgb * lightColor.a * attenuation * inv_pdf;
-            }
+            float u = RNG_Next(rng);
+            uint idx = min(uint(u * _PointLightsCount), _PointLightsCount - 1);
+            lightContribution += AccumulatePointLightSoft(hit, idx, inv_pdf);
         }
     }
+
     return lightContribution;
 }
