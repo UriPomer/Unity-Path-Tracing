@@ -42,7 +42,6 @@ public class Tracing : MonoBehaviour
     private int sampleCount = 0;
     private Material _addMaterial;
     
-    private Material collectMaterial;
     private RenderTexture frameConverged;
     
     private readonly int dispatchGroupX = 32;
@@ -53,8 +52,8 @@ public class Tracing : MonoBehaviour
 
     private void Awake()
     {
-        if (collectMaterial == null)
-            collectMaterial = new Material(Shader.Find("Hidden/Collect"));
+        if (_addMaterial == null)
+            _addMaterial = new Material(Shader.Find("Hidden/AddShader"));
     }
 
     private void Start()
@@ -78,6 +77,8 @@ public class Tracing : MonoBehaviour
             if (target != null) target.Release();
             target = new RenderTexture(Screen.width, Screen.height, 0, RenderTextureFormat.ARGBFloat,
                 RenderTextureReadWrite.Linear);
+            target.filterMode = FilterMode.Point;
+            target.wrapMode   = TextureWrapMode.Clamp;
             target.enableRandomWrite = true;
             target.Create();
         }
@@ -88,6 +89,8 @@ public class Tracing : MonoBehaviour
             if (frameConverged != null)
                 frameConverged.Release();
             frameConverged = new RenderTexture(Screen.width, Screen.height, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
+            frameConverged.filterMode = FilterMode.Point;
+            frameConverged.wrapMode   = TextureWrapMode.Clamp;
             frameConverged.enableRandomWrite = true;
             frameConverged.Create();
         }
@@ -105,16 +108,12 @@ public class Tracing : MonoBehaviour
         dispatchGroupYFull = Mathf.CeilToInt(Screen.height / 8.0f);
         tracingShader.SetTexture(0, "_Result", target);
         tracingShader.Dispatch(0, dispatchGroupXFull, dispatchGroupYFull, 1);
-        // Graphics.Blit(target, frameConverged, collectMaterial);
-        // Graphics.Blit(frameConverged, destination);
         
-        if (_addMaterial == null)
-            _addMaterial = new Material(Shader.Find("Hidden/AddShader"));
-
         if (Denoise)
         {
             _addMaterial.SetFloat("_Sample", sampleCount);
-            Graphics.Blit(target, destination, _addMaterial);
+            Graphics.Blit(target, frameConverged, _addMaterial);
+            Graphics.Blit(frameConverged, destination);
         }
         else
         {

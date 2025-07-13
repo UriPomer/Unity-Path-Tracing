@@ -15,8 +15,9 @@
 			CGPROGRAM
 			#pragma vertex vert
 			#pragma fragment frag
-			
+
 			#include "UnityCG.cginc"
+            #include "colors.hlsl"
 
 			struct appdata
 			{
@@ -43,7 +44,8 @@
 
 			float4 frag (v2f i) : SV_Target
 			{
-				return float4(tex2D(_MainTex, i.uv).rgb, 1.0f / _Sample);
+				float4 color = tex2D(_MainTex, i.uv);
+                return Linear2SRGB(float4(color.rgb, 1.0 / (color.a * _Sample)));
 			}
 			ENDCG
 		}

@@ -2,6 +2,7 @@
 
 #include "function.hlsl"
 #include "bxdf.hlsl"
+#include "colors.hlsl"
 #include "test.hlsl"
 #include "trace.hlsl"
 
@@ -21,7 +22,7 @@ float3 Shade(Ray ray)
         if (hit.material.emissionIntensity > 0.0f)
         {
             L_Contribution += throughput * (hit.material.emission * hit.material.emissionIntensity);
-            break;
+            // break;
         }
 
         float roulette = RNG_Next(rng);
@@ -145,7 +146,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    float3 L = Shade(r);
+    float3 L = SRGB2Linear(Shade(r));
     _Result[id.xy] = float4(L, 1.0f);
 }
 
