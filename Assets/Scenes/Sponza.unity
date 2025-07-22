@@ -407,6 +407,7 @@ GameObject:
   - component: {fileID: 609528812}
   - component: {fileID: 609528813}
   - component: {fileID: 609528814}
+  - component: {fileID: 609528815}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -555,6 +556,21 @@ MonoBehaviour:
   - {fileID: 737718086}
   - {fileID: 33643486}
   - {fileID: 1127881317}
+--- !u!114 &609528815
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 609528807}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a0bcb4dfe0174e858c53b38d1274b852, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  lightCullingShader: {fileID: 7200000, guid: bb1fc129212a41d39e11dd31e34d4f90, type: 3}
+  tileSize: 16
+  showDebugInfo: 0
 --- !u!1 &737718085
 GameObject:
   m_ObjectHideFlags: 0

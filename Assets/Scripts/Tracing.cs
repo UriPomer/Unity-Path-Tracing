@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 
 [RequireComponent(typeof(LightManager))]
+[RequireComponent(typeof(LightCullingManager))]
 public class Tracing : MonoBehaviour
 {
     public ComputeShader tracingShader;
@@ -41,8 +42,9 @@ public class Tracing : MonoBehaviour
     
     private int sampleCount = 0;
     private Material _addMaterial;
-    
+
     private RenderTexture frameConverged;
+    private LightCullingManager lightCullingManager;
     
     private readonly int dispatchGroupX = 32;
     private readonly int dispatchGroupY = 32;
@@ -59,6 +61,7 @@ public class Tracing : MonoBehaviour
     private void Start()
     {
         cam = GetComponent<Camera>();
+        lightCullingManager = GetComponent<LightCullingManager>();
         LightManager.Instance.UpdateLights();
         _OldDenoise = Denoise;
     }
@@ -102,6 +105,12 @@ public class Tracing : MonoBehaviour
             NeedUpdate = true;
         }
         
+        // 执行光源剔除
+        if (lightCullingManager != null)
+        {
+            lightCullingManager.PerformLightCulling();
+        }
+
         SetShaderParameters();
         sampleCount++;
         dispatchGroupXFull = Mathf.CeilToInt(Screen.width / 8.0f);
@@ -180,6 +189,12 @@ public class Tracing : MonoBehaviour
         tracingShader.SetBool("_OnlyDrawNormals", OnlyDrawNormals);
         tracingShader.SetBool("_OnlyDrawAlbedo", OnlyDrawAlbedo);
         tracingShader.SetFloat("_CameraFar", cam.farClipPlane);
+
+        // 设置光源剔除缓冲区
+        if (lightCullingManager != null)
+        {
+            lightCullingManager.SetTracingShaderBuffers(tracingShader);
+        }
     }
     
     private Vector2 GeneratePixelOffset()

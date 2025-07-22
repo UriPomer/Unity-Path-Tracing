@@ -50,10 +50,12 @@ StructuredBuffer<float4> _PointLights;
 int _PointLightsCount;
 uint _FrameCount;
 
-// 光源剔除相关缓冲区
 StructuredBuffer<uint> _LightCullingData;  // 每个tile的光源索引列表
 StructuredBuffer<uint2> _TileData;         // 每个tile的光源数量和起始偏移
 uint2 _TileCount;                          // 屏幕分块数量 (x, y)
+float _CameraNear;                         // 相机近平面
+float _CameraFar;                          // 相机远平面
+
 struct RNG
 {
     uint state;
@@ -94,8 +96,6 @@ uint _BNodesCount;
 bool _OnlyDrawAlbedo;
 bool _OnlyDrawNormals;
 bool _OnlyDrawDepth;
-
-float _CameraFar;
 
 /// Debug
 

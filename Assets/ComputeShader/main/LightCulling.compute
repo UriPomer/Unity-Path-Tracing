@@ -1,0 +1,156 @@
+﻿#pragma kernel CSLightCulling
+
+#include "global.hlsl"
+
+groupshared uint s_LightCount;
+groupshared uint s_LightIndices[MAX_LIGHTS_PER_TILE];
+groupshared uint s_TileMinDepth;
+groupshared uint s_TileMaxDepth;
+
+// 输出缓冲区
+RWStructuredBuffer<uint> _LightCullingDataOut;
+RWStructuredBuffer<uint2> _TileDataOut;
+
+// 深度纹理
+Texture2D<float> _DepthTexture;
+SamplerState sampler_DepthTexture;
+
+// 额外需要的变量
+float4x4 unity_WorldToCamera;
+
+float LinearDepth(float depth)
+{
+    float z = depth * 2.0 - 1.0;
+    return (2.0 * _CameraNear * _CameraFar) / (_CameraFar + _CameraNear - z * (_CameraFar - _CameraNear));
+}
+
+void GetFrustumPlanes(uint2 tileId, out float4 frustumPlanes[4])
+{
+    float2 tileScale = float2(_TileCount) * rcp(float2(_Resolution));
+    float2 tileBias = tileScale - float2(tileId);
+
+    frustumPlanes[0] = float4(1, 0, 0, 0);
+    frustumPlanes[1] = float4(-1, 0, 0, 0);
+    frustumPlanes[2] = float4(0, 1, 0, 0);
+    frustumPlanes[3] = float4(0, -1, 0, 0);
+}
+
+bool SphereIntersectsTile(float3 lightPos, float radius, uint2 tileId, float minDepth, float maxDepth)
+{
+    // 临时：让所有光源都通过剔除测试，确保基本功能正常
+    return true;
+
+    // TODO: 后续实现精确的剔除算法
+    /*
+    float2 tileMin = float2(tileId) * TILE_SIZE;
+    float2 tileMax = tileMin + TILE_SIZE;
+
+    float4 clipPos = mul(_CameraInverseProjection, float4(lightPos, 1.0));
+    float4 screenPos = mul(_CameraToWorld, clipPos);
+    float2 screenCoord = screenPos.xy / screenPos.w;
+    screenCoord = screenCoord * 0.5 + 0.5;
+    screenCoord *= _Resolution;
+
+    bool inTile = screenCoord.x >= tileMin.x && screenCoord.x <= tileMax.x &&
+                  screenCoord.y >= tileMin.y && screenCoord.y <= tileMax.y;
+
+    bool inDepthRange = lightPos.z >= minDepth - radius && lightPos.z <= maxDepth + radius;
+
+    return inTile && inDepthRange;
+    */
+}
+
+[numthreads(TILE_SIZE, TILE_SIZE, 1)]
+void CSLightCulling(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID, uint groupIndex : SV_GroupIndex)
+{
+    uint2 tileId = groupId.xy;
+    uint2 pixelCoord = tileId * TILE_SIZE + groupThreadId.xy;
+    
+    if (groupIndex == 0)
+    {
+        s_LightCount = 0;
+        s_TileMinDepth = 0x7F7FFFFF;
+        s_TileMaxDepth = 0;
+    }
+    
+    GroupMemoryBarrierWithGroupSync();
+    
+    uint width, height;
+    _DepthTexture.GetDimensions(width, height);
+    
+    if (pixelCoord.x < width && pixelCoord.y < height)
+    {
+        float depth = _DepthTexture.SampleLevel(sampler_DepthTexture, 
+            (pixelCoord + 0.5) / float2(width, height), 0).r;
+        
+        if (depth > 0.0 && depth < 1.0)
+        {
+            float linearDepth = LinearDepth(depth);
+            uint depthInt = asuint(linearDepth);
+            
+            InterlockedMin(s_TileMinDepth, depthInt);
+            InterlockedMax(s_TileMaxDepth, depthInt);
+        }
+    }
+    
+    GroupMemoryBarrierWithGroupSync();
+    
+    float minDepth = asfloat(s_TileMinDepth);
+    float maxDepth = asfloat(s_TileMaxDepth);
+    
+    if (s_TileMinDepth == 0x7F7FFFFF)
+    {
+        minDepth = _CameraNear;
+        maxDepth = _CameraFar;
+    }
+    
+    // 每个线程处理一部分光源
+    uint lightStart = groupIndex;
+    uint lightStep = TILE_SIZE * TILE_SIZE;
+    
+    for (uint lightIndex = lightStart; lightIndex < (uint)_PointLightsCount; lightIndex += lightStep)
+    {
+        // 获取光源数据
+        float4 lightPosRadius = _PointLights[lightIndex * 2];
+        float4 lightColor = _PointLights[lightIndex * 2 + 1];
+        
+        if (lightColor.a <= 0.0) continue; // 无效光源
+        
+        float3 lightWorldPos = lightPosRadius.xyz;
+        float lightRadius = lightPosRadius.w;
+
+        // 检查光源是否影响这个tile
+        if (SphereIntersectsTile(lightWorldPos, lightRadius, tileId, minDepth, maxDepth))
+        {
+            // 添加到tile的光源列表
+            uint index;
+            InterlockedAdd(s_LightCount, 1, index);
+            
+            if (index < MAX_LIGHTS_PER_TILE)
+            {
+                s_LightIndices[index] = lightIndex;
+            }
+        }
+    }
+    
+    GroupMemoryBarrierWithGroupSync();
+    
+    // 写入输出缓冲区
+    if (groupIndex == 0)
+    {
+        uint tileIndex = tileId.y * _TileCount.x + tileId.x;
+        uint lightCount = min(s_LightCount, MAX_LIGHTS_PER_TILE);
+        
+        // 计算在全局缓冲区中的偏移
+        uint globalOffset = tileIndex * MAX_LIGHTS_PER_TILE;
+        
+        // 存储tile信息
+        _TileDataOut[tileIndex] = uint2(lightCount, globalOffset);
+        
+        // 存储光源索引
+        for (uint i = 0; i < lightCount; ++i)
+        {
+            _LightCullingDataOut[globalOffset + i] = s_LightIndices[i];
+        }
+    }
+}
