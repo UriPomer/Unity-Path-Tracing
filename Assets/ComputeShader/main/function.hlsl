@@ -1,3 +1,4 @@
+
 #ifndef FUNCTION
 #define FUNCTION
 
@@ -63,10 +64,10 @@ void RNG_SeedPixel(inout RNG rng, uint2 pixelXY, uint frameId /*帧序号*/)
     rng.state = WangHash(s);
 }
 
-float RNG_Next(inout RNG rng)
+half RNG_Next(inout RNG rng)  // float -> half
 {
     rng.state = WangHash(rng.state);
-    return HashToFloat(rng.state);
+    return half(HashToFloat(rng.state));
 }
 
 bool SkipTransparent(Material mat)
@@ -106,16 +107,16 @@ float3 SampleReflectionDirectionSphere(float3 normal, float alpha)
     return mul(tangentSpaceDir, GetTangentSpace(normal));
 }
 
-float3 SampleHemisphere(float3 norm)
+half3 SampleHemisphere(float3 norm)
 {
-    float u1 = RNG_Next(rng);
-    float u2 = RNG_Next(rng);
+    half u1 = RNG_Next(rng);
+    half u2 = RNG_Next(rng);
 
-    float r     = sqrt(u1);
-    float theta = 2 * PI * u2;
-    float x     = r * cos(theta);
-    float y     = r * sin(theta);
-    float z     = sqrt(max(0, 1 - u1));
+    half r     = sqrt(u1);
+    half theta = 2 * PI * u2;
+    half x     = r * cos(theta);
+    half y     = r * sin(theta);
+    half z     = sqrt(max(0, 1 - u1));
 
     float3 tangent   = normalize(cross(abs(norm.z) < 0.999 ? float3(0,0,1) : float3(1,0,0), norm));
     float3 bitangent = cross(norm, tangent);

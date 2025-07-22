@@ -1,3 +1,4 @@
+
 #ifndef GLOBAL
 #define GLOBAL
 #include <HLSLSupport.cginc>
@@ -11,14 +12,18 @@ struct Ray
 
 struct Material
 {
-    float3 albedo;
-    float3 emission;
-    float emissionIntensity;
-    float roughness;
-    float metallic;
-    float alpha;
+    half3 albedo;
+    half3 emission;
+    half emissionIntensity;
+    half roughness;
+    half metallic;
+    half alpha;
     float ior;
 };
+
+// 光源剔除相关常量
+#define TILE_SIZE 16
+#define MAX_LIGHTS_PER_TILE 32
 
 struct RayHit
 {
@@ -44,6 +49,11 @@ float _SunAngularRadius;
 StructuredBuffer<float4> _PointLights;
 int _PointLightsCount;
 uint _FrameCount;
+
+// 光源剔除相关缓冲区
+StructuredBuffer<uint> _LightCullingData;  // 每个tile的光源索引列表
+StructuredBuffer<uint2> _TileData;         // 每个tile的光源数量和起始偏移
+uint2 _TileCount;                          // 屏幕分块数量 (x, y)
 struct RNG
 {
     uint state;
@@ -126,28 +136,23 @@ SamplerState sampler_RoughnessTextures;
 
 float2 _PixelOffset;
 
-Material GenMaterial(float3 baseColor, float3 emission, float emissionIntensity,
-    float metallic, float smoothness, float alpha, float ior,
-    int4 indices = -1, float2 uv = 0.0)
+Material GenMaterial(half3 baseColor, half3 emission, half emissionIntensity,
+    half metallic, half smoothness, half alpha, float ior,
+    int4 indices = -1, half2 uv = 0.0)
 {
-    // 以下的大于0是检查是否有贴图，如果有贴图，那就从贴图中获取对应的值，否则就使用材质的值
     if (indices.x >= 0)
     {
-        // fetch albedo color
-        // and convert from srgb space
-        float4 color = _AlbedoTextures.SampleLevel(sampler_AlbedoTextures, float3(uv, indices.x), 0.0);
+        half4 color = _AlbedoTextures.SampleLevel(sampler_AlbedoTextures, float3(uv, indices.x), 0.0);
         baseColor = baseColor * color.rgb;
         alpha = alpha * color.a;
     }
     if (indices.y >= 0)
     {
-        // fetch metallic value
-        float4 metallicRoughness = _MetallicTextures.SampleLevel(sampler_MetallicTextures, float3(uv, indices.y), 0.0);
+        half4 metallicRoughness = _MetallicTextures.SampleLevel(sampler_MetallicTextures, float3(uv, indices.y), 0.0);
         metallic = metallicRoughness.r;
         smoothness = metallicRoughness.a;
-
     }
-    if(indices.w >= 0)
+    if (indices.w >= 0)
     {
         smoothness = _RoughnessTextures.SampleLevel(sampler_RoughnessTextures, float3(uv, indices.w), 0.0).x;
         smoothness = 1.0 - smoothness;
@@ -158,7 +163,6 @@ Material GenMaterial(float3 baseColor, float3 emission, float emissionIntensity,
     mat.metallic = metallic;
     if (indices.z >= 0)
     {
-        // fetch emission value
         emission = emission * _EmitTextures.SampleLevel(sampler_EmitTextures, float3(uv, indices.z), 0.0).xyz;
     }
     mat.emissionIntensity = emissionIntensity;

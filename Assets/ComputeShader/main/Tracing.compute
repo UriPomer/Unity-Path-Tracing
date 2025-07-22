@@ -1,3 +1,4 @@
+
 #pragma kernel CSMain
 
 #include "function.hlsl"
@@ -6,10 +7,10 @@
 #include "test.hlsl"
 #include "trace.hlsl"
 
-float3 Shade(Ray ray)
+half3 Shade(Ray ray)
 {
-    float3 throughput = 1.0;
-    float3 L_Contribution          = 0.0;
+    half3 throughput = 1.0;
+    half3 L_Contribution = 0.0;
 
     for (int bounce = 0; bounce < _TraceDepth; ++bounce)
     {
@@ -25,8 +26,8 @@ float3 Shade(Ray ray)
             // break;
         }
 
-        float roulette = RNG_Next(rng);
-        float3 V = -ray.dir;
+        half roulette = RNG_Next(rng);
+        half3 V = -ray.dir;
         
         if (hit.mode >= 3.0)
         {

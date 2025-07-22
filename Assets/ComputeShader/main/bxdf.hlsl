@@ -1,3 +1,4 @@
+
 #ifndef BXDF
 #define BXDF
 
@@ -58,13 +59,13 @@ float DistributionGGX(float3 normal, float3 halfVec, float alpha)
 
 void SpecReflModel(
     RayHit hit, float3 V, float3 L, float3 H,
-    out float3 f_brdf,
-    out float pdf)
+    out half3 f_brdf,
+    out half pdf)
 {
-    float NdotL = saturate(dot(hit.normal, L));
-    float NdotV = saturate(dot(hit.normal, V));
-    float NdotH = saturate(dot(hit.normal, H));
-    float VdotH = saturate(dot(V, H));
+    half NdotL = saturate(dot(hit.normal, L));
+    half NdotV = saturate(dot(hit.normal, V));
+    half NdotH = saturate(dot(hit.normal, H));
+    half VdotH = saturate(dot(V, H));
 
     float3 F0 = lerp(float3(0.04,0.04,0.04), hit.material.albedo, hit.material.metallic);
 
