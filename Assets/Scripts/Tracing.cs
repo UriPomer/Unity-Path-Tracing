@@ -24,6 +24,9 @@ public class Tracing : MonoBehaviour
     [SerializeField, Range(1, 8)]
     int TraceDepth = 3;
     
+    [SerializeField, Range(15,240)]
+    int targetFrameRate = 90;
+    
     [Header("Debug")]
     [SerializeField] bool OnlyDrawAlbedo = false;
     [SerializeField] bool OnlyDrawNormals = false;
@@ -64,6 +67,8 @@ public class Tracing : MonoBehaviour
         lightCullingManager = GetComponent<LightCullingManager>();
         LightManager.Instance.UpdateLights();
         _OldDenoise = Denoise;
+        QualitySettings.vSyncCount = 0;
+        Application.targetFrameRate = targetFrameRate;
     }
 
     private void OnRenderImage(RenderTexture source, RenderTexture destination)
@@ -117,7 +122,7 @@ public class Tracing : MonoBehaviour
         dispatchGroupYFull = Mathf.CeilToInt(Screen.height / 8.0f);
         tracingShader.SetTexture(0, "_Result", target);
         tracingShader.Dispatch(0, dispatchGroupXFull, dispatchGroupYFull, 1);
-        
+
         if (Denoise)
         {
             _addMaterial.SetFloat("_Sample", sampleCount);
@@ -142,12 +147,18 @@ public class Tracing : MonoBehaviour
         LightManager.Instance.UpdateBuffer(tracingShader);
     }
     
+    private void OnValidate()
+    {
+        QualitySettings.vSyncCount = 0;
+        Application.targetFrameRate = targetFrameRate;
+    }
+    
     private uint frameId = 0;
 
     private void SetShaderParameters()
     {
         tracingShader.SetInt("_FrameCount", (int)frameId++);
-        
+
         tracingShader.SetVector("_PixelOffset", GeneratePixelOffset());
         // tracingShader.SetFloat("_Seed", UnityEngine.Random.value);
         tracingShader.SetVector("_Resolution", new Vector2(Screen.width, Screen.height));
@@ -253,11 +264,11 @@ public class Tracing : MonoBehaviour
                         var mesh = meshNodes[orderedInfos[i]];
                         var transform_ = transforms[mesh.TransformIdx * 2]; // local to world
                         Vector3 LocalCenter  = (mesh.BoundMin + mesh.BoundMax) * 0.5f;
-                
+
                         var WorldCenter = transform_.MultiplyPoint3x4(LocalCenter);
-                        
+
                         TransformUtils.TransformSize(transform_, (mesh.BoundMax - mesh.BoundMin), out var WorldSize);
-                        
+
                         Gizmos.DrawWireCube(WorldCenter, WorldSize);
                     }
                 }
@@ -269,7 +280,7 @@ public class Tracing : MonoBehaviour
                         q.Enqueue(n.LeftChild);
                         q.Enqueue(n.RightChild);
                     }
-                    // if (n.RightChild != null) 
+                    // if (n.RightChild != null)
                 }
             }
         }
@@ -302,12 +313,12 @@ public class Tracing : MonoBehaviour
             {
                 int idx = stackTLAS[sp--];
                 if (idx < 0 || idx >= tlasNodes.Count) continue;
-            
+
                 var n = tlasNodes[idx];
-            
+
                 Vector3 center = (n.BoundMin + n.BoundMax) * 0.5f;
                 Vector3 size = n.BoundMax - n.BoundMin;
-                
+
                 Gizmos.color = (n.TransformIdx >= 0) // 叶子 / 父节点不同颜色
                     ? new Color(1.0f, 0.4f, 0.6f)
                     : new Color(0.0f, 1.0f, 0.0f);
@@ -315,12 +326,12 @@ public class Tracing : MonoBehaviour
                 {
                     Gizmos.DrawWireCube(center, size);
                 }
-            
+
                 if (n.TransformIdx < 0)
                 {
                     stackTLAS[++sp] = n.Index + 1; // 右
                     stackTLAS[++sp] = n.Index; // 左
-                    
+
                     Gizmos.DrawWireCube(center, size);
                 }
             }
@@ -332,25 +343,25 @@ public class Tracing : MonoBehaviour
             {
                 var meshNode = meshNodes[i];
                 var localToWorld = transforms[meshNode.TransformIdx * 2];
-    
+
                 Gizmos.color = Color.green;
-                
+
                 int stackPtr = 0;
                 int[] stack = new int[32];
                 stack[stackPtr] = meshNode.Index;
-                
+
                 while (stackPtr >= 0 && stackPtr < 32)
                 {
                     var idx = stack[stackPtr--];
                     var bnode = bnodes[idx];
                     TransformUtils.TransformSize(localToWorld, (bnode.BoundMax - bnode.BoundMin), out var WorldSize);
                     Vector3 WorldCenter = localToWorld.MultiplyPoint3x4((bnode.BoundMin + bnode.BoundMax) * 0.5f);
-                    
+
                     Color color = Color.red;
                     color.a = 0.5f;
                     Gizmos.color = color;
                     Gizmos.DrawWireCube(WorldCenter, WorldSize);
-                    
+
                     // TransformUtils.TransformBounds(localToWorld, bnode.BoundMin, bnode.BoundMax, out var worldMin, out var worldMax);
                     //
                     // color = Color.blue;
@@ -358,11 +369,11 @@ public class Tracing : MonoBehaviour
                     // Gizmos.color = color;
                     //
                     // Gizmos.DrawWireCube((worldMin + worldMax) / 2, (worldMax - worldMin));
-                    
+
                     if(bnode.PrimitiveEndIdx < 0)
                     {
                         stack[++stackPtr] = bnode.Index;
-                        
+
                         stack[++stackPtr] = bnode.Index + 1;
                     }
                 }

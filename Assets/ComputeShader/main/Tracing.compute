@@ -1,4 +1,3 @@
-
 #pragma kernel CSMain
 
 #include "function.hlsl"
@@ -23,7 +22,6 @@ half3 Shade(Ray ray)
         if (hit.material.emissionIntensity > 0.0f)
         {
             L_Contribution += throughput * (hit.material.emission * hit.material.emissionIntensity);
-            // break;
         }
 
         half roulette = RNG_Next(rng);
@@ -52,7 +50,7 @@ half3 Shade(Ray ray)
                 float pdf = reflChance * microPdf;
                 ray.dir = rayOutDir;
                 float NdotL = saturate(dot(hit.normal, rayOutDir));
-                throughput *= brdfCos * NdotL / pdf;
+                throughput *= brdfCos * NdotL / max(pdf, 1e-5);
             }
             else
             {
@@ -150,4 +148,3 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     float3 L = SRGB2Linear(Shade(r));
     _Result[id.xy] = float4(L, 1.0f);
 }
-

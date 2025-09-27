@@ -64,7 +64,6 @@ float3 AccumulateSunLight(
     float3 up2    = cross(L0, right);
 
     float3 accum = float3(0,0,0);
-    [unroll]
     for (int i = 0; i < DIRECTIONAL_LIGHT_SAMPLE; ++i)
     {
         float u1 = RNG_Next(rng);
@@ -135,28 +134,22 @@ float3 AccumulatePointLightSoft(
     return accum / float(POINT_LIGHT_SAMPLES);
 }
 
-// 获取当前像素所在的tile索引
 uint2 GetTileIndex(uint2 pixelCoord)
 {
     return pixelCoord / TILE_SIZE;
 }
 
-// 优化后的光照贡献计算，使用光源剔除
 float3 GetLightContribution(RayHit hit, float3 viewDir)
 {
     float3 lightContribution = AccumulateSunLight(hit, viewDir);
 
     if (_PointLightsCount > 0)
     {
-        // 检查是否启用了光源剔除
         bool useLightCulling = _TileCount.x > 0 && _TileCount.y > 0;
 
         if (useLightCulling)
         {
-            // 获取当前像素的tile索引
             uint2 tileIndex = GetTileIndex((uint2)_Pixel);
-
-            // 边界检查
             if (tileIndex.x < _TileCount.x && tileIndex.y < _TileCount.y)
             {
                 uint tileId = tileIndex.y * _TileCount.x + tileIndex.x;
@@ -168,11 +161,8 @@ float3 GetLightContribution(RayHit hit, float3 viewDir)
 
                 if (lightCount > 0)
                 {
-                    // 只处理影响当前tile的光源
                     int samples = min(POINT_LIGHT_SAMPLES, (int)lightCount);
                     float inv_pdf = lightCount / float(samples);
-
-                    [unroll]
                     for (int i = 0; i < POINT_LIGHT_SAMPLES && i < (int)lightCount; ++i)
                     {
                         float u = RNG_Next(rng);
@@ -185,11 +175,9 @@ float3 GetLightContribution(RayHit hit, float3 viewDir)
             }
         }
 
-        // Fallback: 使用原始的光源采样方法
         int samples = min(POINT_LIGHT_SAMPLES, _PointLightsCount);
         float inv_pdf = _PointLightsCount / float(samples);
 
-        [unroll]
         for (int i = 0; i < POINT_LIGHT_SAMPLES; ++i)
         {
             float u = RNG_Next(rng);
