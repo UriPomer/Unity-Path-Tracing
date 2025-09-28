@@ -24,89 +24,13 @@ half3 Shade(Ray ray)
             L_Contribution += throughput * (hit.material.emission * hit.material.emissionIntensity);
         }
 
-        half roulette = RNG_Next(rng);
-        half3 V = -ray.dir;
-        
-        if (hit.mode >= 3.0)
-        {
-            if (dot(ray.dir, hit.normal) > 0.0)
-                hit.normal = -hit.normal;
-            // dielectric workflow
-            float alpha = SmoothnessToPhongAlpha(hit.material.roughness);
-            hit.normal = normalize(lerp(
-                hit.normal,
-                SampleReflectionDirectionSphere(hit.normal,alpha),
-                hit.material.roughness * hit.material.roughness
-            ));
-            float3 rayOutDir = normalize(reflect(ray.dir, hit.normal));
-            float3 H = normalize(V + rayOutDir);
-            float fresnel = DielectricFresnel(dot(H, V), hit.material.ior);
-            float reflChance = 1.0 - (1.0 - fresnel) * (1.0 - hit.material.metallic);
-            if (roulette < reflChance)
-            {
-                float3 brdfCos;
-                float  microPdf;
-                SpecReflModel(hit, V, rayOutDir, H, brdfCos, microPdf);
-                float pdf = reflChance * microPdf;
-                ray.dir = rayOutDir;
-                float NdotL = saturate(dot(hit.normal, rayOutDir));
-                throughput *= brdfCos * NdotL / max(pdf, 1e-5);
-            }
-            else
-            {
-                rayOutDir = normalize(refract(ray.dir, hit.normal, 1.0 / hit.material.ior));
-                SpecRefrModel(hit, V, rayOutDir, H, throughput);
-                ray.dir = rayOutDir;
-                throughput *= 1.0 / clamp((1.0 - reflChance), 1e-2, 1.0);
-            }
-        }
-        else
-        {
-            float3 F0 = lerp(float3(0.04,0.04,0.04), hit.material.albedo, hit.material.metallic);
-            float  specProb = saturate(max(max(F0.x, F0.y), F0.z));
-            float  diffProb = 1.0 - specProb;
-            // Calculate chances of diffuse and specular reflection
-            if (roulette < specProb)
-            {
-                if (hit.material.roughness < 1e-4)
-                {
-                    float3 R = reflect(-V, hit.normal);
-                    ray.dir = R;
-                    F0 = lerp(float3(0.04,0.04,0.04), hit.material.albedo, hit.material.metallic);
-                    throughput *= F0;
-                }
-                else
-                {
-                    float alpha = hit.material.roughness * hit.material.roughness;
-                    float2 xi = float2(RNG_Next(rng), RNG_Next(rng));
-                    float3 H = SampleGGXVNDF(hit.normal, V, alpha, xi);
-                    float3 rayOutDir = normalize(reflect(-V, H));
+        // Indirect Light
+        float3 f_brdf;
+        float pdf_brdf;
+        EvaluateBXDF(hit, ray, f_brdf, pdf_brdf);
+        throughput *= f_brdf;
 
-                    float3 f_brdf;
-                    float microPdf;
-                    SpecReflModel(hit, V, rayOutDir, H, f_brdf, microPdf);
-                    float pdf = max(specProb * microPdf, 1e-4);
-                    float NdotL = saturate(dot(hit.normal, rayOutDir));
-                    throughput *= f_brdf * NdotL / pdf;
-
-                    ray.dir = rayOutDir;
-                }
-            }
-            else
-            {
-                float3 rayOutDir = normalize(SampleHemisphere(hit.normal));
-
-                float NdotL      = saturate(dot(hit.normal, rayOutDir));
-                float diffusePdf = NdotL / PI;
-
-                float3 f_diffuse = hit.material.albedo / PI;
-                float pdf = max(diffusePdf * diffProb, 1e-4);
-                throughput *= f_diffuse * NdotL / pdf;
-
-                ray.dir = rayOutDir;
-            }
-        }
-        
+        // Direct Light
         float3 Lo_direct = GetLightContribution(hit, ray.dir);
         L_Contribution += throughput * Lo_direct;
 

@@ -3,7 +3,6 @@
 #define FUNCTION
 
 #include "global.hlsl"
-#include "bxdf.hlsl"
 
 /*
  * 传入面的索引idx，交点处通过插值得到的uv坐标data，法线纹理索引normIdx，uv坐标uv
@@ -68,13 +67,6 @@ half RNG_Next(inout RNG rng)  // float -> half
 {
     rng.state = WangHash(rng.state);
     return half(HashToFloat(rng.state));
-}
-
-bool SkipTransparent(Material mat)
-{
-    float f = DielectricFresnel(0.2, mat.ior);
-    float r = mat.roughness * mat.roughness;
-    return RNG_Next(rng) < (1.0 - f) * (1.0 - mat.metallic) * (1.0 - r);
 }
 
 float SmoothnessToPhongAlpha(float s)

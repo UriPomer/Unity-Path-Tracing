@@ -78,6 +78,12 @@ void SpecReflModel(
     pdf = NdotH * D / max(4.0 * VdotH, 1e-4);
 }
 
+bool SkipTransparent(Material mat)
+{
+    float f = DielectricFresnel(0.2, mat.ior);
+    float r = mat.roughness * mat.roughness;
+    return RNG_Next(rng) < (1.0 - f) * (1.0 - mat.metallic) * (1.0 - r);
+}
 
 void SpecRefrModel(RayHit hit, float3 V, float3 L, float3 H, inout float3 energy)
 {
@@ -121,5 +127,89 @@ float3 SampleGGXVNDF(float3 N, float3 V, float alpha, float2 Xi)
     return normalize(H.x * tangentX + H.y * tangentY + H.z * N);
 }
 
+void EvaluateBXDF(RayHit hit, inout Ray ray, out float3 f_brdf, out float pdf)
+{
+    float3 V = -ray.dir;
+    float roulette = RNG_Next(rng);
+    f_brdf = 0;
+    pdf = 1.0;
+    float3 rayOutDir;
+    if (hit.mode >= 3.0)
+    {
+        if (dot(ray.dir, hit.normal) > 0.0)
+            hit.normal = -hit.normal;
+        // dielectric workflow
+        float alpha = SmoothnessToPhongAlpha(hit.material.roughness);
+        hit.normal = normalize(lerp(
+            hit.normal,
+            SampleReflectionDirectionSphere(hit.normal,alpha),
+            hit.material.roughness * hit.material.roughness
+        ));
+        rayOutDir = normalize(reflect(ray.dir, hit.normal));
+        float3 H = normalize(V + rayOutDir);
+        float fresnel = DielectricFresnel(dot(H, V), hit.material.ior);
+        float reflChance = 1.0 - (1.0 - fresnel) * (1.0 - hit.material.metallic);
+        if (roulette < reflChance)
+        {
+            float3 brdfCos;
+            float  microPdf;
+            SpecReflModel(hit, V, rayOutDir, H, brdfCos, microPdf);
+            pdf = reflChance * microPdf;
+            float NdotL = saturate(dot(hit.normal, rayOutDir));
+            pdf = max(pdf, 1e-5);
+            f_brdf = brdfCos * NdotL / pdf;
+        }
+        else
+        {
+            rayOutDir = normalize(refract(ray.dir, hit.normal, 1.0 / hit.material.ior));
+            float3 refrWeight = 1.0;
+            SpecRefrModel(hit, V, rayOutDir, H, /*inout*/ refrWeight);
+            pdf = clamp(1.0 - reflChance, 1e-3, 1.0);
+            f_brdf = refrWeight / pdf;
+        }
+    }
+    else
+    {
+        float3 F0 = lerp(float3(0.04,0.04,0.04), hit.material.albedo, hit.material.metallic);
+        float  specProb = saturate(max(max(F0.x, F0.y), F0.z));
+        float  diffProb = 1.0 - specProb;
+        // Calculate chances of diffuse and specular reflection
+        if (roulette < specProb)
+        {
+            if (hit.material.roughness < 1e-4)
+            {
+                rayOutDir = reflect(-V, hit.normal);
+                pdf = max(specProb, 1e-3);
+                f_brdf = F0 / pdf;
+            }
+            else
+            {
+                float alpha = hit.material.roughness * hit.material.roughness;
+                float2 xi = float2(RNG_Next(rng), RNG_Next(rng));
+                float3 H = SampleGGXVNDF(hit.normal, V, alpha, xi);
+                rayOutDir = normalize(reflect(-V, H));
+
+                float3 f_spec; float microPdf;
+                SpecReflModel(hit, V, rayOutDir, H, f_spec, microPdf);
+
+                pdf = max(specProb * microPdf, 1e-4);
+                float NdotL = saturate(dot(hit.normal, rayOutDir));
+                f_brdf = f_spec * NdotL / pdf;
+            }
+        }
+        else
+        {
+            rayOutDir = normalize(SampleHemisphere(hit.normal));
+
+            float NdotL = saturate(dot(hit.normal, rayOutDir));
+            float diffusePdf = NdotL / PI;
+
+            float3 f_diffuse = hit.material.albedo / PI;
+            pdf = max(diffusePdf * diffProb, 1e-4);
+            f_brdf = f_diffuse * NdotL / pdf;
+        }
+    }
+    ray.dir = rayOutDir;
+}
 
 #endif

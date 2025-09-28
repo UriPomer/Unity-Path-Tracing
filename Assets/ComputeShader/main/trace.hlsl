@@ -1,7 +1,7 @@
 ﻿#pragma once
 
 #include "global.hlsl"
-
+#include "bxdf.hlsl"
 
 float3 SampleSkybox(Ray ray)
 {
