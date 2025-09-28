@@ -194,6 +194,9 @@ PrefabInstance:
     - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: 27102dc92e2599d43b759b48f03ebeed, type: 3}
       insertIndex: -1
       addedObject: {fileID: 295719157}
+    - targetCorrespondingSourceObject: {fileID: -6089861822807923775, guid: 27102dc92e2599d43b759b48f03ebeed, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 1821407394}
   m_SourcePrefab: {fileID: 100100000, guid: 27102dc92e2599d43b759b48f03ebeed, type: 3}
 --- !u!1 &295719156 stripped
 GameObject:
@@ -419,6 +422,7 @@ GameObject:
   - component: {fileID: 1621107197}
   - component: {fileID: 1621107196}
   - component: {fileID: 1621107198}
+  - component: {fileID: 1621107199}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -507,7 +511,10 @@ MonoBehaviour:
   tracingShader: {fileID: 7200000, guid: f729f9caa1fdb5140afe66433bd74ff9, type: 3}
   skyboxTexture: {fileID: 2800000, guid: 6ae478bd6a07f014c8a40b932c2acf59, type: 3}
   SkyboxIntensity: 1
+  SunFocus: 5
+  SunAngularRadius: 0.1
   TraceDepth: 3
+  targetFrameRate: 90
   OnlyDrawAlbedo: 0
   OnlyDrawNormals: 0
   OnlyDrawDepth: 0
@@ -548,6 +555,40 @@ MonoBehaviour:
   DirectionalLight: {fileID: 1553247612}
   PointLights:
   - {fileID: 1256422481}
+--- !u!114 &1621107199
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1621107192}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a0bcb4dfe0174e858c53b38d1274b852, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  lightCullingShader: {fileID: 7200000, guid: bb1fc129212a41d39e11dd31e34d4f90, type: 3}
+  tileSize: 16
+  enableLightCulling: 1
+  showDebugInfo: 0
+--- !u!1 &1821407390 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: -6089861822807923775, guid: 27102dc92e2599d43b759b48f03ebeed, type: 3}
+  m_PrefabInstance: {fileID: 295719155}
+  m_PrefabAsset: {fileID: 0}
+--- !u!114 &1821407394
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1821407390}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 26765ad8dbb9ac9459905b26b565b3cc, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  Intensity: 1
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

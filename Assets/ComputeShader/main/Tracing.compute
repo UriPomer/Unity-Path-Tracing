@@ -23,16 +23,15 @@ half3 Shade(Ray ray)
         {
             L_Contribution += throughput * (hit.material.emission * hit.material.emissionIntensity);
         }
+        
+        // Direct Light
+        float3 Lo_direct = GetDirectLightContribution(hit, -ray.dir);
+        L_Contribution += throughput * Lo_direct;
 
         // Indirect Light
         float3 f_brdf;
-        float pdf_brdf;
-        EvaluateBXDF(hit, ray, f_brdf, pdf_brdf);
+        EvaluateBXDFWithDotAndPDF(hit, /*inout*/ ray, f_brdf);     // ray.dir -> rayOutDir
         throughput *= f_brdf;
-
-        // Direct Light
-        float3 Lo_direct = GetLightContribution(hit, ray.dir);
-        L_Contribution += throughput * Lo_direct;
 
         float p = max(throughput.r, max(throughput.g, throughput.b));
         if (RNG_Next(rng) >= p)

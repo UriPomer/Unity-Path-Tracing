@@ -86,62 +86,67 @@ float3 AccumulateSunLight(
 }
 
 float3 AccumulatePointLightSoft(
-    RayHit hit, 
-    uint lightIdx,
-    float inv_pdf
+    RayHit hit,
+    float3 V,
+    uint   lightIdx,
+    float  inv_select_pdf
 )
 {
-    float4 lightPosRad   = _PointLights[lightIdx * 2];
-    float4 lightColorA   = _PointLights[lightIdx * 2 + 1];
-    float radius         = lightPosRad.w;
-    float3 baseColor     = lightColorA.rgb * lightColorA.a;
-    if (lightColorA.a <= 0.0 || radius <= 0.0)
-        return 0;
+    float4 lightPosRad = _PointLights[lightIdx * 2];
+    float4 lightColorA = _PointLights[lightIdx * 2 + 1];
+    float  radius      = lightPosRad.w;
+    if (lightColorA.a <= 0.0 || radius <= 0.0) return 0;
 
-    float3 toCenter = lightPosRad.xyz - hit.position;
-    float  distC    = length(toCenter);
-    float3 L0       = toCenter / distC;
+    float3 toCenter= lightPosRad.xyz - hit.position;
+    float  distC   = length(toCenter);
+    float3 L0      = toCenter / max(distC, 1e-6);
 
-    float3 upRef  = abs(L0.y) < 0.99 ? float3(0,1,0) : float3(1,0,0);
-    float3 right  = normalize(cross(upRef, L0));
-    float3 up2    = cross(L0, right);
+    float3 upRef = abs(L0.y) < 0.99 ? float3(0,1,0) : float3(1,0,0);
+    float3 right = normalize(cross(upRef, L0));
+    float3 up2   = cross(L0, right);
 
-    float3 accum = float3(0,0,0);
+    float3 Le = lightColorA.rgb * lightColorA.a;
+    float3 accum = 0;
 
     [unroll]
     for (int s = 0; s < POINT_LIGHT_SAMPLES; ++s)
     {
-        float u1 = RNG_Next(rng);
-        float u2 = RNG_Next(rng);
-        float2 d  = SampleDisk(u1, u2) * radius;
-
-        float3 samplePos = lightPosRad.xyz 
-                         + d.x * right 
-                         + d.y * up2;
+        float2 d  = SampleDisk(RNG_Next(rng), RNG_Next(rng)) * radius;
+        float3 samplePos = lightPosRad.xyz + d.x * right + d.y * up2;
 
         float3 toSample = samplePos - hit.position;
         float  distS    = length(toSample);
-        float3 Ls       = toSample / distS;
+        float3 Ls       = toSample / max(distS, 1e-6);
 
-        Ray shadowRay = GenRay(hit.position + hit.normal * 1e-5, Ls);
-        if (TraceHit(shadowRay, distS))
+        if (TraceHit(GenRay(hit.position + hit.normal * 1e-5, Ls), distS))
             continue;
 
-        float atten = saturate(1.0 - distS / (radius * 2.0));
-        accum += baseColor * atten * inv_pdf;
+        float3 f_brdf; float dummyPdf;
+        EvaluateBXDF_GivenDir(hit, V, Ls, /*out*/ f_brdf, /*out*/ dummyPdf);
+        float NdotL = saturate(dot(hit.normal, Ls));
+        if (NdotL <= 0.0) continue;
+        const float pdf_area = 1.0 / (PI * radius * radius);
+
+        float3 nLight = normalize(hit.position - lightPosRad.xyz);
+        float  cosThetaPrime = saturate(dot(nLight, -Ls));
+        if (cosThetaPrime <= 1e-6) continue;
+
+        float geom = cosThetaPrime / max(distS * distS, 1e-6);
+
+        float3 contrib = Le * (f_brdf * NdotL) * (geom / pdf_area);
+        accum += contrib * inv_select_pdf;
     }
 
     return accum / float(POINT_LIGHT_SAMPLES);
 }
-
 uint2 GetTileIndex(uint2 pixelCoord)
 {
     return pixelCoord / TILE_SIZE;
 }
 
-float3 GetLightContribution(RayHit hit, float3 viewDir)
+float3 GetDirectLightContribution(RayHit hit, float3 V)
 {
-    float3 lightContribution = AccumulateSunLight(hit, viewDir);
+    float3 lightContribution = AccumulateSunLight(hit, V);
 
     if (_PointLightsCount > 0)
     {
@@ -153,8 +158,6 @@ float3 GetLightContribution(RayHit hit, float3 viewDir)
             if (tileIndex.x < _TileCount.x && tileIndex.y < _TileCount.y)
             {
                 uint tileId = tileIndex.y * _TileCount.x + tileIndex.x;
-
-                // 获取该tile的光源信息
                 uint2 tileData = _TileData[tileId];
                 uint lightCount = tileData.x;
                 uint lightOffset = tileData.y;
@@ -162,27 +165,32 @@ float3 GetLightContribution(RayHit hit, float3 viewDir)
                 if (lightCount > 0)
                 {
                     int samples = min(POINT_LIGHT_SAMPLES, (int)lightCount);
-                    float inv_pdf = lightCount / float(samples);
+                    float inv_select_pdf = lightCount / float(samples);
+
                     for (int i = 0; i < POINT_LIGHT_SAMPLES && i < (int)lightCount; ++i)
                     {
                         float u = RNG_Next(rng);
                         uint sampleIndex = min(uint(u * lightCount), lightCount - 1);
                         uint lightIndex = _LightCullingData[lightOffset + sampleIndex];
-                        lightContribution += AccumulatePointLightSoft(hit, lightIndex, inv_pdf);
+
+                        lightContribution += AccumulatePointLightSoft(
+                            hit, V, lightIndex, inv_select_pdf
+                        );
                     }
                     return lightContribution;
                 }
             }
         }
-
         int samples = min(POINT_LIGHT_SAMPLES, _PointLightsCount);
-        float inv_pdf = _PointLightsCount / float(samples);
+        float inv_select_pdf = _PointLightsCount / float(samples);
 
         for (int i = 0; i < POINT_LIGHT_SAMPLES; ++i)
         {
             float u = RNG_Next(rng);
             uint idx = min(uint(u * _PointLightsCount), _PointLightsCount - 1);
-            lightContribution += AccumulatePointLightSoft(hit, idx, inv_pdf);
+            lightContribution += AccumulatePointLightSoft(
+                hit, V, idx, inv_select_pdf
+            );
         }
     }
 

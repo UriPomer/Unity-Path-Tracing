@@ -127,12 +127,12 @@ float3 SampleGGXVNDF(float3 N, float3 V, float alpha, float2 Xi)
     return normalize(H.x * tangentX + H.y * tangentY + H.z * N);
 }
 
-void EvaluateBXDF(RayHit hit, inout Ray ray, out float3 f_brdf, out float pdf)
+void EvaluateBXDFWithDotAndPDF(RayHit hit, inout Ray ray, out float3 f_brdf)
 {
     float3 V = -ray.dir;
     float roulette = RNG_Next(rng);
     f_brdf = 0;
-    pdf = 1.0;
+    float pdf;
     float3 rayOutDir;
     if (hit.mode >= 3.0)
     {
@@ -211,5 +211,66 @@ void EvaluateBXDF(RayHit hit, inout Ray ray, out float3 f_brdf, out float pdf)
     }
     ray.dir = rayOutDir;
 }
+
+void EvaluateBXDF_GivenDir(RayHit hit, float3 V, float3 L, out float3 f_brdf, out float pdf)
+{
+    f_brdf = 0.0;
+    pdf    = 0.0;
+
+    float3 N = hit.normal;
+    float  NdotL;
+
+    if (hit.mode >= 3.0)
+    {
+        if (dot(V, N) < 0.0) N = -N;
+
+        NdotL = saturate(dot(N, L));
+        if (NdotL <= 0.0) return;
+        float3 H = normalize(V + L);
+
+        float3 brdfSpec; float pdfSpec;
+        SpecReflModel(hit, V, L, H, /*out*/ brdfSpec, /*out*/ pdfSpec);
+
+        float fresnel    = DielectricFresnel(dot(H, V), hit.material.ior);
+        float reflChance = 1.0 - (1.0 - fresnel) * (1.0 - hit.material.metallic);
+
+        f_brdf = brdfSpec;
+        pdf    = reflChance * max(pdfSpec, 0.0);
+        return;
+    }
+    {
+        NdotL = saturate(dot(N, L));
+        if (NdotL <= 0.0) return;
+
+        float3 F0 = lerp(float3(0.04, 0.04, 0.04), hit.material.albedo, hit.material.metallic);
+        float  specProb = saturate(max(max(F0.x, F0.y), F0.z));
+        float  diffProb = 1.0 - specProb;
+
+        float3 f_diff = hit.material.albedo / PI;
+        float  pdf_d  = NdotL / PI;
+        float3 f_spec;
+        float  pdf_s;
+
+        if (hit.material.roughness < 1e-4)
+        {
+            f_spec = 0.0;
+            pdf_s  = 0.0;
+        }
+        else
+        {
+            float3 H = normalize(V + L);
+
+            float3 brdfSpec; float microPdf;
+            SpecReflModel(hit, V, L, H, /*out*/ brdfSpec, /*out*/ microPdf);
+
+            f_spec = brdfSpec;
+            pdf_s  = microPdf;
+        }
+
+        f_brdf = f_diff + f_spec;
+        pdf    = diffProb * max(pdf_d, 0.0) + specProb * max(pdf_s, 0.0);
+    }
+}
+
 
 #endif
