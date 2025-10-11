@@ -1,3 +1,9 @@
+### 效果图
+![image](./img/22.png)
+![image](./img/23.png)
+![image](./img/24.png)
+![image](./img/25.png)
+
 ### 第一阶段 纯球体光追
 
 记录一下：![image](./img/1.png)
