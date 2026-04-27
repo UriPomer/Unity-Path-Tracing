@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using UnityEngine;
 
 [RequireComponent(typeof(LightManager))]
@@ -10,7 +11,7 @@ public class Tracing : MonoBehaviour
 
     private Camera cam;
     private RenderTexture target;
-    
+
     [Header("Skybox Settings")]
     [SerializeField]
     private Texture skyboxTexture;
@@ -20,20 +21,20 @@ public class Tracing : MonoBehaviour
     float SunFocus = 5.0f;
     [SerializeField, Range(0.004f, 0.1f)]
     float SunAngularRadius = 0.1f;
-    
+
     [SerializeField, Range(1, 8)]
     int TraceDepth = 3;
-    
+
     [SerializeField, Range(15,240)]
     int targetFrameRate = 90;
-    
+
     [Header("Debug")]
     [SerializeField] bool OnlyDrawAlbedo = false;
     [SerializeField] bool OnlyDrawNormals = false;
     [SerializeField] bool OnlyDrawDepth = false;
     [SerializeField] bool Denoise = true;
     private bool _OldDenoise = true;
-    
+
     [Header("Draw Gizmos")]
     [SerializeField]
     private bool drawGizmos = false;
@@ -42,18 +43,40 @@ public class Tracing : MonoBehaviour
     [SerializeField] private bool DrawBLAS = true;
     [SerializeField] private bool DrawMeshNode = true;
     [SerializeField] private bool DrawTLASBVH = true;
-    
+
     private int sampleCount = 0;
     private Material _addMaterial;
 
     private RenderTexture frameConverged;
     private LightCullingManager lightCullingManager;
-    
-    private readonly int dispatchGroupX = 32;
-    private readonly int dispatchGroupY = 32;
-    private int dispatchGroupXFull, dispatchGroupYFull;
-    private Vector2 dispatchOffsetLimit;
-    private Vector4 dispatchCount;
+
+    // Multi-pass kernel indices
+    private int kernelGenerate;
+    private int kernelTraceShade;
+    private int kernelFinalize;
+    private int kernelTransfer;
+
+    // Multi-pass buffers
+    private ComputeBuffer _globalRaysA;
+    private ComputeBuffer _globalRaysB;
+    private ComputeBuffer _globalColors;
+    private ComputeBuffer _bufferSizes;
+    private ComputeBuffer _indirectArgs;
+
+    // Struct sizes (must match HLSL layout)
+    private const int RayDataStride = 48;         // float3+float3+uint+uint+float3+float = 12+12+4+4+12+4
+    private const int PathContributionStride = 32; // float3+pad+float3+pad = 16+16
+    private const int BufferSizeDataStride = 8;    // int+int = 4+4
+    private const int IndirectArgsStride = 4;      // uint x3 = 3 elements x 4 bytes each
+
+    private int prevWidth, prevHeight;
+
+    // Cached arrays and objects to avoid per-frame GC allocations
+    private int[] bvhKernels;
+    private int[] lightKernels;
+    private CommandBuffer cmdBuffer;
+    private int[] sizesData = new int[32]; // Max 15 bounces: (15+1)*2 = 32
+    private string[] bounceNames = new string[16]; // Pre-computed CommandBuffer names
 
     private void Awake()
     {
@@ -69,15 +92,57 @@ public class Tracing : MonoBehaviour
         _OldDenoise = Denoise;
         QualitySettings.vSyncCount = 0;
         Application.targetFrameRate = targetFrameRate;
+
+        // Find kernel indices
+        kernelGenerate = tracingShader.FindKernel("kernel_generate");
+        kernelTraceShade = tracingShader.FindKernel("kernel_trace_shade");
+        kernelFinalize = tracingShader.FindKernel("kernel_finalize");
+        kernelTransfer = tracingShader.FindKernel("TransferKernel");
+
+        // Pre-allocate reusable arrays and names
+        bvhKernels = new int[] { kernelGenerate, kernelTraceShade };
+        lightKernels = new int[] { kernelGenerate, kernelTraceShade };
+        cmdBuffer = new CommandBuffer();
+        for (int i = 0; i < bounceNames.Length; i++)
+            bounceNames[i] = "PT_Bounce" + i;
     }
 
     private void OnRenderImage(RenderTexture source, RenderTexture destination)
     {
         Render(destination);
     }
-    
-    private bool NeedUpdate = false;
-    
+
+    private bool NeedUpdate = true;
+
+    private void CreateBuffersIfNeeded()
+    {
+        int w = Screen.width;
+        int h = Screen.height;
+        if (w == prevWidth && h == prevHeight) return;
+
+        ReleaseBuffers();
+
+        int pixelCount = w * h;
+
+        _globalRaysA = new ComputeBuffer(pixelCount, RayDataStride);
+        _globalRaysB = new ComputeBuffer(pixelCount, RayDataStride);
+        _globalColors = new ComputeBuffer(pixelCount, PathContributionStride);
+        _bufferSizes = new ComputeBuffer(TraceDepth + 1, BufferSizeDataStride);
+        _indirectArgs = new ComputeBuffer(3, IndirectArgsStride);
+
+        prevWidth = w;
+        prevHeight = h;
+    }
+
+    private void ReleaseBuffers()
+    {
+        _globalRaysA?.Release(); _globalRaysA = null;
+        _globalRaysB?.Release(); _globalRaysB = null;
+        _globalColors?.Release(); _globalColors = null;
+        _bufferSizes?.Release(); _bufferSizes = null;
+        _indirectArgs?.Release(); _indirectArgs = null;
+    }
+
     private void Render(RenderTexture destination)
     {
         if (target == null || target.width != Screen.width || target.height != Screen.height)
@@ -102,14 +167,16 @@ public class Tracing : MonoBehaviour
             frameConverged.enableRandomWrite = true;
             frameConverged.Create();
         }
-        
+
+        CreateBuffersIfNeeded();
+
         if(BVHBuilder.Validate() || (Camera.main != null && Camera.main.transform.hasChanged))
         {
             ResetSampleCount();
             Camera.main.transform.hasChanged = false;
             NeedUpdate = true;
         }
-        
+
         // 执行光源剔除
         if (lightCullingManager != null)
         {
@@ -117,11 +184,55 @@ public class Tracing : MonoBehaviour
         }
 
         SetShaderParameters();
+        NeedUpdate = false;
         sampleCount++;
-        dispatchGroupXFull = Mathf.CeilToInt(Screen.width / 8.0f);
-        dispatchGroupYFull = Mathf.CeilToInt(Screen.height / 8.0f);
-        tracingShader.SetTexture(0, "_Result", target);
-        tracingShader.Dispatch(0, dispatchGroupXFull, dispatchGroupYFull, 1);
+
+        int pixelCount = Screen.width * Screen.height;
+
+        // Initialize BufferSizes: [0].traceRays = pixelCount, rest = 0
+        int sizeCount = (TraceDepth + 1) * 2;
+        if (sizesData.Length < sizeCount)
+            System.Array.Resize(ref sizesData, sizeCount);
+        System.Array.Clear(sizesData, 0, sizeCount);
+        sizesData[0] = pixelCount; // [0].traceRays
+        _bufferSizes.SetData(sizesData, 0, 0, sizeCount);
+
+        // 1. Generate primary rays
+        tracingShader.Dispatch(kernelGenerate, (pixelCount + 255) / 256, 1, 1);
+
+        // 2. Per-bounce loop (skip when debug modes set throughput=0)
+        bool debugMode = OnlyDrawAlbedo || OnlyDrawNormals || OnlyDrawDepth;
+        if (!debugMode)
+        {
+            bool readA = true;
+            for (int bounce = 0; bounce < TraceDepth; bounce++)
+            {
+                tracingShader.SetInt("CurBounce", bounce);
+
+                // Ping-pong: bind read buffer to GlobalRays, write buffer to GlobalRays2
+                var readBuf = readA ? _globalRaysA : _globalRaysB;
+                var writeBuf = readA ? _globalRaysB : _globalRaysA;
+                tracingShader.SetBuffer(kernelTraceShade, "GlobalRays", readBuf);
+                tracingShader.SetBuffer(kernelTraceShade, "GlobalRays2", writeBuf);
+
+                // Transfer: compute indirect dispatch args
+                tracingShader.SetInt("Type", 0);
+                tracingShader.Dispatch(kernelTransfer, 1, 1, 1);
+
+                // Trace+Shade (indirect dispatch)
+                cmdBuffer.Clear();
+                cmdBuffer.name = bounceNames[bounce];
+                cmdBuffer.DispatchCompute(tracingShader, kernelTraceShade, _indirectArgs, 0);
+                Graphics.ExecuteCommandBuffer(cmdBuffer);
+
+                readA = !readA;
+            }
+        }
+
+        // 3. Finalize
+        tracingShader.Dispatch(kernelFinalize,
+            Mathf.CeilToInt(Screen.width / 8.0f),
+            Mathf.CeilToInt(Screen.height / 8.0f), 1);
 
         if (Denoise)
         {
@@ -142,91 +253,112 @@ public class Tracing : MonoBehaviour
             _OldDenoise = Denoise;
             ResetSampleCount();
         }
-        
+
         LightManager.Instance.UpdateLights();
-        LightManager.Instance.UpdateBuffer(tracingShader);
+        LightManager.Instance.UpdateBuffer(tracingShader, lightKernels);
     }
-    
+
     private void OnValidate()
     {
         QualitySettings.vSyncCount = 0;
         Application.targetFrameRate = targetFrameRate;
     }
-    
+
     private uint frameId = 0;
 
     private void SetShaderParameters()
     {
         tracingShader.SetInt("_FrameCount", (int)frameId++);
 
-        tracingShader.SetVector("_PixelOffset", GeneratePixelOffset());
-        // tracingShader.SetFloat("_Seed", UnityEngine.Random.value);
+        // Per-pixel jitter for temporal AA (used by GenRayByID)
+        float jx = UnityEngine.Random.value - 0.5f;
+        float jy = UnityEngine.Random.value - 0.5f;
+        tracingShader.SetVector("_PixelOffset", new Vector2(jx, jy));
+
         tracingShader.SetVector("_Resolution", new Vector2(Screen.width, Screen.height));
         tracingShader.SetInt("_TraceDepth", TraceDepth);
         tracingShader.SetMatrix("_CameraToWorld", cam.cameraToWorldMatrix);
         tracingShader.SetMatrix("_CameraInverseProjection", cam.projectionMatrix.inverse);
-        tracingShader.SetTexture(0, "_SkyboxTexture", skyboxTexture);
         tracingShader.SetFloat("_SunFocus", SunFocus);
         tracingShader.SetFloat("_SunAngularRadius", SunAngularRadius);
 
+        // Screen dimensions for multi-pass
+        tracingShader.SetInt("_ScreenWidth", Screen.width);
+        tracingShader.SetInt("_ScreenHeight", Screen.height);
+
+        // Set texture on all kernels that use _Result
+        tracingShader.SetTexture(kernelGenerate, "_Result", target);
+        tracingShader.SetTexture(kernelFinalize, "_Result", target);
+
+        // Set skybox on kernels that need it
+        tracingShader.SetTexture(kernelGenerate, "_SkyboxTexture", skyboxTexture);
+        tracingShader.SetTexture(kernelTraceShade, "_SkyboxTexture", skyboxTexture);
+
+        // Set multi-pass buffers on all relevant kernels        tracingShader.SetBuffer(kernelGenerate, "GlobalRays", _globalRaysA);
+        tracingShader.SetBuffer(kernelGenerate, "GlobalColors", _globalColors);
+        tracingShader.SetBuffer(kernelTraceShade, "GlobalColors", _globalColors);
+        tracingShader.SetBuffer(kernelTraceShade, "BufferSizes", _bufferSizes);
+        tracingShader.SetBuffer(kernelTransfer, "BufferSizes", _bufferSizes);
+        tracingShader.SetBuffer(kernelTransfer, "IndirectArgs", _indirectArgs);
+        tracingShader.SetBuffer(kernelFinalize, "GlobalColors", _globalColors);
+
+        // Set BVH and geometry buffers on all kernels that need them
         if (NeedUpdate)
         {
-            if (BVHBuilder.VertexBuffer != null) tracingShader.SetBuffer(0, "_Vertices", BVHBuilder.VertexBuffer);
-            if (BVHBuilder.IndexBuffer != null) tracingShader.SetBuffer(0, "_Indices", BVHBuilder.IndexBuffer);
-            if (BVHBuilder.NormalBuffer != null) tracingShader.SetBuffer(0, "_Normals", BVHBuilder.NormalBuffer);
-            if (BVHBuilder.TangentBuffer != null) tracingShader.SetBuffer(0, "_Tangents", BVHBuilder.TangentBuffer);
-            if (BVHBuilder.UVBuffer != null) tracingShader.SetBuffer(0, "_UVs", BVHBuilder.UVBuffer);
-            if (BVHBuilder.MaterialBuffer != null) tracingShader.SetBuffer(0, "_Materials", BVHBuilder.MaterialBuffer);
-            if (BVHBuilder.MeshNodeBuffer != null)
+            foreach (int k in bvhKernels)
             {
-                tracingShader.SetInt("_TLASNodesCount", BVHBuilder.GetTLASNodes().Count);
-                tracingShader.SetBuffer(0, "_TLASNodes", BVHBuilder.MeshNodeBuffer);
+                if (BVHBuilder.VertexBuffer != null) tracingShader.SetBuffer(k, "_Vertices", BVHBuilder.VertexBuffer);
+                if (BVHBuilder.IndexBuffer != null) tracingShader.SetBuffer(k, "_Indices", BVHBuilder.IndexBuffer);
+                if (BVHBuilder.NormalBuffer != null) tracingShader.SetBuffer(k, "_Normals", BVHBuilder.NormalBuffer);
+                if (BVHBuilder.TangentBuffer != null) tracingShader.SetBuffer(k, "_Tangents", BVHBuilder.TangentBuffer);
+                if (BVHBuilder.UVBuffer != null) tracingShader.SetBuffer(k, "_UVs", BVHBuilder.UVBuffer);
+                if (BVHBuilder.MaterialBuffer != null) tracingShader.SetBuffer(k, "_Materials", BVHBuilder.MaterialBuffer);
+                if (BVHBuilder.MeshNodeBuffer != null)
+                {
+                    tracingShader.SetInt("_TLASNodesCount", BVHBuilder.GetTLASNodes().Count);
+                    tracingShader.SetBuffer(k, "_TLASNodes", BVHBuilder.MeshNodeBuffer);
+                }
+                if (BVHBuilder.BLASBuffer != null)
+                {
+                    tracingShader.SetBuffer(k, "_BNodes", BVHBuilder.BLASBuffer);
+                    tracingShader.SetInt("_BNodesCount", BVHBuilder.GetBLASNodes().Count);
+                }
+                if (BVHBuilder.TransformBuffer != null) tracingShader.SetBuffer(k, "_Transforms", BVHBuilder.TransformBuffer);
+                if (BVHBuilder.AlbedoTextures != null) tracingShader.SetTexture(k, "_AlbedoTextures", BVHBuilder.AlbedoTextures);
+                if (BVHBuilder.EmissionTextures != null) tracingShader.SetTexture(k, "_EmitTextures", BVHBuilder.EmissionTextures);
+                if (BVHBuilder.MetallicTextures != null) tracingShader.SetTexture(k, "_MetallicTextures", BVHBuilder.MetallicTextures);
+                if (BVHBuilder.NormalTextures != null) tracingShader.SetTexture(k, "_NormalTextures", BVHBuilder.NormalTextures);
+                if (BVHBuilder.RoughnessTextures != null) tracingShader.SetTexture(k, "_RoughnessTextures", BVHBuilder.RoughnessTextures);
             }
-
-            if (BVHBuilder.BLASBuffer != null)
-            {
-                tracingShader.SetBuffer(0, "_BNodes", BVHBuilder.BLASBuffer);
-                tracingShader.SetInt("_BNodesCount", BVHBuilder.GetBLASNodes().Count);
-            }
-            if (BVHBuilder.TransformBuffer != null) tracingShader.SetBuffer(0, "_Transforms", BVHBuilder.TransformBuffer);
-            if (BVHBuilder.AlbedoTextures != null) tracingShader.SetTexture(0, "_AlbedoTextures", BVHBuilder.AlbedoTextures);
-            if (BVHBuilder.EmissionTextures != null) tracingShader.SetTexture(0, "_EmitTextures", BVHBuilder.EmissionTextures);
-            if (BVHBuilder.MetallicTextures != null) tracingShader.SetTexture(0, "_MetallicTextures", BVHBuilder.MetallicTextures);
-            if (BVHBuilder.NormalTextures != null) tracingShader.SetTexture(0, "_NormalTextures", BVHBuilder.NormalTextures);
-            if (BVHBuilder.RoughnessTextures != null) tracingShader.SetTexture(0, "_RoughnessTextures", BVHBuilder.RoughnessTextures);
         }
-        
+
         tracingShader.SetBool("_OnlyDrawDepth", OnlyDrawDepth);
         tracingShader.SetBool("_OnlyDrawNormals", OnlyDrawNormals);
         tracingShader.SetBool("_OnlyDrawAlbedo", OnlyDrawAlbedo);
         tracingShader.SetFloat("_CameraFar", cam.farClipPlane);
 
-        // 设置光源剔除缓冲区
+        // 设置光源缓冲区（绑定到所有需要的kernel）
         if (lightCullingManager != null)
         {
-            lightCullingManager.SetTracingShaderBuffers(tracingShader);
+            lightCullingManager.SetTracingShaderBuffers(tracingShader, lightKernels);
         }
     }
-    
-    private Vector2 GeneratePixelOffset()
-    {
-        Vector2 offset = new Vector2(UnityEngine.Random.value, UnityEngine.Random.value);
-        offset.x += dispatchCount.x * dispatchGroupX * 8;
-        offset.y += dispatchCount.y * dispatchGroupY * 8;
-        return offset;
-    }
-    
+
     private void OnDisable()
     {
         if (target != null)
         {
             target.Release();
         }
+        ReleaseBuffers();
+        cmdBuffer?.Release();
         BVHBuilder.Destroy();
     }
-    
+
     private void OnApplicationQuit()
     {
+        ReleaseBuffers();
+        cmdBuffer?.Release();
         BVHBuilder.Destroy();
     }
 
@@ -236,7 +368,7 @@ public class Tracing : MonoBehaviour
         {
             return;
         }
-        
+
         var bnodes = BVHBuilder.GetBLASNodes();
         var meshNodes = BVHBuilder.GetMeshNodes();
         var tlasNodes = BVHBuilder.GetTLASNodes();
@@ -250,8 +382,8 @@ public class Tracing : MonoBehaviour
             Queue<BVH.BVHNode> q = new();
             q.Enqueue(tlasBVH.BVHRoot);
 
-            Color colLeaf  = new(0, 1,   0);         // 叶子 = 绿
-            Color colInner = new(0, 0.4f, 1);        // 内部 = 蓝
+            Color colLeaf  = new(0, 1,   0);
+            Color colInner = new(0, 0.4f, 1);
 
             while (q.Count > 0)
             {
@@ -262,7 +394,7 @@ public class Tracing : MonoBehaviour
                     for (int i = n.OriginTriOrMeshStartIndex; i < n.OriginTriOrMeshEndIndex; ++i)
                     {
                         var mesh = meshNodes[orderedInfos[i]];
-                        var transform_ = transforms[mesh.TransformIdx * 2]; // local to world
+                        var transform_ = transforms[mesh.TransformIdx * 2];
                         Vector3 LocalCenter  = (mesh.BoundMin + mesh.BoundMax) * 0.5f;
 
                         var WorldCenter = transform_.MultiplyPoint3x4(LocalCenter);
@@ -280,11 +412,10 @@ public class Tracing : MonoBehaviour
                         q.Enqueue(n.LeftChild);
                         q.Enqueue(n.RightChild);
                     }
-                    // if (n.RightChild != null)
                 }
             }
         }
-        
+
         // GroundTruth
         if (DrawMeshNode && meshNodes != null && transforms != null)
         {
@@ -300,7 +431,7 @@ public class Tracing : MonoBehaviour
                 Gizmos.DrawWireCube(WorldCenter, WorldSize);
             }
         }
-        
+
         if (tlasNodes == null || tlasNodes.Count == 0) return;
 
         if (DrawTLAS)
@@ -308,7 +439,7 @@ public class Tracing : MonoBehaviour
             Span<int> stackTLAS = stackalloc int[64];
             int sp = 0;
             stackTLAS[0] = 0;
-            
+
             while (sp >= 0)
             {
                 int idx = stackTLAS[sp--];
@@ -319,7 +450,7 @@ public class Tracing : MonoBehaviour
                 Vector3 center = (n.BoundMin + n.BoundMax) * 0.5f;
                 Vector3 size = n.BoundMax - n.BoundMin;
 
-                Gizmos.color = (n.TransformIdx >= 0) // 叶子 / 父节点不同颜色
+                Gizmos.color = (n.TransformIdx >= 0)
                     ? new Color(1.0f, 0.4f, 0.6f)
                     : new Color(0.0f, 1.0f, 0.0f);
                 if(n.TransformIdx >= 0)
@@ -329,8 +460,8 @@ public class Tracing : MonoBehaviour
 
                 if (n.TransformIdx < 0)
                 {
-                    stackTLAS[++sp] = n.Index + 1; // 右
-                    stackTLAS[++sp] = n.Index; // 左
+                    stackTLAS[++sp] = n.Index + 1;
+                    stackTLAS[++sp] = n.Index;
 
                     Gizmos.DrawWireCube(center, size);
                 }
@@ -347,7 +478,7 @@ public class Tracing : MonoBehaviour
                 Gizmos.color = Color.green;
 
                 int stackPtr = 0;
-                int[] stack = new int[32];
+                Span<int> stack = stackalloc int[32];
                 stack[stackPtr] = meshNode.Index;
 
                 while (stackPtr >= 0 && stackPtr < 32)
@@ -362,18 +493,9 @@ public class Tracing : MonoBehaviour
                     Gizmos.color = color;
                     Gizmos.DrawWireCube(WorldCenter, WorldSize);
 
-                    // TransformUtils.TransformBounds(localToWorld, bnode.BoundMin, bnode.BoundMax, out var worldMin, out var worldMax);
-                    //
-                    // color = Color.blue;
-                    // color.a = 0.5f;
-                    // Gizmos.color = color;
-                    //
-                    // Gizmos.DrawWireCube((worldMin + worldMax) / 2, (worldMax - worldMin));
-
                     if(bnode.PrimitiveEndIdx < 0)
                     {
                         stack[++stackPtr] = bnode.Index;
-
                         stack[++stackPtr] = bnode.Index + 1;
                     }
                 }

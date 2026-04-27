@@ -136,6 +136,44 @@ SamplerState sampler_RoughnessTextures;
 
 float2 _PixelOffset;
 
+// ==================== Multi-Pass Data Structures ====================
+
+struct RayData
+{
+    float3 origin;
+    float3 direction;
+    uint   pixelIndex;
+    uint   rngState;
+    float3 throughput;
+    float  lastPdf;
+};
+
+struct PathContribution
+{
+    float3 L;
+    float  _pad0;
+    float3 throughput;
+    float  _pad1;
+};
+
+struct BufferSizeData
+{
+    int traceRays;
+    int shadowRays;
+};
+
+globallycoherent RWStructuredBuffer<BufferSizeData> BufferSizes;
+RWStructuredBuffer<RayData>          GlobalRays;
+RWStructuredBuffer<RayData>          GlobalRays2;
+RWStructuredBuffer<PathContribution> GlobalColors;
+RWStructuredBuffer<uint>              IndirectArgs;
+
+int  CurBounce;
+uint _ScreenWidth;
+uint _ScreenHeight;
+
+// ==================== End Multi-Pass ====================
+
 Material GenMaterial(half3 baseColor, half3 emission, half emissionIntensity,
     half metallic, half smoothness, half alpha, float ior,
     int4 indices = -1, half2 uv = 0.0)

@@ -140,8 +140,6 @@ public class LightCullingManager : MonoBehaviour
     {
         if (enableLightCulling && lightCullingDataBuffer != null && tileDataBuffer != null)
         {
-            tracingShader.SetBuffer(0, "_LightCullingData", lightCullingDataBuffer);
-            tracingShader.SetBuffer(0, "_TileData", tileDataBuffer);
             tracingShader.SetInts("_TileCount", tileCount.x, tileCount.y);
             tracingShader.SetFloat("_CameraNear", targetCamera.nearClipPlane);
             tracingShader.SetFloat("_CameraFar", targetCamera.farClipPlane);
@@ -150,6 +148,19 @@ public class LightCullingManager : MonoBehaviour
         {
             // 禁用光源剔除时，设置TileCount为0
             tracingShader.SetInts("_TileCount", 0, 0);
+        }
+    }
+
+    public void SetTracingShaderBuffers(ComputeShader tracingShader, int[] kernelIndices)
+    {
+        SetTracingShaderBuffers(tracingShader);
+        if (enableLightCulling && lightCullingDataBuffer != null && tileDataBuffer != null)
+        {
+            foreach (int k in kernelIndices)
+            {
+                tracingShader.SetBuffer(k, "_LightCullingData", lightCullingDataBuffer);
+                tracingShader.SetBuffer(k, "_TileData", tileDataBuffer);
+            }
         }
     }
     

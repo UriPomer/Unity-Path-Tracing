@@ -1,4 +1,7 @@
-#pragma kernel CSMain
+#pragma kernel kernel_generate
+#pragma kernel kernel_trace_shade
+#pragma kernel kernel_finalize
+#pragma kernel TransferKernel
 
 #include "function.hlsl"
 #include "bxdf.hlsl"
@@ -6,68 +9,165 @@
 #include "test.hlsl"
 #include "trace.hlsl"
 
-half3 Shade(Ray ray)
+// ==================== Kernel 0: Generate Primary Rays ====================
+
+[numthreads(256, 1, 1)]
+void kernel_generate(uint3 id : SV_DispatchThreadID)
 {
-    half3 throughput = 1.0;
-    half3 L_Contribution = 0.0;
+    uint pixelCount = _ScreenWidth * _ScreenHeight;
+    if (id.x >= pixelCount) return;
 
-    for (int bounce = 0; bounce < _TraceDepth; ++bounce)
-    {
-        RayHit hit = Trace(ray);
-        if (hit.distance >= 1.#INF)
-        {
-            L_Contribution += throughput * SampleSkybox(ray);
-            break;
-        }
-        if (hit.material.emissionIntensity > 0.0f)
-        {
-            L_Contribution += throughput * (hit.material.emission * hit.material.emissionIntensity);
-        }
-        
-        // Direct Light
-        float3 Lo_direct = GetDirectLightContribution(hit, -ray.dir);
-        L_Contribution += throughput * Lo_direct;
+    uint2 pixel = uint2(id.x % _ScreenWidth, id.x / _ScreenWidth);
 
-        // Indirect Light
-        float3 f_brdf;
-        EvaluateBXDFWithDotAndPDF(hit, /*inout*/ ray, f_brdf);     // ray.dir -> rayOutDir
-        throughput *= f_brdf;
+    // Use global rng so that Trace() -> SkipTransparent() etc. work correctly
+    RNG_SeedPixel(rng, pixel, _FrameCount);
 
-        float p = max(throughput.r, max(throughput.g, throughput.b));
-        if (RNG_Next(rng) >= p)
-            break;
-        throughput *= 1.0 / p;
-        ray.invDir = 1.0 / ray.dir;
-        ray.origin = hit.position + hit.normal * 1e-5;
-    }
-    return L_Contribution;
-}
+    float2 jitter = float2(RNG_Next(rng), RNG_Next(rng)) - 0.5;
+    Ray r = GenRayByID((float2)pixel + jitter);
 
-[numthreads(8,8,1)]
-void CSMain(uint3 id : SV_DispatchThreadID)
-{
-    RNG_SeedPixel(rng, id.xy, _FrameCount);
-    Ray r = GenRayByID(id.xy);
-    _Pixel = id.xy;
-    
+    RayData rd;
+    rd.origin = r.origin;
+    rd.direction = r.dir;
+    rd.pixelIndex = id.x;
+    rd.rngState = rng.state;
+    rd.throughput = float3(1, 1, 1);
+    rd.lastPdf = 0;
+
+    GlobalRays[id.x] = rd;
+    GlobalColors[id.x].L = float3(0, 0, 0);
+    GlobalColors[id.x].throughput = float3(1, 1, 1);
+
+    // Debug modes: write debug color to GlobalColors (finalize kernel will output it)
     if (_OnlyDrawAlbedo || _OnlyDrawDepth || _OnlyDrawNormals)
     {
+        _Pixel = pixel;
         RayHit firstHit = Trace(r);
 
         if (_OnlyDrawAlbedo)
-            _Result[id.xy] = float4(firstHit.material.albedo, 1.0f);
-
+            GlobalColors[id.x].L = firstHit.material.albedo;
         else if (_OnlyDrawDepth)
         {
             float nd = firstHit.distance / _CameraFar;
-            _Result[id.xy] = float4(nd, nd, nd, 1.0f);
+            GlobalColors[id.x].L = float3(nd, nd, nd);
         }
         else if (_OnlyDrawNormals)
-            _Result[id.xy] = float4(firstHit.normal * 0.5f + 0.5f, 1.0f);
+            GlobalColors[id.x].L = firstHit.normal * 0.5f + 0.5f;
 
+        // Mark this ray as terminated (no bounce processing needed)
+        GlobalRays[id.x].throughput = float3(0, 0, 0);
+    }
+}
+
+// ==================== Kernel 1: Trace + Shade (one bounce per dispatch) ====================
+
+[numthreads(64, 1, 1)]
+void kernel_trace_shade(uint3 id : SV_DispatchThreadID)
+{
+    int rayCount = BufferSizes[CurBounce].traceRays;
+    if (rayCount <= 0 || id.x >= (uint)rayCount) return;
+
+    RayData rd = GlobalRays[id.x];
+
+    // Skip terminated rays (debug mode)
+    if (rd.throughput.x <= 0 && rd.throughput.y <= 0 && rd.throughput.z <= 0)
+        return;
+
+    // Restore RNG state
+    rng.state = rd.rngState;
+    _Pixel = uint2(rd.pixelIndex % _ScreenWidth, rd.pixelIndex / _ScreenWidth);
+
+    // === Trace ===
+    Ray ray;
+    ray.origin = rd.origin;
+    ray.dir = rd.direction;
+    ray.invDir = 1.0 / ray.dir;
+    RayHit hit = Trace(ray);
+
+    // === Shade (one bounce) ===
+    float3 throughput = rd.throughput;
+    float3 L = GlobalColors[rd.pixelIndex].L;
+
+    // Miss -> skybox
+    if (hit.distance >= 1.#INF)
+    {
+        L += throughput * SampleSkybox(ray);
+        GlobalColors[rd.pixelIndex].L = L;
         return;
     }
 
-    float3 L = SRGB2Linear(Shade(r));
-    _Result[id.xy] = float4(L, 1.0f);
+    // Emission
+    if (hit.material.emissionIntensity > 0.0f)
+    {
+        L += throughput * (hit.material.emission * hit.material.emissionIntensity);
+    }
+
+    // Direct Light (Phase 1: inline shadow rays)
+    float3 Lo_direct = GetDirectLightContribution(hit, -ray.dir);
+    L += throughput * Lo_direct;
+
+    // Indirect Light - BXDF sampling
+    float3 f_brdf;
+    EvaluateBXDFWithDotAndPDF(hit, /*inout*/ ray, f_brdf);
+    throughput *= f_brdf;
+
+    // Russian Roulette
+    float p = max(throughput.r, max(throughput.g, throughput.b));
+    if (RNG_Next(rng) >= p)
+    {
+        GlobalColors[rd.pixelIndex].L = L;
+        return;
+    }
+    throughput *= 1.0 / p;
+
+    // Update accumulated color
+    GlobalColors[rd.pixelIndex].L = L;
+
+    // Write next-bounce ray
+    ray.invDir = 1.0 / ray.dir;
+    ray.origin = hit.position + hit.normal * 1e-5;
+
+    uint nextIndex;
+    InterlockedAdd(BufferSizes[CurBounce + 1].traceRays, 1, nextIndex);
+
+    RayData nextRd;
+    nextRd.origin = ray.origin;
+    nextRd.direction = ray.dir;
+    nextRd.pixelIndex = rd.pixelIndex;
+    nextRd.rngState = rng.state;
+    nextRd.throughput = throughput;
+    nextRd.lastPdf = 0;
+    GlobalRays2[nextIndex] = nextRd;
+}
+
+// ==================== Kernel 2: Finalize ====================
+
+[numthreads(8, 8, 1)]
+void kernel_finalize(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _ScreenWidth || id.y >= _ScreenHeight) return;
+    uint pixelIndex = id.y * _ScreenWidth + id.x;
+    _Result[id.xy] = float4(GlobalColors[pixelIndex].L, 1.0f);
+}
+
+// ==================== Kernel 3: Transfer (compute indirect dispatch args) ====================
+
+int Type = 0; // 0=trace, 1=shadow
+
+[numthreads(1, 1, 1)]
+void TransferKernel(uint3 id : SV_DispatchThreadID)
+{
+    if (Type == 0)
+    {
+        int count = max(BufferSizes[CurBounce].traceRays, 0);
+        IndirectArgs[0] = (count + 63) / 64;
+        IndirectArgs[1] = 1;
+        IndirectArgs[2] = 1;
+    }
+    else
+    {
+        int count = max(BufferSizes[CurBounce].shadowRays, 0);
+        IndirectArgs[0] = (count + 63) / 64;
+        IndirectArgs[1] = 1;
+        IndirectArgs[2] = 1;
+    }
 }
