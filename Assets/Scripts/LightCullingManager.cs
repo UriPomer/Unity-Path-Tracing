@@ -10,6 +10,8 @@ public class LightCullingManager : MonoBehaviour
     
     private ComputeBuffer lightCullingDataBuffer;
     private ComputeBuffer tileDataBuffer;
+    private ComputeBuffer dummyLightCullingData;
+    private ComputeBuffer dummyTileData;
     private RenderTexture depthTexture;
     
     private int lightCullingKernel;
@@ -162,6 +164,19 @@ public class LightCullingManager : MonoBehaviour
                 tracingShader.SetBuffer(k, "_TileData", tileDataBuffer);
             }
         }
+        else
+        {
+            // 禁用光源剔除时，使用缓存的 dummy buffer 避免 "Property is not set" 错误
+            if (dummyLightCullingData == null)
+                dummyLightCullingData = new ComputeBuffer(1, sizeof(uint));
+            if (dummyTileData == null)
+                dummyTileData = new ComputeBuffer(1, sizeof(uint) * 2);
+            foreach (int k in kernelIndices)
+            {
+                tracingShader.SetBuffer(k, "_LightCullingData", dummyLightCullingData);
+                tracingShader.SetBuffer(k, "_TileData", dummyTileData);
+            }
+        }
     }
     
     private void OnDisable()
@@ -179,10 +194,14 @@ public class LightCullingManager : MonoBehaviour
         lightCullingDataBuffer?.Release();
         tileDataBuffer?.Release();
         depthTexture?.Release();
+        dummyLightCullingData?.Release();
+        dummyTileData?.Release();
         
         lightCullingDataBuffer = null;
         tileDataBuffer = null;
         depthTexture = null;
+        dummyLightCullingData = null;
+        dummyTileData = null;
     }
     
     private void OnGUI()
