@@ -52,20 +52,26 @@ public class Tracing : MonoBehaviour
 
     // Multi-pass kernel indices
     private int kernelGenerate;
-    private int kernelTraceShade;
+    private int kernelTrace;
+    private int kernelShade;
+    private int kernelShadow;
     private int kernelFinalize;
     private int kernelTransfer;
 
     // Multi-pass buffers
     private ComputeBuffer _globalRaysA;
     private ComputeBuffer _globalRaysB;
+    private ComputeBuffer _globalHits;
+    private ComputeBuffer _shadowRays;
     private ComputeBuffer _globalColors;
     private ComputeBuffer _bufferSizes;
     private ComputeBuffer _indirectArgs;
 
     // Struct sizes (must match HLSL layout)
     private const int RayDataStride = 48;         // float3+float3+uint+uint+float3+float = 12+12+4+4+12+4
-    private const int PathContributionStride = 32; // float3+pad+float3+pad = 16+16
+    private const int HitDataStride = 76;          // 4×(float3+scalar) + 2×float + float = 4×16+8+4
+    private const int ShadowRayDataStride = 44;    // 2×(float3+scalar) + float3 = 2×16+12
+    private const int PathContributionStride = 24; // float3+float3 = 12+12
     private const int BufferSizeDataStride = 8;    // int+int = 4+4
     private const int IndirectArgsStride = 4;      // uint x3 = 3 elements x 4 bytes each
 
@@ -76,7 +82,7 @@ public class Tracing : MonoBehaviour
     private int[] lightKernels;
     private CommandBuffer cmdBuffer;
     private int[] sizesData = new int[32]; // Max 15 bounces: (15+1)*2 = 32
-    private string[] bounceNames = new string[16]; // Pre-computed CommandBuffer names
+    private string[] bounceNames = new string[24]; // 8 bounces × 3 phases = 24
 
     private void Awake()
     {
@@ -95,16 +101,22 @@ public class Tracing : MonoBehaviour
 
         // Find kernel indices
         kernelGenerate = tracingShader.FindKernel("kernel_generate");
-        kernelTraceShade = tracingShader.FindKernel("kernel_trace_shade");
+        kernelTrace = tracingShader.FindKernel("kernel_trace");
+        kernelShade = tracingShader.FindKernel("kernel_shade");
+        kernelShadow = tracingShader.FindKernel("kernel_shadow");
         kernelFinalize = tracingShader.FindKernel("kernel_finalize");
         kernelTransfer = tracingShader.FindKernel("TransferKernel");
 
         // Pre-allocate reusable arrays and names
-        bvhKernels = new int[] { kernelGenerate, kernelTraceShade };
-        lightKernels = new int[] { kernelGenerate, kernelTraceShade };
+        bvhKernels = new int[] { kernelGenerate, kernelTrace, kernelShade, kernelShadow };
+        lightKernels = new int[] { kernelGenerate, kernelTrace, kernelShade };
         cmdBuffer = new CommandBuffer();
         for (int i = 0; i < bounceNames.Length; i++)
-            bounceNames[i] = "PT_Bounce" + i;
+        {
+            int bounce = i / 3;
+            int phase = i % 3;
+            bounceNames[i] = "PT_B" + bounce + "_" + (phase == 0 ? "Trace" : phase == 1 ? "Shade" : "Shadow");
+        }
     }
 
     private void OnRenderImage(RenderTexture source, RenderTexture destination)
@@ -126,6 +138,8 @@ public class Tracing : MonoBehaviour
 
         _globalRaysA = new ComputeBuffer(pixelCount, RayDataStride);
         _globalRaysB = new ComputeBuffer(pixelCount, RayDataStride);
+        _globalHits = new ComputeBuffer(pixelCount, HitDataStride);
+        _shadowRays = new ComputeBuffer(pixelCount, ShadowRayDataStride);
         _globalColors = new ComputeBuffer(pixelCount, PathContributionStride);
         _bufferSizes = new ComputeBuffer(TraceDepth + 1, BufferSizeDataStride);
         _indirectArgs = new ComputeBuffer(3, IndirectArgsStride);
@@ -138,6 +152,8 @@ public class Tracing : MonoBehaviour
     {
         _globalRaysA?.Release(); _globalRaysA = null;
         _globalRaysB?.Release(); _globalRaysB = null;
+        _globalHits?.Release(); _globalHits = null;
+        _shadowRays?.Release(); _shadowRays = null;
         _globalColors?.Release(); _globalColors = null;
         _bufferSizes?.Release(); _bufferSizes = null;
         _indirectArgs?.Release(); _indirectArgs = null;
@@ -212,17 +228,36 @@ public class Tracing : MonoBehaviour
                 // Ping-pong: bind read buffer to GlobalRays, write buffer to GlobalRays2
                 var readBuf = readA ? _globalRaysA : _globalRaysB;
                 var writeBuf = readA ? _globalRaysB : _globalRaysA;
-                tracingShader.SetBuffer(kernelTraceShade, "GlobalRays", readBuf);
-                tracingShader.SetBuffer(kernelTraceShade, "GlobalRays2", writeBuf);
+                tracingShader.SetBuffer(kernelTrace, "GlobalRays", readBuf);
+                tracingShader.SetBuffer(kernelTrace, "GlobalHits", _globalHits);
+                tracingShader.SetBuffer(kernelShade, "GlobalRays", readBuf);
+                tracingShader.SetBuffer(kernelShade, "GlobalRays2", writeBuf);
+                tracingShader.SetBuffer(kernelShade, "GlobalHits", _globalHits);
 
-                // Transfer: compute indirect dispatch args
+                // Transfer0 (Type=0): compute trace/shade dispatch args
                 tracingShader.SetInt("Type", 0);
                 tracingShader.Dispatch(kernelTransfer, 1, 1, 1);
 
-                // Trace+Shade (indirect dispatch)
+                // Trace (indirect dispatch)
                 cmdBuffer.Clear();
-                cmdBuffer.name = bounceNames[bounce];
-                cmdBuffer.DispatchCompute(tracingShader, kernelTraceShade, _indirectArgs, 0);
+                cmdBuffer.name = bounceNames[bounce * 3];
+                cmdBuffer.DispatchCompute(tracingShader, kernelTrace, _indirectArgs, 0);
+                Graphics.ExecuteCommandBuffer(cmdBuffer);
+
+                // Shade (indirect dispatch, same count as trace)
+                cmdBuffer.Clear();
+                cmdBuffer.name = bounceNames[bounce * 3 + 1];
+                cmdBuffer.DispatchCompute(tracingShader, kernelShade, _indirectArgs, 0);
+                Graphics.ExecuteCommandBuffer(cmdBuffer);
+
+                // Transfer1 (Type=1): compute shadow dispatch args
+                tracingShader.SetInt("Type", 1);
+                tracingShader.Dispatch(kernelTransfer, 1, 1, 1);
+
+                // Shadow (indirect dispatch)
+                cmdBuffer.Clear();
+                cmdBuffer.name = bounceNames[bounce * 3 + 2];
+                cmdBuffer.DispatchCompute(tracingShader, kernelShadow, _indirectArgs, 0);
                 Graphics.ExecuteCommandBuffer(cmdBuffer);
 
                 readA = !readA;
@@ -292,12 +327,19 @@ public class Tracing : MonoBehaviour
 
         // Set skybox on kernels that need it
         tracingShader.SetTexture(kernelGenerate, "_SkyboxTexture", skyboxTexture);
-        tracingShader.SetTexture(kernelTraceShade, "_SkyboxTexture", skyboxTexture);
+        tracingShader.SetTexture(kernelTrace, "_SkyboxTexture", skyboxTexture);
 
-        // Set multi-pass buffers on all relevant kernels        tracingShader.SetBuffer(kernelGenerate, "GlobalRays", _globalRaysA);
+        // Set multi-pass buffers on all relevant kernels
+        tracingShader.SetBuffer(kernelGenerate, "GlobalRays", _globalRaysA);
         tracingShader.SetBuffer(kernelGenerate, "GlobalColors", _globalColors);
-        tracingShader.SetBuffer(kernelTraceShade, "GlobalColors", _globalColors);
-        tracingShader.SetBuffer(kernelTraceShade, "BufferSizes", _bufferSizes);
+        tracingShader.SetBuffer(kernelGenerate, "GlobalHits", _globalHits);
+        tracingShader.SetBuffer(kernelTrace, "BufferSizes", _bufferSizes);
+        tracingShader.SetBuffer(kernelShade, "GlobalColors", _globalColors);
+        tracingShader.SetBuffer(kernelShade, "ShadowRaysBuffer", _shadowRays);
+        tracingShader.SetBuffer(kernelShade, "BufferSizes", _bufferSizes);
+        tracingShader.SetBuffer(kernelShadow, "ShadowRaysBuffer", _shadowRays);
+        tracingShader.SetBuffer(kernelShadow, "GlobalColors", _globalColors);
+        tracingShader.SetBuffer(kernelShadow, "BufferSizes", _bufferSizes);
         tracingShader.SetBuffer(kernelTransfer, "BufferSizes", _bufferSizes);
         tracingShader.SetBuffer(kernelTransfer, "IndirectArgs", _indirectArgs);
         tracingShader.SetBuffer(kernelFinalize, "GlobalColors", _globalColors);

@@ -1,5 +1,7 @@
 #pragma kernel kernel_generate
-#pragma kernel kernel_trace_shade
+#pragma kernel kernel_trace
+#pragma kernel kernel_shade
+#pragma kernel kernel_shadow
 #pragma kernel kernel_finalize
 #pragma kernel TransferKernel
 
@@ -36,6 +38,7 @@ void kernel_generate(uint3 id : SV_DispatchThreadID)
     GlobalRays[id.x] = rd;
     GlobalColors[id.x].L = float3(0, 0, 0);
     GlobalColors[id.x].throughput = float3(1, 1, 1);
+    GlobalHits[id.x].distance = 1.#INF;
 
     // Debug modes: write debug color to GlobalColors (finalize kernel will output it)
     if (_OnlyDrawAlbedo || _OnlyDrawDepth || _OnlyDrawNormals)
@@ -58,54 +61,99 @@ void kernel_generate(uint3 id : SV_DispatchThreadID)
     }
 }
 
-// ==================== Kernel 1: Trace + Shade (one bounce per dispatch) ====================
+// ==================== Kernel 1: Trace (find closest intersection) ====================
 
 [numthreads(64, 1, 1)]
-void kernel_trace_shade(uint3 id : SV_DispatchThreadID)
+void kernel_trace(uint3 id : SV_DispatchThreadID)
 {
     int rayCount = BufferSizes[CurBounce].traceRays;
     if (rayCount <= 0 || id.x >= (uint)rayCount) return;
 
     RayData rd = GlobalRays[id.x];
+    if (rd.throughput.x <= 0 && rd.throughput.y <= 0 && rd.throughput.z <= 0) return;
 
-    // Skip terminated rays (debug mode)
-    if (rd.throughput.x <= 0 && rd.throughput.y <= 0 && rd.throughput.z <= 0)
-        return;
-
-    // Restore RNG state
     rng.state = rd.rngState;
     _Pixel = uint2(rd.pixelIndex % _ScreenWidth, rd.pixelIndex / _ScreenWidth);
 
-    // === Trace ===
     Ray ray;
     ray.origin = rd.origin;
     ray.dir = rd.direction;
     ray.invDir = 1.0 / ray.dir;
+
     RayHit hit = Trace(ray);
 
-    // === Shade (one bounce) ===
+    HitData hd;
+    hd.position = hit.position;
+    hd.distance = hit.distance;
+    hd.normal = hit.normal;
+    hd.mode = hit.mode;
+    hd.albedo = hit.material.albedo;
+    hd.emission = hit.material.emission;
+    hd.emissionIntensity = hit.material.emissionIntensity;
+    hd.roughness = hit.material.roughness;
+    hd.metallic = hit.material.metallic;
+    hd.alpha = hit.material.alpha;
+    hd.ior = hit.material.ior;
+    GlobalHits[id.x] = hd;
+}
+
+// ==================== Kernel 2: Shade (evaluate material + generate shadow rays) ====================
+
+[numthreads(64, 1, 1)]
+void kernel_shade(uint3 id : SV_DispatchThreadID)
+{
+    int rayCount = BufferSizes[CurBounce].traceRays;
+    if (rayCount <= 0 || id.x >= (uint)rayCount) return;
+
+    RayData rd = GlobalRays[id.x];
+    if (rd.throughput.x <= 0 && rd.throughput.y <= 0 && rd.throughput.z <= 0) return;
+
+    rng.state = rd.rngState;
+    _Pixel = uint2(rd.pixelIndex % _ScreenWidth, rd.pixelIndex / _ScreenWidth);
+
+    HitData hd = GlobalHits[id.x];
     float3 throughput = rd.throughput;
     float3 L = GlobalColors[rd.pixelIndex].L;
 
-    // Miss -> skybox
-    if (hit.distance >= 1.#INF)
+    // Miss → skybox
+    if (hd.distance >= 1.#INF)
     {
+        Ray ray;
+        ray.origin = rd.origin;
+        ray.dir = rd.direction;
+        ray.invDir = 1.0 / ray.dir;
         L += throughput * SampleSkybox(ray);
         GlobalColors[rd.pixelIndex].L = L;
         return;
     }
 
+    // Reconstruct RayHit for BXDF functions
+    RayHit hit;
+    hit.position = hd.position;
+    hit.distance = hd.distance;
+    hit.normal = hd.normal;
+    hit.mode = hd.mode;
+    hit.material.albedo = hd.albedo;
+    hit.material.emission = hd.emission;
+    hit.material.emissionIntensity = hd.emissionIntensity;
+    hit.material.roughness = hd.roughness;
+    hit.material.metallic = hd.metallic;
+    hit.material.alpha = hd.alpha;
+    hit.material.ior = hd.ior;
+    hit.should_break = false;
+
     // Emission
     if (hit.material.emissionIntensity > 0.0f)
-    {
         L += throughput * (hit.material.emission * hit.material.emissionIntensity);
-    }
 
-    // Direct Light (Phase 1: inline shadow rays)
-    float3 Lo_direct = GetDirectLightContribution(hit, -ray.dir);
-    L += throughput * Lo_direct;
+    // NEE: generate shadow rays (deferred tracing)
+    GenerateShadowRays(hit, -rd.direction, throughput, rd.pixelIndex);
 
-    // Indirect Light - BXDF sampling
+    // BXDF sampling
+    Ray ray;
+    ray.origin = rd.origin;
+    ray.dir = rd.direction;
+    ray.invDir = 1.0 / ray.dir;
     float3 f_brdf;
     EvaluateBXDFWithDotAndPDF(hit, /*inout*/ ray, f_brdf);
     throughput *= f_brdf;
@@ -119,7 +167,6 @@ void kernel_trace_shade(uint3 id : SV_DispatchThreadID)
     }
     throughput *= 1.0 / p;
 
-    // Update accumulated color
     GlobalColors[rd.pixelIndex].L = L;
 
     // Write next-bounce ray
@@ -139,7 +186,30 @@ void kernel_trace_shade(uint3 id : SV_DispatchThreadID)
     GlobalRays2[nextIndex] = nextRd;
 }
 
-// ==================== Kernel 2: Finalize ====================
+// ==================== Kernel 3: Shadow (trace shadow rays) ====================
+
+[numthreads(64, 1, 1)]
+void kernel_shadow(uint3 id : SV_DispatchThreadID)
+{
+    int shadowCount = BufferSizes[CurBounce].shadowRays;
+    if (shadowCount <= 0 || id.x >= (uint)shadowCount) return;
+
+    ShadowRayData sr = ShadowRaysBuffer[id.x];
+
+    Ray ray;
+    ray.origin = sr.origin;
+    ray.dir = sr.direction;
+    ray.invDir = 1.0 / ray.dir;
+
+    // Any-hit: occluded → skip
+    if (IntersectTlasFast(ray, sr.maxDist))
+        return;
+
+    // Unoccluded → accumulate light contribution
+    GlobalColors[sr.pixelIndex].L += sr.illumination;
+}
+
+// ==================== Kernel 4: Finalize ====================
 
 [numthreads(8, 8, 1)]
 void kernel_finalize(uint3 id : SV_DispatchThreadID)
@@ -149,7 +219,7 @@ void kernel_finalize(uint3 id : SV_DispatchThreadID)
     _Result[id.xy] = float4(GlobalColors[pixelIndex].L, 1.0f);
 }
 
-// ==================== Kernel 3: Transfer (compute indirect dispatch args) ====================
+// ==================== Kernel 5: Transfer (compute indirect dispatch args) ====================
 
 int Type = 0; // 0=trace, 1=shadow
 

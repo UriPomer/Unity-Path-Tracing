@@ -151,9 +151,7 @@ struct RayData
 struct PathContribution
 {
     float3 L;
-    float  _pad0;
     float3 throughput;
-    float  _pad1;
 };
 
 struct BufferSizeData
@@ -162,9 +160,28 @@ struct BufferSizeData
     int shadowRays;
 };
 
+struct HitData
+{
+    float3 position;          float  distance;
+    float3 normal;            float  mode;
+    float3 albedo;            float  emissionIntensity;
+    float3 emission;          float  roughness;
+    float  metallic;          float  alpha;
+    float  ior;
+};
+
+struct ShadowRayData
+{
+    float3 origin;       float  maxDist;
+    float3 direction;    uint   pixelIndex;
+    float3 illumination;
+};
+
 globallycoherent RWStructuredBuffer<BufferSizeData> BufferSizes;
 RWStructuredBuffer<RayData>          GlobalRays;
 RWStructuredBuffer<RayData>          GlobalRays2;
+RWStructuredBuffer<HitData>          GlobalHits;
+RWStructuredBuffer<ShadowRayData>    ShadowRaysBuffer;
 RWStructuredBuffer<PathContribution> GlobalColors;
 RWStructuredBuffer<uint>              IndirectArgs;
 
