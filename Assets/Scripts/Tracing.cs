@@ -143,7 +143,7 @@ public class Tracing : MonoBehaviour
         _shadowRays = new ComputeBuffer(pixelCount, ShadowRayDataStride);
         _globalColors = new ComputeBuffer(pixelCount, PathContributionStride);
         _bufferSizes = new ComputeBuffer(TraceDepth + 1, BufferSizeDataStride);
-        _indirectArgs = new ComputeBuffer(3, IndirectArgsStride);
+        _indirectArgs = new ComputeBuffer(3, IndirectArgsStride, ComputeBufferType.IndirectArguments);
 
         prevWidth = w;
         prevHeight = h;
@@ -329,6 +329,7 @@ public class Tracing : MonoBehaviour
         // Set skybox on kernels that need it
         tracingShader.SetTexture(kernelGenerate, "_SkyboxTexture", skyboxTexture);
         tracingShader.SetTexture(kernelTrace, "_SkyboxTexture", skyboxTexture);
+        tracingShader.SetTexture(kernelShade, "_SkyboxTexture", skyboxTexture);
 
         // Set multi-pass buffers on all relevant kernels
         tracingShader.SetBuffer(kernelGenerate, "GlobalRays", _globalRaysA);
