@@ -16,7 +16,7 @@ public class LightManager : MonoBehaviour
         {
             if (_instance == null)
             {
-                _instance = FindObjectOfType<LightManager>();
+                _instance = FindAnyObjectByType<LightManager>();
                 if (_instance == null)
                 {
                     GameObject singleton = new GameObject(typeof(LightManager).ToString());

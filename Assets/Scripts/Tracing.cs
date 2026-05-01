@@ -215,7 +215,7 @@ public class Tracing : MonoBehaviour
         _bufferSizes.SetData(sizesData, 0, 0, sizeCount);
 
         // 1. Generate primary rays
-        tracingShader.Dispatch(kernelGenerate, (pixelCount + 255) / 256, 1, 1);
+        tracingShader.Dispatch(kernelGenerate, (pixelCount + 63) / 64, 1, 1);
 
         // 2. Per-bounce loop (skip when debug modes set throughput=0)
         bool debugMode = OnlyDrawAlbedo || OnlyDrawNormals || OnlyDrawDepth;
@@ -317,6 +317,7 @@ public class Tracing : MonoBehaviour
         tracingShader.SetMatrix("_CameraInverseProjection", cam.projectionMatrix.inverse);
         tracingShader.SetFloat("_SunFocus", SunFocus);
         tracingShader.SetFloat("_SunAngularRadius", SunAngularRadius);
+        tracingShader.SetFloat("_SkyboxIntensity", SkyboxIntensity);
 
         // Screen dimensions for multi-pass
         tracingShader.SetInt("_ScreenWidth", Screen.width);
@@ -390,20 +391,41 @@ public class Tracing : MonoBehaviour
 
     private void OnDisable()
     {
-        if (target != null)
-        {
-            target.Release();
-        }
+        ReleaseRenderTargets();
         ReleaseBuffers();
-        cmdBuffer?.Release();
+        ReleaseCommandBuffer();
         BVHBuilder.Destroy();
     }
 
     private void OnApplicationQuit()
     {
+        ReleaseRenderTargets();
         ReleaseBuffers();
-        cmdBuffer?.Release();
+        ReleaseCommandBuffer();
         BVHBuilder.Destroy();
+    }
+
+    private void ReleaseRenderTargets()
+    {
+        if (target != null)
+        {
+            target.Release();
+            target = null;
+        }
+
+        if (frameConverged != null)
+        {
+            frameConverged.Release();
+            frameConverged = null;
+        }
+    }
+
+    private void ReleaseCommandBuffer()
+    {
+        if (cmdBuffer == null) return;
+
+        cmdBuffer.Release();
+        cmdBuffer = null;
     }
 
     private void OnDrawGizmos()

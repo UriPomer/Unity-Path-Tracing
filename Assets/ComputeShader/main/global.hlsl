@@ -46,6 +46,7 @@ float3 _InverseDirectionalLight;
 float4 _DirectionalLightColor;
 float _SunFocus;
 float _SunAngularRadius;
+float _SkyboxIntensity;
 StructuredBuffer<float4> _PointLights;
 int _PointLightsCount;
 uint _FrameCount;
@@ -60,7 +61,8 @@ struct RNG
 {
     uint state;
 };
-RNG rng;
+// Keep RNG as shader-internal state so Unity does not reflect it as a kernel parameter.
+static RNG rng;
 
 static const float PI = 3.14159265f;
 static const float INV_PI = 0.318309886f;

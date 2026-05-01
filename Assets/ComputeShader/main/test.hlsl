@@ -100,7 +100,7 @@ float4 DebugBVH(uint2 pixID)
     while (spT >= 0)
     {
         int idxT = stackTLAS[spT--];
-        if (idxT < 0 || idxT >= _TLASNodesCount)
+        if (idxT < 0 || idxT >= (int)_TLASNodesCount)
             continue;
 
         TLASNode tn = _TLASNodes[idxT];

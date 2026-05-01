@@ -13,7 +13,7 @@
 
 // ==================== Kernel 0: Generate Primary Rays ====================
 
-[numthreads(256, 1, 1)]
+[numthreads(64, 1, 1)]
 void kernel_generate(uint3 id : SV_DispatchThreadID)
 {
     uint pixelCount = _ScreenWidth * _ScreenHeight;
@@ -228,14 +228,14 @@ void TransferKernel(uint3 id : SV_DispatchThreadID)
 {
     if (Type == 0)
     {
-        int count = max(BufferSizes[CurBounce].traceRays, 0);
+        uint count = (uint)max(BufferSizes[CurBounce].traceRays, 0);
         IndirectArgs[0] = (count + 63) / 64;
         IndirectArgs[1] = 1;
         IndirectArgs[2] = 1;
     }
     else
     {
-        int count = max(BufferSizes[CurBounce].shadowRays, 0);
+        uint count = (uint)max(BufferSizes[CurBounce].shadowRays, 0);
         IndirectArgs[0] = (count + 63) / 64;
         IndirectArgs[1] = 1;
         IndirectArgs[2] = 1;

@@ -21,7 +21,7 @@ float3 SampleSkybox(Ray ray)
     //                 * _DirectionalLightColor.rgb
     //                 * _DirectionalLightColor.a;
 
-    return envColor;
+    return envColor * _SkyboxIntensity;
 }
 
 // trace a ray and returns hit immediately (for shadow rays)
