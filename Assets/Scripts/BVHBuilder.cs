@@ -277,7 +277,7 @@ public class BVHBuilder
         if (MetallicTextures) UnityEngine.Object.Destroy(MetallicTextures);
         if (NormalTextures) UnityEngine.Object.Destroy(NormalTextures);
         if (RoughnessTextures) UnityEngine.Object.Destroy(RoughnessTextures);
-        AlbedoTextures = CreateTextureArray(ref albedoTex);
+        AlbedoTextures = CreateTextureArray(ref albedoTex, false);
 #if UNITY_EDITOR && DEBUG_TEXTURE
         UnityEditor.EditorApplication.delayCall += () =>
         {
@@ -293,10 +293,10 @@ public class BVHBuilder
             win.Repaint();
         };
 #endif
-        EmissionTextures = CreateTextureArray(ref emitTex);
-        MetallicTextures = CreateTextureArray(ref metalTex);
-        NormalTextures = CreateTextureArray(ref normTex);
-        RoughnessTextures = CreateTextureArray(ref roughTex);
+        EmissionTextures = CreateTextureArray(ref emitTex, false);
+        MetallicTextures = CreateTextureArray(ref metalTex, true);
+        NormalTextures = CreateTextureArray(ref normTex, true);
+        RoughnessTextures = CreateTextureArray(ref roughTex, true);
     }
     
     static void verticesEnsure<T>(List<T> dst, T[] src, int count, T pad)
@@ -395,34 +395,72 @@ public class BVHBuilder
         buffer.SetData(data);
     }
 
-    public static void ReloadMaterials()
+    public static bool ReloadMaterials()
     {
+        if (materials.Count <= 1 || objects.Count == 0)
+            return false;
+
         int matIdx = 1;
+        bool changed = false;
         // get info from each object
         foreach (var obj in objects)
         {
+            if (obj == null) continue;
+
             var meshMats = obj.GetComponent<Renderer>().sharedMaterials;
             foreach (var mat in meshMats)
             {
                 Color emission = mat.IsKeywordEnabled("_EMISSION") ? mat.GetColor("_EmissionColor") : Color.black;
-                materials[matIdx] = new MaterialData()
+                obj.TryGetComponent<Emission>(out var emissionComponent);
+                float emissionIntensity = mat.IsKeywordEnabled("_EMISSION")
+                    ? emissionComponent?.Intensity ?? 0.0f
+                    : 0.0f;
+
+                MaterialData newData = new MaterialData()
                 {
                     Color = new Vector4(mat.color.r, mat.color.g, mat.color.b, mat.color.a),
                     Emission = new Vector3(emission.r, emission.g, emission.b),
-                    Metallic = mat.GetFloat("_Metallic"),
-                    Smoothness = mat.GetFloat("_Glossiness"),
+                    EmissionIntensity = emissionIntensity,
+                    Metallic = mat.HasProperty("_Metallic") ? mat.GetFloat("_Metallic") : 0.0f,
+                    Smoothness = mat.HasProperty("_Glossiness") ? mat.GetFloat("_Glossiness") : 0.0f,
                     IOR = mat.HasProperty("_IOR") ? mat.GetFloat("_IOR") : 1.0f,
-                    RenderMode = mat.GetFloat("_Mode"),
+                    RenderMode = mat.HasProperty("_Mode") ? mat.GetFloat("_Mode") : 0.0f,
                     AlbedoIdx = materials[matIdx].AlbedoIdx,
                     EmitIdx = materials[matIdx].EmitIdx,
                     MetallicIdx = materials[matIdx].MetallicIdx,
                     NormalIdx = materials[matIdx].NormalIdx,
                     RoughIdx = materials[matIdx].RoughIdx,
                 };
+
+                if (!MaterialDataEquals(materials[matIdx], newData))
+                {
+                    materials[matIdx] = newData;
+                    changed = true;
+                }
                 matIdx++;
             }
         }
-        SetBuffer(ref MaterialBuffer, materials, MaterialData.TypeSize);
+
+        if (changed)
+            SetBuffer(ref MaterialBuffer, materials, MaterialData.TypeSize);
+
+        return changed;
+    }
+
+    private static bool MaterialDataEquals(MaterialData a, MaterialData b)
+    {
+        return a.Color == b.Color &&
+               a.Emission == b.Emission &&
+               a.EmissionIntensity == b.EmissionIntensity &&
+               a.Metallic == b.Metallic &&
+               a.Smoothness == b.Smoothness &&
+               a.IOR == b.IOR &&
+               a.RenderMode == b.RenderMode &&
+               a.AlbedoIdx == b.AlbedoIdx &&
+               a.EmitIdx == b.EmitIdx &&
+               a.MetallicIdx == b.MetallicIdx &&
+               a.NormalIdx == b.NormalIdx &&
+               a.RoughIdx == b.RoughIdx;
     }
 
     public static void Destroy()
@@ -443,7 +481,7 @@ public class BVHBuilder
         if (RoughnessTextures != null) UnityEngine.Object.Destroy(RoughnessTextures);
     }
 
-    private static Texture2DArray CreateTextureArray(ref List<Texture2D> textures)
+    private static Texture2DArray CreateTextureArray(ref List<Texture2D> textures, bool linear)
     {
         int texWidth = 1, texHeight = 1;
         foreach (Texture tex in textures)
@@ -456,11 +494,12 @@ public class BVHBuilder
         texHeight = Mathf.Min(texHeight, maxDim);
         var newTexture = new Texture2DArray(
             texWidth, texHeight, Mathf.Max(1, textures.Count),
-            TextureFormat.ARGB32, true, false
+            TextureFormat.ARGB32, true, linear
         );
         newTexture.SetPixels(Enumerable.Repeat(Color.white, texWidth * texHeight).ToArray(), 0, 0);
-        RenderTexture rt = new RenderTexture(texWidth, texHeight, 1, RenderTextureFormat.ARGB32);
-        Texture2D tmp = new Texture2D(texWidth, texHeight, TextureFormat.ARGB32, false);
+        RenderTextureReadWrite readWrite = linear ? RenderTextureReadWrite.Linear : RenderTextureReadWrite.sRGB;
+        RenderTexture rt = new RenderTexture(texWidth, texHeight, 1, RenderTextureFormat.ARGB32, readWrite);
+        Texture2D tmp = new Texture2D(texWidth, texHeight, TextureFormat.ARGB32, false, linear);
         for (int i = 0; i < textures.Count; i++)
         {
             RenderTexture.active = rt;

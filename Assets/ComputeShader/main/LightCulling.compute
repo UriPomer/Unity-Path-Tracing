@@ -1,4 +1,4 @@
-﻿#pragma kernel CSLightCulling
+#pragma kernel CSLightCulling
 
 #include "global.hlsl"
 
@@ -111,8 +111,8 @@ void CSLightCulling(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupTh
     for (uint lightIndex = lightStart; lightIndex < (uint)_PointLightsCount; lightIndex += lightStep)
     {
         // 获取光源数据
-        float4 lightPosRadius = _PointLights[lightIndex * 2];
-        float4 lightColor = _PointLights[lightIndex * 2 + 1];
+        float4 lightPosRadius = _PointLights[lightIndex * 3];
+        float4 lightColor = _PointLights[lightIndex * 3 + 1];
         
         if (lightColor.a <= 0.0) continue; // 无效光源
         

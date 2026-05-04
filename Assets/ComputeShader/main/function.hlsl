@@ -23,12 +23,12 @@ float3 GetNormal(int idx, float2 data, int normIdx, float2 uv)
     {
         float3 binorm = normalize(cross(norm, tangent.xyz)) * tangent.w;    //计算副法线，也是一个切线，tangent.w通常是1或-1，为切线的方向，保持正交
         float3x3 TBN = float3x3(
-            norm,
+            tangent.xyz,
             binorm,
-            tangent.xyz
+            norm
         );  // 切线空间矩阵
         float3 normTS = _NormalTextures.SampleLevel(sampler_NormalTextures, float3(uv, normIdx), 0.0).xyz * 2.0 - 1.0;
-        return mul(normTS, TBN);   //将法线从切线空间变换到物体的局部坐标系
+        return normalize(mul(normTS, TBN));   //将法线从切线空间变换到物体的局部坐标系
     }
     else
     {

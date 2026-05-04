@@ -1,4 +1,4 @@
-﻿Shader "Hidden/AddShader"
+Shader "Hidden/AddShader"
 {
 	Properties
 	{
@@ -17,7 +17,6 @@
 			#pragma fragment frag
 
 			#include "UnityCG.cginc"
-            #include "colors.hlsl"
 
 			struct appdata
 			{
@@ -45,7 +44,7 @@
 			float4 frag (v2f i) : SV_Target
 			{
 				float4 color = tex2D(_MainTex, i.uv);
-                return Linear2SRGB(float4(color.rgb, 1.0 / (color.a * _Sample)));
+                return float4(color.rgb, 1.0 / (color.a * _Sample));
 			}
 			ENDCG
 		}

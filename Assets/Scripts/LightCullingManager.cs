@@ -17,6 +17,7 @@ public class LightCullingManager : MonoBehaviour
     private int lightCullingKernel;
     private Vector2Int tileCount;
     private Camera targetCamera;
+    private Camera depthRenderCamera;
     
     [Header("Debug Info")]
     [SerializeField] private bool showDebugInfo = false;
@@ -35,6 +36,16 @@ public class LightCullingManager : MonoBehaviour
     private void Start()
     {
         InitializeBuffers();
+    }
+
+    private void EnsureDepthRenderCamera()
+    {
+        if (depthRenderCamera != null) return;
+
+        GameObject cameraObj = new GameObject("LightCulling Depth Camera");
+        cameraObj.hideFlags = HideFlags.HideAndDontSave;
+        depthRenderCamera = cameraObj.AddComponent<Camera>();
+        depthRenderCamera.enabled = false;
     }
     
     private void InitializeBuffers()
@@ -96,23 +107,29 @@ public class LightCullingManager : MonoBehaviour
     
     private void RenderDepthTexture()
     {
-        // 使用相机渲染深度纹理
-        RenderTexture oldRT = targetCamera.targetTexture;
-        targetCamera.targetTexture = depthTexture;
+        EnsureDepthRenderCamera();
+
+        depthRenderCamera.CopyFrom(targetCamera);
+        depthRenderCamera.transform.SetPositionAndRotation(
+            targetCamera.transform.position,
+            targetCamera.transform.rotation
+        );
+        depthRenderCamera.targetTexture = depthTexture;
+        depthRenderCamera.enabled = false;
 
         // 使用深度渲染shader
         Shader depthShader = Shader.Find("Hidden/DepthOnly");
         if (depthShader != null)
         {
-            targetCamera.RenderWithShader(depthShader, "RenderType");
+            depthRenderCamera.RenderWithShader(depthShader, "RenderType");
         }
         else
         {
             // 回退到内置深度shader
-            targetCamera.RenderWithShader(Shader.Find("Hidden/Internal-DepthNormalsTexture"), "RenderType");
+            depthRenderCamera.RenderWithShader(Shader.Find("Hidden/Internal-DepthNormalsTexture"), "RenderType");
         }
-
-        targetCamera.targetTexture = oldRT;
+        
+        depthRenderCamera.targetTexture = null;
     }
     
     private void SetComputeShaderParameters()
@@ -202,6 +219,15 @@ public class LightCullingManager : MonoBehaviour
         depthTexture = null;
         dummyLightCullingData = null;
         dummyTileData = null;
+
+        if (depthRenderCamera != null)
+        {
+            if (Application.isPlaying)
+                Destroy(depthRenderCamera.gameObject);
+            else
+                DestroyImmediate(depthRenderCamera.gameObject);
+            depthRenderCamera = null;
+        }
     }
     
     private void OnGUI()

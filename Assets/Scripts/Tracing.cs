@@ -36,6 +36,10 @@ public class Tracing : MonoBehaviour
     [SerializeField] bool Denoise = true;
     private bool _OldDenoise = true;
 
+    [Header("Display")]
+    [SerializeField] bool ToneMap = true;
+    [SerializeField, Range(0.1f, 8.0f)] float Exposure = 1.0f;
+
     [Header("Draw Gizmos")]
     [SerializeField]
     private bool drawGizmos = false;
@@ -47,6 +51,7 @@ public class Tracing : MonoBehaviour
 
     private int sampleCount = 0;
     private Material _addMaterial;
+    private Material _toneMapMaterial;
 
     private RenderTexture frameConverged;
     private LightCullingManager lightCullingManager;
@@ -84,11 +89,16 @@ public class Tracing : MonoBehaviour
     private CommandBuffer cmdBuffer;
     private int[] sizesData = new int[32]; // Max 15 bounces: (15+1)*2 = 32
     private string[] bounceNames = new string[24]; // 8 bounces × 3 phases = 24
+    private int _lastLightStateHash = int.MinValue;
+    private bool _oldToneMap = true;
+    private float _oldExposure = 1.0f;
+    private float _oldSkyboxIntensity = 1.0f;
+    private float _oldSunFocus = 5.0f;
+    private float _oldSunAngularRadius = 0.1f;
 
     private void Awake()
     {
-        if (_addMaterial == null)
-            _addMaterial = new Material(Shader.Find("Hidden/AddShader"));
+        EnsureMaterials();
     }
 
     private void Start()
@@ -112,6 +122,8 @@ public class Tracing : MonoBehaviour
         bvhKernels = new int[] { kernelGenerate, kernelTrace, kernelShade, kernelShadow };
         lightKernels = new int[] { kernelGenerate, kernelTrace, kernelShade };
         cmdBuffer = new CommandBuffer();
+        CacheRuntimeSettings();
+        _lastLightStateHash = LightManager.Instance.ComputeLightStateHash();
         for (int i = 0; i < bounceNames.Length; i++)
         {
             int bounce = i / 3;
@@ -140,7 +152,8 @@ public class Tracing : MonoBehaviour
         _globalRaysA = new ComputeBuffer(pixelCount, RayDataStride);
         _globalRaysB = new ComputeBuffer(pixelCount, RayDataStride);
         _globalHits = new ComputeBuffer(pixelCount, HitDataStride);
-        _shadowRays = new ComputeBuffer(pixelCount, ShadowRayDataStride);
+        // One bounce can emit both a sun shadow ray and a point-light shadow ray.
+        _shadowRays = new ComputeBuffer(pixelCount * 2, ShadowRayDataStride);
         _globalColors = new ComputeBuffer(pixelCount, PathContributionStride);
         _bufferSizes = new ComputeBuffer(TraceDepth + 1, BufferSizeDataStride);
         _indirectArgs = new ComputeBuffer(3, IndirectArgsStride, ComputeBufferType.IndirectArguments);
@@ -162,6 +175,8 @@ public class Tracing : MonoBehaviour
 
     private void Render(RenderTexture destination)
     {
+        EnsureMaterials();
+
         if (target == null || target.width != Screen.width || target.height != Screen.height)
         {
             if (target != null) target.Release();
@@ -274,23 +289,44 @@ public class Tracing : MonoBehaviour
         {
             _addMaterial.SetFloat("_Sample", sampleCount);
             Graphics.Blit(target, frameConverged, _addMaterial);
-            Graphics.Blit(frameConverged, destination);
+            BlitToDisplay(frameConverged, destination);
         }
         else
         {
-            Graphics.Blit(target, destination);
+            BlitToDisplay(target, destination);
         }
     }
 
     private void Update()
     {
+        bool resetRequired = false;
+
         if (_OldDenoise != Denoise)
         {
             _OldDenoise = Denoise;
-            ResetSampleCount();
+            resetRequired = true;
         }
 
         LightManager.Instance.UpdateLights();
+        int lightStateHash = LightManager.Instance.ComputeLightStateHash();
+        if (lightStateHash != _lastLightStateHash)
+        {
+            _lastLightStateHash = lightStateHash;
+            resetRequired = true;
+        }
+
+        bool materialChanged = BVHBuilder.ReloadMaterials();
+        resetRequired |= materialChanged;
+
+        if (HaveRuntimeSettingsChanged())
+        {
+            CacheRuntimeSettings();
+            resetRequired = true;
+        }
+
+        if (resetRequired)
+            ResetSampleCount();
+
         LightManager.Instance.UpdateBuffer(tracingShader, lightKernels);
     }
 
@@ -387,6 +423,9 @@ public class Tracing : MonoBehaviour
         {
             lightCullingManager.SetTracingShaderBuffers(tracingShader, lightKernels);
         }
+
+        // Bind current light data immediately before dispatch so rendering does not depend on Update() timing.
+        LightManager.Instance.UpdateBuffer(tracingShader, lightKernels);
     }
 
     private void OnDisable()
@@ -394,6 +433,7 @@ public class Tracing : MonoBehaviour
         ReleaseRenderTargets();
         ReleaseBuffers();
         ReleaseCommandBuffer();
+        ReleaseMaterials();
         BVHBuilder.Destroy();
     }
 
@@ -402,7 +442,20 @@ public class Tracing : MonoBehaviour
         ReleaseRenderTargets();
         ReleaseBuffers();
         ReleaseCommandBuffer();
+        ReleaseMaterials();
         BVHBuilder.Destroy();
+    }
+
+    private void BlitToDisplay(RenderTexture source, RenderTexture destination)
+    {
+        if (!ToneMap || _toneMapMaterial == null)
+        {
+            Graphics.Blit(source, destination);
+            return;
+        }
+
+        _toneMapMaterial.SetFloat("_Exposure", Exposure);
+        Graphics.Blit(source, destination, _toneMapMaterial);
     }
 
     private void ReleaseRenderTargets()
@@ -418,6 +471,47 @@ public class Tracing : MonoBehaviour
             frameConverged.Release();
             frameConverged = null;
         }
+    }
+
+    private void ReleaseMaterials()
+    {
+        if (_addMaterial != null)
+        {
+            Destroy(_addMaterial);
+            _addMaterial = null;
+        }
+
+        if (_toneMapMaterial != null)
+        {
+            Destroy(_toneMapMaterial);
+            _toneMapMaterial = null;
+        }
+    }
+
+    private void EnsureMaterials()
+    {
+        if (_addMaterial == null)
+            _addMaterial = new Material(Shader.Find("Hidden/AddShader"));
+        if (_toneMapMaterial == null)
+            _toneMapMaterial = new Material(Shader.Find("Hidden/ToneMapShader"));
+    }
+
+    private bool HaveRuntimeSettingsChanged()
+    {
+        return _oldToneMap != ToneMap ||
+               _oldExposure != Exposure ||
+               _oldSkyboxIntensity != SkyboxIntensity ||
+               _oldSunFocus != SunFocus ||
+               _oldSunAngularRadius != SunAngularRadius;
+    }
+
+    private void CacheRuntimeSettings()
+    {
+        _oldToneMap = ToneMap;
+        _oldExposure = Exposure;
+        _oldSkyboxIntensity = SkyboxIntensity;
+        _oldSunFocus = SunFocus;
+        _oldSunAngularRadius = SunAngularRadius;
     }
 
     private void ReleaseCommandBuffer()
