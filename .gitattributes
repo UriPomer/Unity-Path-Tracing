@@ -1,5 +1,11 @@
 * text=auto
 
+# Shader / HLSL files
+*.hlsl text eol=lf
+*.shader text eol=lf
+*.compute text eol=lf
+*.cginc text eol=lf
+
 # Unity files
 *.meta -text merge=unityyamlmerge diff
 *.unity -text merge=unityyamlmerge diff

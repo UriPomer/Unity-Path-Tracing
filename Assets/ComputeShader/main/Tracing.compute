@@ -146,10 +146,9 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
     if (hit.material.emissionIntensity > 0.0f)
         L += throughput * (hit.material.emission * hit.material.emissionIntensity);
 
-    // Evaluate direct lighting inline, matching the pre-wavefront path more closely.
-    // This isolates wavefront regressions to indirect/path state handling instead of the shadow-ray pipeline.
-    float3 Lo_direct = GetDirectLightContribution(hit, -rd.direction);
-    L += throughput * Lo_direct;
+    // Wavefront direct lighting: shade samples a light candidate and queues a shadow ray.
+    // The shadow kernel is the only stage that resolves visibility and commits the contribution.
+    GenerateShadowRays(hit, -rd.direction, throughput, rd.pixelIndex);
 
     // BXDF sampling
     Ray ray;
