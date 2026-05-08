@@ -98,6 +98,7 @@ uint _BNodesCount;
 bool _OnlyDrawAlbedo;
 bool _OnlyDrawNormals;
 bool _OnlyDrawDepth;
+bool _UseDirectLightReservoirForPrimaryDirect;
 
 /// Debug
 
@@ -179,11 +180,21 @@ struct ShadowRayData
     float3 illumination;
 };
 
+struct DirectLightReservoirData
+{
+    float3 origin;       float  maxDist;
+    float3 direction;    float  targetLum;
+    float3 contribution; float  weightSum;
+    uint   lightType;    uint   lightIndex;
+    uint   sampleCount;  float  selectedWeight;
+};
+
 globallycoherent RWStructuredBuffer<BufferSizeData> BufferSizes;
 RWStructuredBuffer<RayData>          GlobalRays;
 RWStructuredBuffer<RayData>          GlobalRays2;
 RWStructuredBuffer<HitData>          GlobalHits;
 RWStructuredBuffer<ShadowRayData>    ShadowRaysBuffer;
+RWStructuredBuffer<DirectLightReservoirData> DirectLightReservoirs;
 RWStructuredBuffer<PathContribution> GlobalColors;
 RWStructuredBuffer<uint>              IndirectArgs;
 

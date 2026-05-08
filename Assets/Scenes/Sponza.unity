@@ -503,6 +503,7 @@ MonoBehaviour:
   OnlyDrawAlbedo: 0
   OnlyDrawNormals: 0
   OnlyDrawDepth: 0
+  UseDirectLightReservoirForPrimaryDirect: 1
   Denoise: 1
   ToneMap: 1
   Exposure: 1

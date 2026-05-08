@@ -33,6 +33,7 @@ public class Tracing : MonoBehaviour
     [SerializeField] bool OnlyDrawAlbedo = false;
     [SerializeField] bool OnlyDrawNormals = false;
     [SerializeField] bool OnlyDrawDepth = false;
+    [SerializeField] bool UseDirectLightReservoirForPrimaryDirect = false;
     [SerializeField] bool Denoise = true;
     private bool _OldDenoise = true;
 
@@ -69,6 +70,7 @@ public class Tracing : MonoBehaviour
     private ComputeBuffer _globalRaysB;
     private ComputeBuffer _globalHits;
     private ComputeBuffer _shadowRays;
+    private ComputeBuffer _directLightReservoirs;
     private ComputeBuffer _globalColors;
     private ComputeBuffer _bufferSizes;
     private ComputeBuffer _indirectArgs;
@@ -77,6 +79,7 @@ public class Tracing : MonoBehaviour
     private const int RayDataStride = 48;         // float3+float3+uint+uint+float3+float = 12+12+4+4+12+4
     private const int HitDataStride = 76;          // 4×(float3+scalar) + 2×float + float = 4×16+8+4
     private const int ShadowRayDataStride = 44;    // 2×(float3+scalar) + float3 = 2×16+12
+    private const int DirectLightReservoirStride = 64; // 4 packed float4-sized rows
     private const int PathContributionStride = 24; // float3+float3 = 12+12
     private const int BufferSizeDataStride = 8;    // int+int = 4+4
     private const int IndirectArgsStride = 4;      // uint x3 = 3 elements x 4 bytes each
@@ -95,6 +98,7 @@ public class Tracing : MonoBehaviour
     private float _oldSkyboxIntensity = 1.0f;
     private float _oldSunFocus = 5.0f;
     private float _oldSunAngularRadius = 0.1f;
+    private bool _oldUseDirectLightReservoirForPrimaryDirect = false;
 
     private void Awake()
     {
@@ -152,8 +156,9 @@ public class Tracing : MonoBehaviour
         _globalRaysA = new ComputeBuffer(pixelCount, RayDataStride);
         _globalRaysB = new ComputeBuffer(pixelCount, RayDataStride);
         _globalHits = new ComputeBuffer(pixelCount, HitDataStride);
-        // One bounce can emit both a sun shadow ray and a point-light shadow ray.
+        // Keep headroom for future direct-light candidates/reservoir experiments.
         _shadowRays = new ComputeBuffer(pixelCount * 2, ShadowRayDataStride);
+        _directLightReservoirs = new ComputeBuffer(pixelCount, DirectLightReservoirStride);
         _globalColors = new ComputeBuffer(pixelCount, PathContributionStride);
         _bufferSizes = new ComputeBuffer(TraceDepth + 1, BufferSizeDataStride);
         _indirectArgs = new ComputeBuffer(3, IndirectArgsStride, ComputeBufferType.IndirectArguments);
@@ -168,6 +173,7 @@ public class Tracing : MonoBehaviour
         _globalRaysB?.Release(); _globalRaysB = null;
         _globalHits?.Release(); _globalHits = null;
         _shadowRays?.Release(); _shadowRays = null;
+        _directLightReservoirs?.Release(); _directLightReservoirs = null;
         _globalColors?.Release(); _globalColors = null;
         _bufferSizes?.Release(); _bufferSizes = null;
         _indirectArgs?.Release(); _indirectArgs = null;
@@ -372,12 +378,15 @@ public class Tracing : MonoBehaviour
         tracingShader.SetBuffer(kernelGenerate, "GlobalRays", _globalRaysA);
         tracingShader.SetBuffer(kernelGenerate, "GlobalColors", _globalColors);
         tracingShader.SetBuffer(kernelGenerate, "GlobalHits", _globalHits);
+        tracingShader.SetBuffer(kernelGenerate, "DirectLightReservoirs", _directLightReservoirs);
         tracingShader.SetBuffer(kernelTrace, "BufferSizes", _bufferSizes);
         tracingShader.SetBuffer(kernelShade, "GlobalColors", _globalColors);
         tracingShader.SetBuffer(kernelShade, "ShadowRaysBuffer", _shadowRays);
+        tracingShader.SetBuffer(kernelShade, "DirectLightReservoirs", _directLightReservoirs);
         tracingShader.SetBuffer(kernelShade, "BufferSizes", _bufferSizes);
         tracingShader.SetBuffer(kernelShadow, "ShadowRaysBuffer", _shadowRays);
         tracingShader.SetBuffer(kernelShadow, "GlobalColors", _globalColors);
+        tracingShader.SetBuffer(kernelShadow, "DirectLightReservoirs", _directLightReservoirs);
         tracingShader.SetBuffer(kernelShadow, "BufferSizes", _bufferSizes);
         tracingShader.SetBuffer(kernelTransfer, "BufferSizes", _bufferSizes);
         tracingShader.SetBuffer(kernelTransfer, "IndirectArgs", _indirectArgs);
@@ -416,6 +425,7 @@ public class Tracing : MonoBehaviour
         tracingShader.SetBool("_OnlyDrawDepth", OnlyDrawDepth);
         tracingShader.SetBool("_OnlyDrawNormals", OnlyDrawNormals);
         tracingShader.SetBool("_OnlyDrawAlbedo", OnlyDrawAlbedo);
+        tracingShader.SetBool("_UseDirectLightReservoirForPrimaryDirect", UseDirectLightReservoirForPrimaryDirect);
         tracingShader.SetFloat("_CameraFar", cam.farClipPlane);
 
         // 设置光源缓冲区（绑定到所有需要的kernel）
@@ -502,7 +512,8 @@ public class Tracing : MonoBehaviour
                _oldExposure != Exposure ||
                _oldSkyboxIntensity != SkyboxIntensity ||
                _oldSunFocus != SunFocus ||
-               _oldSunAngularRadius != SunAngularRadius;
+               _oldSunAngularRadius != SunAngularRadius ||
+               _oldUseDirectLightReservoirForPrimaryDirect != UseDirectLightReservoirForPrimaryDirect;
     }
 
     private void CacheRuntimeSettings()
@@ -512,6 +523,7 @@ public class Tracing : MonoBehaviour
         _oldSkyboxIntensity = SkyboxIntensity;
         _oldSunFocus = SunFocus;
         _oldSunAngularRadius = SunAngularRadius;
+        _oldUseDirectLightReservoirForPrimaryDirect = UseDirectLightReservoirForPrimaryDirect;
     }
 
     private void ReleaseCommandBuffer()

@@ -39,6 +39,7 @@ void kernel_generate(uint3 id : SV_DispatchThreadID)
     GlobalColors[id.x].L = float3(0, 0, 0);
     GlobalColors[id.x].throughput = float3(1, 1, 1);
     GlobalHits[id.x].distance = 1.#INF;
+    ClearDirectLightReservoir(id.x);
 
     // Debug modes: write debug color to GlobalColors (finalize kernel will output it)
     if (_OnlyDrawAlbedo || _OnlyDrawDepth || _OnlyDrawNormals)
@@ -206,7 +207,19 @@ void kernel_shadow(uint3 id : SV_DispatchThreadID)
     if (IntersectTlasFast(ray, sr.maxDist))
         return;
 
-    // Unoccluded → accumulate light contribution
+    // Unoccluded → accumulate light contribution. The reservoir path is a
+    // validation mode for first-bounce ReSTIR DI plumbing; default rendering
+    // still uses the shadow-ray payload directly.
+    if (_UseDirectLightReservoirForPrimaryDirect && CurBounce == 0)
+    {
+        DirectLightReservoirData reservoir = DirectLightReservoirs[sr.pixelIndex];
+        if (reservoir.sampleCount > 0u)
+        {
+            GlobalColors[sr.pixelIndex].L += reservoir.contribution * reservoir.selectedWeight;
+            return;
+        }
+    }
+
     GlobalColors[sr.pixelIndex].L += sr.illumination;
 }
 
