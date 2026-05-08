@@ -178,22 +178,22 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int material
                 // 遍历BLAS中的每一个面
                 for (primitiveIdx = node.Index; primitiveIdx < node.primitiveEndIdx; primitiveIdx++)
                 {
-                    int i = primitiveIdx * 3;   // i是面的索引
-                    float3 v0 = _Vertices[_Indices[i]];
-                    float3 v1 = _Vertices[_Indices[i + 1]];
-                    float3 v2 = _Vertices[_Indices[i + 2]];
+                    int triIndexBase = primitiveIdx * 3;
+                    float3 v0 = _Vertices[_Indices[triIndexBase]];
+                    float3 v1 = _Vertices[_Indices[triIndexBase + 1]];
+                    float3 v2 = _Vertices[_Indices[triIndexBase + 2]];
                     float t, u, v;
                     if (IntersectTriangle(ray, v0, v1, v2, t, u, v))    //与面求交
                     {
-                        float2 uv0 = _UVs[_Indices[i]];
-                        float2 uv1 = _UVs[_Indices[i + 1]];
-                        float2 uv2 = _UVs[_Indices[i + 2]];
+                        float2 uv0 = _UVs[_Indices[triIndexBase]];
+                        float2 uv1 = _UVs[_Indices[triIndexBase + 1]];
+                        float2 uv2 = _UVs[_Indices[triIndexBase + 2]];
                         if (t > 0.0 && t < bestHit.distance)    //距离更近且不为负数
                         {
                             MaterialData mat = _Materials[materialIdx];
                             float3 hitPos = ray.origin + t * ray.dir;
                             float2 uv = uv1 * u + uv2 * v + uv0 * (1.0 - u - v);    //插值uv
-                            float3 norm = GetNormal(i, float2(u, v), mat.normIdx, uv);
+                            float3 norm = GetNormal(triIndexBase, float2(u, v), mat.normIdx, uv);
                             Material mats = GenMaterial(
                                 mat.color.rgb, mat.emission, mat.emissionIntensity, mat.metallic, mat.smoothness, mat.color.a, mat.ior,
                                 int4(mat.albedoIdx, mat.metalIdx, mat.emitIdx, mat.roughIdx), uv
@@ -265,13 +265,13 @@ bool IntersectBlasTreeFast(Ray ray, int startIdx, float targetDist, int material
             {
                 for (primitiveIdx = node.Index; primitiveIdx < node.primitiveEndIdx; primitiveIdx++)
                 {
-                    int i = primitiveIdx * 3;
-                    float3 v0 = _Vertices[_Indices[i]];
-                    float3 v1 = _Vertices[_Indices[i + 1]];
-                    float3 v2 = _Vertices[_Indices[i + 2]];
-                    float2 uv0 = _UVs[_Indices[i]];
-                    float2 uv1 = _UVs[_Indices[i + 1]];
-                    float2 uv2 = _UVs[_Indices[i + 2]];
+                    int triIndexBase = primitiveIdx * 3;
+                    float3 v0 = _Vertices[_Indices[triIndexBase]];
+                    float3 v1 = _Vertices[_Indices[triIndexBase + 1]];
+                    float3 v2 = _Vertices[_Indices[triIndexBase + 2]];
+                    float2 uv0 = _UVs[_Indices[triIndexBase]];
+                    float2 uv1 = _UVs[_Indices[triIndexBase + 1]];
+                    float2 uv2 = _UVs[_Indices[triIndexBase + 2]];
                     float t, u, v;
                     if (IntersectTriangle(ray, v0, v1, v2, t, u, v))
                     {

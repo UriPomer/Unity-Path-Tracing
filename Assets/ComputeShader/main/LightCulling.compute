@@ -148,9 +148,9 @@ void CSLightCulling(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupTh
         _TileDataOut[tileIndex] = uint2(lightCount, globalOffset);
         
         // 存储光源索引
-        for (uint i = 0; i < lightCount; ++i)
+        for (uint tileLightIndex = 0; tileLightIndex < lightCount; ++tileLightIndex)
         {
-            _LightCullingDataOut[globalOffset + i] = s_LightIndices[i];
+            _LightCullingDataOut[globalOffset + tileLightIndex] = s_LightIndices[tileLightIndex];
         }
     }
 }
