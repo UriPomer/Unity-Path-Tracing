@@ -178,7 +178,7 @@ struct ShadowRayData
 {
     float3 origin;       float  maxDist;
     float3 direction;    uint   pixelIndex;
-    float3 illumination;
+    float3 illumination; float  selectPdf;
 };
 
 struct DirectLightReservoirData

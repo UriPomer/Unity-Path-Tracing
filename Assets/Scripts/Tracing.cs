@@ -33,6 +33,7 @@ public class Tracing : MonoBehaviour
     [SerializeField] bool OnlyDrawAlbedo = false;
     [SerializeField] bool OnlyDrawNormals = false;
     [SerializeField] bool OnlyDrawDepth = false;
+    [SerializeField, Range(1, 16)] int DirectLightRISCandidateCount = 1;
     [SerializeField] bool UseDirectLightReservoirForPrimaryDirect = false;
     [SerializeField] bool ShowDirectLightReservoirDifference = false;
     [SerializeField] bool Denoise = true;
@@ -80,7 +81,7 @@ public class Tracing : MonoBehaviour
     // Struct sizes (must match HLSL layout)
     private const int RayDataStride = 48;         // float3+float3+uint+uint+float3+float = 12+12+4+4+12+4
     private const int HitDataStride = 76;          // 4×(float3+scalar) + 2×float + float = 4×16+8+4
-    private const int ShadowRayDataStride = 44;    // 2×(float3+scalar) + float3 = 2×16+12
+    private const int ShadowRayDataStride = 48;    // 3×(float3+scalar)
     private const int DirectLightReservoirStride = 64; // 4 packed float4-sized rows
     private const int DirectLightReservoirDifferenceStride = 12; // float3
     private const int PathContributionStride = 24; // float3+float3 = 12+12
@@ -101,6 +102,7 @@ public class Tracing : MonoBehaviour
     private float _oldSkyboxIntensity = 1.0f;
     private float _oldSunFocus = 5.0f;
     private float _oldSunAngularRadius = 0.1f;
+    private int _oldDirectLightRISCandidateCount = 1;
     private bool _oldUseDirectLightReservoirForPrimaryDirect = false;
     private bool _oldShowDirectLightReservoirDifference = false;
 
@@ -435,6 +437,7 @@ public class Tracing : MonoBehaviour
         tracingShader.SetBool("_OnlyDrawDepth", OnlyDrawDepth);
         tracingShader.SetBool("_OnlyDrawNormals", OnlyDrawNormals);
         tracingShader.SetBool("_OnlyDrawAlbedo", OnlyDrawAlbedo);
+        tracingShader.SetInt("_DirectLightRISCandidateCount", DirectLightRISCandidateCount);
         tracingShader.SetBool("_UseDirectLightReservoirForPrimaryDirect", UseDirectLightReservoirForPrimaryDirect);
         tracingShader.SetBool("_ShowDirectLightReservoirDifference", ShowDirectLightReservoirDifference);
         tracingShader.SetFloat("_CameraFar", cam.farClipPlane);
@@ -524,6 +527,7 @@ public class Tracing : MonoBehaviour
                _oldSkyboxIntensity != SkyboxIntensity ||
                _oldSunFocus != SunFocus ||
                _oldSunAngularRadius != SunAngularRadius ||
+               _oldDirectLightRISCandidateCount != DirectLightRISCandidateCount ||
                _oldUseDirectLightReservoirForPrimaryDirect != UseDirectLightReservoirForPrimaryDirect ||
                _oldShowDirectLightReservoirDifference != ShowDirectLightReservoirDifference;
     }
@@ -535,6 +539,7 @@ public class Tracing : MonoBehaviour
         _oldSkyboxIntensity = SkyboxIntensity;
         _oldSunFocus = SunFocus;
         _oldSunAngularRadius = SunAngularRadius;
+        _oldDirectLightRISCandidateCount = DirectLightRISCandidateCount;
         _oldUseDirectLightReservoirForPrimaryDirect = UseDirectLightReservoirForPrimaryDirect;
         _oldShowDirectLightReservoirDifference = ShowDirectLightReservoirDifference;
     }
