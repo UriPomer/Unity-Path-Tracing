@@ -99,6 +99,7 @@ bool _OnlyDrawAlbedo;
 bool _OnlyDrawNormals;
 bool _OnlyDrawDepth;
 bool _UseDirectLightReservoirForPrimaryDirect;
+bool _ShowDirectLightReservoirDifference;
 
 /// Debug
 
@@ -195,6 +196,7 @@ RWStructuredBuffer<RayData>          GlobalRays2;
 RWStructuredBuffer<HitData>          GlobalHits;
 RWStructuredBuffer<ShadowRayData>    ShadowRaysBuffer;
 RWStructuredBuffer<DirectLightReservoirData> DirectLightReservoirs;
+RWStructuredBuffer<float3>            DirectLightReservoirDifference;
 RWStructuredBuffer<PathContribution> GlobalColors;
 RWStructuredBuffer<uint>              IndirectArgs;
 

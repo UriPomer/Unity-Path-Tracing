@@ -129,6 +129,7 @@ void ClearDirectLightReservoir(uint pixelIndex)
     reservoir.sampleCount = 0u;
     reservoir.selectedWeight = 0.0;
     DirectLightReservoirs[pixelIndex] = reservoir;
+    DirectLightReservoirDifference[pixelIndex] = float3(0.0, 0.0, 0.0);
 }
 
 float GetDirectLightTarget(float3 contribution)

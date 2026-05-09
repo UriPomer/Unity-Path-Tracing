@@ -207,20 +207,28 @@ void kernel_shadow(uint3 id : SV_DispatchThreadID)
     if (IntersectTlasFast(ray, sr.maxDist))
         return;
 
-    // Unoccluded → accumulate light contribution. The reservoir path is a
-    // validation mode for first-bounce ReSTIR DI plumbing; default rendering
-    // still uses the shadow-ray payload directly.
-    if (_UseDirectLightReservoirForPrimaryDirect && CurBounce == 0)
+    float3 defaultDirect = sr.illumination;
+    float3 reservoirDirect = float3(0.0, 0.0, 0.0);
+    bool hasReservoir = false;
+    if (CurBounce == 0)
     {
         DirectLightReservoirData reservoir = DirectLightReservoirs[sr.pixelIndex];
         if (reservoir.sampleCount > 0u)
         {
-            GlobalColors[sr.pixelIndex].L += reservoir.contribution * reservoir.selectedWeight;
-            return;
+            reservoirDirect = reservoir.contribution * reservoir.selectedWeight;
+            hasReservoir = true;
         }
+
+        DirectLightReservoirDifference[sr.pixelIndex] = abs(defaultDirect - reservoirDirect);
     }
 
-    GlobalColors[sr.pixelIndex].L += sr.illumination;
+    // Unoccluded -> accumulate light contribution. The reservoir path is a
+    // validation mode for first-bounce ReSTIR DI plumbing; default rendering
+    // still uses the shadow-ray payload directly.
+    if (_UseDirectLightReservoirForPrimaryDirect && CurBounce == 0 && hasReservoir)
+        GlobalColors[sr.pixelIndex].L += reservoirDirect;
+    else
+        GlobalColors[sr.pixelIndex].L += defaultDirect;
 }
 
 // ==================== Kernel 4: Finalize ====================
@@ -230,6 +238,12 @@ void kernel_finalize(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= _ScreenWidth || id.y >= _ScreenHeight) return;
     uint pixelIndex = id.y * _ScreenWidth + id.x;
+    if (_ShowDirectLightReservoirDifference)
+    {
+        _Result[id.xy] = float4(DirectLightReservoirDifference[pixelIndex], 1.0f);
+        return;
+    }
+
     _Result[id.xy] = float4(GlobalColors[pixelIndex].L, 1.0f);
 }
 
