@@ -524,7 +524,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 26765ad8dbb9ac9459905b26b565b3cc, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  Intensity: 0.8
+  Intensity: 0
 --- !u!1001 &853374330
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -763,7 +763,12 @@ MonoBehaviour:
   OnlyDrawAlbedo: 0
   OnlyDrawNormals: 0
   OnlyDrawDepth: 0
-  Denoise: 1
+  DirectLightRISCandidateCount: 1
+  UseDirectLightReservoirForPrimaryDirect: 0
+  ShowDirectLightReservoirDifference: 0
+  UseDirectLightReservoirTemporalReuse: 0
+  ShowDirectLightTemporalReuseDebug: 0
+  Denoise: 0
   ToneMap: 1
   Exposure: 1
   drawGizmos: 0
@@ -803,10 +808,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a0bcb4dfe0174e858c53b38d1274b852, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::LightCullingManager
-  lightCullingShader: {fileID: 0}
+  lightCullingShader: {fileID: 7200000, guid: bb1fc129212a41d39e11dd31e34d4f90, type: 3}
   tileSize: 16
   enableLightCulling: 0
-  showDebugInfo: 0
+  showDebugInfo: 1
 --- !u!1001 &1551786122
 PrefabInstance:
   m_ObjectHideFlags: 0

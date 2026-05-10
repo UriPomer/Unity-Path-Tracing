@@ -34,8 +34,11 @@ public class Tracing : MonoBehaviour
     [SerializeField] bool OnlyDrawNormals = false;
     [SerializeField] bool OnlyDrawDepth = false;
     [SerializeField, Range(1, 16)] int DirectLightRISCandidateCount = 1;
+    [SerializeField] bool UseDirectLightReservoirRIS = false;
     [SerializeField] bool UseDirectLightReservoirForPrimaryDirect = false;
     [SerializeField] bool ShowDirectLightReservoirDifference = false;
+    [SerializeField] bool UseDirectLightReservoirTemporalReuse = false;
+    [SerializeField] bool ShowDirectLightTemporalReuseDebug = false;
     [SerializeField] bool Denoise = true;
     private bool _OldDenoise = true;
 
@@ -73,6 +76,7 @@ public class Tracing : MonoBehaviour
     private ComputeBuffer _globalHits;
     private ComputeBuffer _shadowRays;
     private ComputeBuffer _directLightReservoirs;
+    private ComputeBuffer _directLightReservoirsPrev;
     private ComputeBuffer _directLightReservoirDifference;
     private ComputeBuffer _globalColors;
     private ComputeBuffer _bufferSizes;
@@ -82,7 +86,7 @@ public class Tracing : MonoBehaviour
     private const int RayDataStride = 48;         // float3+float3+uint+uint+float3+float = 12+12+4+4+12+4
     private const int HitDataStride = 76;          // 4×(float3+scalar) + 2×float + float = 4×16+8+4
     private const int ShadowRayDataStride = 48;    // 3×(float3+scalar)
-    private const int DirectLightReservoirStride = 64; // 4 packed float4-sized rows
+    private const int DirectLightReservoirStride = 80; // matches DirectLightReservoirData (5 float4 rows)
     private const int DirectLightReservoirDifferenceStride = 12; // float3
     private const int PathContributionStride = 24; // float3+float3 = 12+12
     private const int BufferSizeDataStride = 8;    // int+int = 4+4
@@ -103,8 +107,12 @@ public class Tracing : MonoBehaviour
     private float _oldSunFocus = 5.0f;
     private float _oldSunAngularRadius = 0.1f;
     private int _oldDirectLightRISCandidateCount = 1;
+    private bool _oldUseDirectLightReservoirRIS = false;
     private bool _oldUseDirectLightReservoirForPrimaryDirect = false;
     private bool _oldShowDirectLightReservoirDifference = false;
+    private bool _oldUseDirectLightReservoirTemporalReuse = false;
+    private bool _oldShowDirectLightTemporalReuseDebug = false;
+    private bool _hasDirectLightReservoirHistory = false;
 
     private void Awake()
     {
@@ -165,6 +173,7 @@ public class Tracing : MonoBehaviour
         // Keep headroom for future direct-light candidates/reservoir experiments.
         _shadowRays = new ComputeBuffer(pixelCount * 2, ShadowRayDataStride);
         _directLightReservoirs = new ComputeBuffer(pixelCount, DirectLightReservoirStride);
+        _directLightReservoirsPrev = new ComputeBuffer(pixelCount, DirectLightReservoirStride);
         _directLightReservoirDifference = new ComputeBuffer(pixelCount, DirectLightReservoirDifferenceStride);
         _globalColors = new ComputeBuffer(pixelCount, PathContributionStride);
         _bufferSizes = new ComputeBuffer(TraceDepth + 1, BufferSizeDataStride);
@@ -181,6 +190,7 @@ public class Tracing : MonoBehaviour
         _globalHits?.Release(); _globalHits = null;
         _shadowRays?.Release(); _shadowRays = null;
         _directLightReservoirs?.Release(); _directLightReservoirs = null;
+        _directLightReservoirsPrev?.Release(); _directLightReservoirsPrev = null;
         _directLightReservoirDifference?.Release(); _directLightReservoirDifference = null;
         _globalColors?.Release(); _globalColors = null;
         _bufferSizes?.Release(); _bufferSizes = null;
@@ -214,14 +224,16 @@ public class Tracing : MonoBehaviour
             frameConverged.Create();
         }
 
-        CreateBuffersIfNeeded();
-
         if(BVHBuilder.Validate() || (Camera.main != null && Camera.main.transform.hasChanged))
         {
             ResetSampleCount();
             Camera.main.transform.hasChanged = false;
             NeedUpdate = true;
         }
+
+        CreateBuffersIfNeeded();
+        if (_hasDirectLightReservoirHistory)
+            SwapDirectLightReservoirHistory();
 
         // 执行光源剔除
         if (lightCullingManager != null)
@@ -299,7 +311,7 @@ public class Tracing : MonoBehaviour
             Mathf.CeilToInt(Screen.width / 8.0f),
             Mathf.CeilToInt(Screen.height / 8.0f), 1);
 
-        if (Denoise && !ShowDirectLightReservoirDifference)
+        if (Denoise && !ShowDirectLightReservoirDifference && !ShowDirectLightTemporalReuseDebug)
         {
             _addMaterial.SetFloat("_Sample", sampleCount);
             Graphics.Blit(target, frameConverged, _addMaterial);
@@ -309,6 +321,8 @@ public class Tracing : MonoBehaviour
         {
             BlitToDisplay(target, destination);
         }
+
+        _hasDirectLightReservoirHistory = true;
     }
 
     private void Update()
@@ -387,16 +401,19 @@ public class Tracing : MonoBehaviour
         tracingShader.SetBuffer(kernelGenerate, "GlobalColors", _globalColors);
         tracingShader.SetBuffer(kernelGenerate, "GlobalHits", _globalHits);
         tracingShader.SetBuffer(kernelGenerate, "DirectLightReservoirs", _directLightReservoirs);
+        tracingShader.SetBuffer(kernelGenerate, "DirectLightReservoirsPrev", _directLightReservoirsPrev);
         tracingShader.SetBuffer(kernelGenerate, "DirectLightReservoirDifference", _directLightReservoirDifference);
         tracingShader.SetBuffer(kernelTrace, "BufferSizes", _bufferSizes);
         tracingShader.SetBuffer(kernelShade, "GlobalColors", _globalColors);
         tracingShader.SetBuffer(kernelShade, "ShadowRaysBuffer", _shadowRays);
         tracingShader.SetBuffer(kernelShade, "DirectLightReservoirs", _directLightReservoirs);
+        tracingShader.SetBuffer(kernelShade, "DirectLightReservoirsPrev", _directLightReservoirsPrev);
         tracingShader.SetBuffer(kernelShade, "DirectLightReservoirDifference", _directLightReservoirDifference);
         tracingShader.SetBuffer(kernelShade, "BufferSizes", _bufferSizes);
         tracingShader.SetBuffer(kernelShadow, "ShadowRaysBuffer", _shadowRays);
         tracingShader.SetBuffer(kernelShadow, "GlobalColors", _globalColors);
         tracingShader.SetBuffer(kernelShadow, "DirectLightReservoirs", _directLightReservoirs);
+        tracingShader.SetBuffer(kernelShadow, "DirectLightReservoirsPrev", _directLightReservoirsPrev);
         tracingShader.SetBuffer(kernelShadow, "DirectLightReservoirDifference", _directLightReservoirDifference);
         tracingShader.SetBuffer(kernelShadow, "BufferSizes", _bufferSizes);
         tracingShader.SetBuffer(kernelTransfer, "BufferSizes", _bufferSizes);
@@ -438,8 +455,12 @@ public class Tracing : MonoBehaviour
         tracingShader.SetBool("_OnlyDrawNormals", OnlyDrawNormals);
         tracingShader.SetBool("_OnlyDrawAlbedo", OnlyDrawAlbedo);
         tracingShader.SetInt("_DirectLightRISCandidateCount", DirectLightRISCandidateCount);
+        tracingShader.SetBool("_UseDirectLightReservoirRIS", UseDirectLightReservoirRIS);
         tracingShader.SetBool("_UseDirectLightReservoirForPrimaryDirect", UseDirectLightReservoirForPrimaryDirect);
         tracingShader.SetBool("_ShowDirectLightReservoirDifference", ShowDirectLightReservoirDifference);
+        tracingShader.SetBool("_UseDirectLightReservoirTemporalReuse", UseDirectLightReservoirTemporalReuse);
+        tracingShader.SetBool("_HasDirectLightReservoirHistory", _hasDirectLightReservoirHistory);
+        tracingShader.SetBool("_ShowDirectLightTemporalReuseDebug", ShowDirectLightTemporalReuseDebug);
         tracingShader.SetFloat("_CameraFar", cam.farClipPlane);
 
         // 设置光源缓冲区（绑定到所有需要的kernel）
@@ -528,8 +549,11 @@ public class Tracing : MonoBehaviour
                _oldSunFocus != SunFocus ||
                _oldSunAngularRadius != SunAngularRadius ||
                _oldDirectLightRISCandidateCount != DirectLightRISCandidateCount ||
+               _oldUseDirectLightReservoirRIS != UseDirectLightReservoirRIS ||
                _oldUseDirectLightReservoirForPrimaryDirect != UseDirectLightReservoirForPrimaryDirect ||
-               _oldShowDirectLightReservoirDifference != ShowDirectLightReservoirDifference;
+               _oldShowDirectLightReservoirDifference != ShowDirectLightReservoirDifference ||
+               _oldUseDirectLightReservoirTemporalReuse != UseDirectLightReservoirTemporalReuse ||
+               _oldShowDirectLightTemporalReuseDebug != ShowDirectLightTemporalReuseDebug;
     }
 
     private void CacheRuntimeSettings()
@@ -540,8 +564,21 @@ public class Tracing : MonoBehaviour
         _oldSunFocus = SunFocus;
         _oldSunAngularRadius = SunAngularRadius;
         _oldDirectLightRISCandidateCount = DirectLightRISCandidateCount;
+        _oldUseDirectLightReservoirRIS = UseDirectLightReservoirRIS;
         _oldUseDirectLightReservoirForPrimaryDirect = UseDirectLightReservoirForPrimaryDirect;
         _oldShowDirectLightReservoirDifference = ShowDirectLightReservoirDifference;
+        _oldUseDirectLightReservoirTemporalReuse = UseDirectLightReservoirTemporalReuse;
+        _oldShowDirectLightTemporalReuseDebug = ShowDirectLightTemporalReuseDebug;
+    }
+
+    private void SwapDirectLightReservoirHistory()
+    {
+        if (_directLightReservoirs == null || _directLightReservoirsPrev == null)
+            return;
+
+        var temp = _directLightReservoirsPrev;
+        _directLightReservoirsPrev = _directLightReservoirs;
+        _directLightReservoirs = temp;
     }
 
     private void ReleaseCommandBuffer()
@@ -696,5 +733,6 @@ public class Tracing : MonoBehaviour
     void ResetSampleCount()
     {
         sampleCount = 0;
+        _hasDirectLightReservoirHistory = false;
     }
 }

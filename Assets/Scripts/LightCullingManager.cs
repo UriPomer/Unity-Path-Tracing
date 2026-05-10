@@ -1,8 +1,14 @@
 ﻿using UnityEngine;
 using UnityEngine.Rendering;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 
 public class LightCullingManager : MonoBehaviour
 {
+    private const string DefaultLightCullingShaderPath = "Assets/ComputeShader/main/LightCulling.compute";
+    private const string DefaultLightCullingShaderResourcePath = "LightCulling";
+
     [Header("Light Culling Settings")]
     [SerializeField] private ComputeShader lightCullingShader;
     [SerializeField] private int tileSize = 16;
@@ -27,10 +33,37 @@ public class LightCullingManager : MonoBehaviour
     private void Awake()
     {
         targetCamera = GetComponent<Camera>();
+        EnsureLightCullingShader();
+        CacheLightCullingKernel();
+    }
+
+    private void Reset()
+    {
+        EnsureLightCullingShader();
+    }
+
+    private void OnValidate()
+    {
+        EnsureLightCullingShader();
+        CacheLightCullingKernel();
+    }
+
+    private void EnsureLightCullingShader()
+    {
         if (lightCullingShader != null)
-        {
+            return;
+
+#if UNITY_EDITOR
+        lightCullingShader = AssetDatabase.LoadAssetAtPath<ComputeShader>(DefaultLightCullingShaderPath);
+#endif
+        if (lightCullingShader == null)
+            lightCullingShader = Resources.Load<ComputeShader>(DefaultLightCullingShaderResourcePath);
+    }
+
+    private void CacheLightCullingKernel()
+    {
+        if (lightCullingShader != null)
             lightCullingKernel = lightCullingShader.FindKernel("CSLightCulling");
-        }
     }
     
     private void Start()

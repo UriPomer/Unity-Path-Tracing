@@ -100,6 +100,10 @@ bool _OnlyDrawNormals;
 bool _OnlyDrawDepth;
 bool _UseDirectLightReservoirForPrimaryDirect;
 bool _ShowDirectLightReservoirDifference;
+bool _UseDirectLightReservoirRIS;
+bool _UseDirectLightReservoirTemporalReuse;
+bool _HasDirectLightReservoirHistory;
+bool _ShowDirectLightTemporalReuseDebug;
 
 /// Debug
 
@@ -186,6 +190,7 @@ struct DirectLightReservoirData
     float3 origin;       float  maxDist;
     float3 direction;    float  targetLum;
     float3 contribution; float  weightSum;
+    float3 surfaceNormal; float  selectPdf;
     uint   lightType;    uint   lightIndex;
     uint   sampleCount;  float  selectedWeight;
 };
@@ -196,6 +201,7 @@ RWStructuredBuffer<RayData>          GlobalRays2;
 RWStructuredBuffer<HitData>          GlobalHits;
 RWStructuredBuffer<ShadowRayData>    ShadowRaysBuffer;
 RWStructuredBuffer<DirectLightReservoirData> DirectLightReservoirs;
+StructuredBuffer<DirectLightReservoirData> DirectLightReservoirsPrev;
 RWStructuredBuffer<float3>            DirectLightReservoirDifference;
 RWStructuredBuffer<PathContribution> GlobalColors;
 RWStructuredBuffer<uint>              IndirectArgs;

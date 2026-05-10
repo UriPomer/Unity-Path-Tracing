@@ -203,9 +203,13 @@ void kernel_shadow(uint3 id : SV_DispatchThreadID)
     ray.dir = sr.direction;
     ray.invDir = 1.0 / ray.dir;
 
-    // Any-hit: occluded → skip
+    // Any-hit: occluded -> skip
     if (IntersectTlasFast(ray, sr.maxDist))
+    {
+        if (CurBounce == 0 && _ShowDirectLightTemporalReuseDebug)
+            DirectLightReservoirDifference[sr.pixelIndex] = float3(1.0, 0.0, 0.0);
         return;
+    }
 
     float3 defaultDirect = sr.illumination;
     float3 reservoirDirect = float3(0.0, 0.0, 0.0);
@@ -219,7 +223,10 @@ void kernel_shadow(uint3 id : SV_DispatchThreadID)
             hasReservoir = true;
         }
 
-        DirectLightReservoirDifference[sr.pixelIndex] = abs(defaultDirect - reservoirDirect);
+        if (!_ShowDirectLightTemporalReuseDebug)
+            DirectLightReservoirDifference[sr.pixelIndex] = abs(defaultDirect - reservoirDirect);
+        else
+            DirectLightReservoirDifference[sr.pixelIndex] = float3(0.0, 1.0, 0.0);
     }
 
     // Unoccluded -> accumulate light contribution. The reservoir path is a
@@ -238,7 +245,7 @@ void kernel_finalize(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= _ScreenWidth || id.y >= _ScreenHeight) return;
     uint pixelIndex = id.y * _ScreenWidth + id.x;
-    if (_ShowDirectLightReservoirDifference)
+    if (_ShowDirectLightReservoirDifference || _ShowDirectLightTemporalReuseDebug)
     {
         _Result[id.xy] = float4(DirectLightReservoirDifference[pixelIndex], 1.0f);
         return;
