@@ -206,8 +206,8 @@ void kernel_shadow(uint3 id : SV_DispatchThreadID)
     // Any-hit: occluded -> skip
     if (IntersectTlasFast(ray, sr.maxDist))
     {
-        if (CurBounce == 0 && _ShowDirectLightTemporalReuseDebug)
-            DirectLightReservoirDifference[sr.pixelIndex] = float3(1.0, 0.0, 0.0);
+        if (CurBounce == 0 && _DirectLightDebugView == 4)
+            DirectLightDebugOutput[sr.pixelIndex] = float3(1.0, 0.0, 0.0);
         return;
     }
 
@@ -223,19 +223,28 @@ void kernel_shadow(uint3 id : SV_DispatchThreadID)
             hasReservoir = true;
         }
 
-        if (!_ShowDirectLightTemporalReuseDebug)
-            DirectLightReservoirDifference[sr.pixelIndex] = abs(defaultDirect - reservoirDirect);
-        else
-            DirectLightReservoirDifference[sr.pixelIndex] = float3(0.0, 1.0, 0.0);
+        if (_DirectLightDebugView == 1)
+        {
+            DirectLightDebugOutput[sr.pixelIndex] = max(defaultDirect, float3(0.0, 0.0, 0.0));
+        }
+        else if (_DirectLightDebugView == 2)
+        {
+            DirectLightDebugOutput[sr.pixelIndex] = hasReservoir
+                ? max(reservoirDirect, float3(0.0, 0.0, 0.0))
+                : float3(0.0, 0.0, 0.0);
+        }
+        else if (_DirectLightDebugView == 3)
+        {
+            DirectLightDebugOutput[sr.pixelIndex] = hasReservoir
+                ? abs(defaultDirect - reservoirDirect)
+                : float3(0.0, 0.0, 0.0);
+        }
     }
 
-    // Unoccluded -> accumulate light contribution. The reservoir path is a
-    // validation mode for first-bounce ReSTIR DI plumbing; default rendering
-    // still uses the shadow-ray payload directly.
-    if (_UseDirectLightReservoirForPrimaryDirect && CurBounce == 0 && hasReservoir)
-        GlobalColors[sr.pixelIndex].L += reservoirDirect;
-    else
-        GlobalColors[sr.pixelIndex].L += defaultDirect;
+    // Unoccluded -> accumulate the validated shadow-ray payload. The render
+    // path always resolves sr.illumination here; DirectLightReservoirs are only
+    // carried alongside for debug views and staged reuse bookkeeping.
+    GlobalColors[sr.pixelIndex].L += defaultDirect;
 }
 
 // ==================== Kernel 4: Finalize ====================
@@ -245,9 +254,9 @@ void kernel_finalize(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= _ScreenWidth || id.y >= _ScreenHeight) return;
     uint pixelIndex = id.y * _ScreenWidth + id.x;
-    if (_ShowDirectLightReservoirDifference || _ShowDirectLightTemporalReuseDebug)
+    if (_DirectLightDebugView != 0)
     {
-        _Result[id.xy] = float4(DirectLightReservoirDifference[pixelIndex], 1.0f);
+        _Result[id.xy] = float4(DirectLightDebugOutput[pixelIndex], 1.0f);
         return;
     }
 

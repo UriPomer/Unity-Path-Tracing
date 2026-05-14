@@ -205,6 +205,7 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int material
                             bestHit.position = hitPos;
                             bestHit.normal = norm;
                             bestHit.material = mats;
+                            bestHit.mode = mat.mode;
                         }
                     }
                 }

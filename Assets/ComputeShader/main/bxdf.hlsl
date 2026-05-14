@@ -343,6 +343,7 @@ void EvaluateBXDF_GivenDir(RayHit hit, float3 V, float3 L, out float3 f_brdf, ou
         if (NdotL <= 0.0)
             return;
 
+        hit.normal = N;
         float3 H = normalize(V + L);
         float3 brdfSpec;
         float pdfSpec;

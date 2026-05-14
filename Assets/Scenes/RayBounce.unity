@@ -426,7 +426,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!108 &705507994
 Light:
   m_ObjectHideFlags: 0
@@ -434,7 +434,7 @@ Light:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 705507993}
-  m_Enabled: 1
+  m_Enabled: 0
   serializedVersion: 13
   m_Type: 1
   m_Color: {r: 1, g: 0.95686275, b: 0.8392157, a: 1}
@@ -764,10 +764,10 @@ MonoBehaviour:
   OnlyDrawNormals: 0
   OnlyDrawDepth: 0
   DirectLightRISCandidateCount: 1
+  UseDirectLightReservoirRIS: 0
   UseDirectLightReservoirForPrimaryDirect: 0
-  ShowDirectLightReservoirDifference: 0
+  DirectLightDebugViewMode: 0
   UseDirectLightReservoirTemporalReuse: 0
-  ShowDirectLightTemporalReuseDebug: 0
   Denoise: 0
   ToneMap: 1
   Exposure: 1

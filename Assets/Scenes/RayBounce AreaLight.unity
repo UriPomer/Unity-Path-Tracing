@@ -732,10 +732,10 @@ MonoBehaviour:
   OnlyDrawNormals: 0
   OnlyDrawDepth: 0
   DirectLightRISCandidateCount: 1
+  UseDirectLightReservoirRIS: 0
   UseDirectLightReservoirForPrimaryDirect: 1
-  ShowDirectLightReservoirDifference: 0
+  DirectLightDebugViewMode: 4
   UseDirectLightReservoirTemporalReuse: 1
-  ShowDirectLightTemporalReuseDebug: 1
   Denoise: 0
   ToneMap: 1
   Exposure: 1

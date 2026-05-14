@@ -503,8 +503,14 @@ MonoBehaviour:
   OnlyDrawAlbedo: 0
   OnlyDrawNormals: 0
   OnlyDrawDepth: 0
-  UseDirectLightReservoirForPrimaryDirect: 1
-  Denoise: 1
+  DirectLightRISCandidateCount: 1
+  UseDirectLightReservoirRIS: 1
+  UseDirectLightReservoirForPrimaryDirect: 0
+  UseDirectLightReservoirTemporalReuse: 0
+  UseDirectLightReservoirNeighborReuse: 0
+  DirectLightNeighborReuseCount: 4
+  DirectLightDebugViewMode: 0
+  Denoise: 0
   ToneMap: 1
   Exposure: 1
   drawGizmos: 0

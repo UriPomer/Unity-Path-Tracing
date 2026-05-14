@@ -38,13 +38,47 @@ RayHit Trace(Ray ray)
     return bestHit;
 }
 
-#define DIRECTIONAL_LIGHT_SAMPLE 1
-#define POINT_LIGHT_SAMPLES 1
 float2 SampleDisk(float u1, float u2)
 {
     float r     = sqrt(u1);
     float theta = 2.0 * PI * u2;
     return float2(r * cos(theta), r * sin(theta));
+}
+
+float GetSphericalCapSolidAngle(float cosThetaMax)
+{
+    return 2.0 * PI * (1.0 - cosThetaMax);
+}
+
+float GetDiskArea(float radius)
+{
+    return PI * radius * radius;
+}
+
+void BuildOrthonormalBasis(float3 n, out float3 tangent, out float3 bitangent)
+{
+    float3 up = abs(n.y) < 0.99 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+    tangent = normalize(cross(up, n));
+    bitangent = cross(n, tangent);
+}
+
+float3 SampleUniformSphericalCap(float3 axis, float cosThetaMax, float u1, float u2)
+{
+    float3 tangent;
+    float3 bitangent;
+    BuildOrthonormalBasis(axis, tangent, bitangent);
+
+    float cosTheta = lerp(1.0, cosThetaMax, u1);
+    float sinTheta = sqrt(saturate(1.0 - cosTheta * cosTheta));
+    float phi = 2.0 * PI * u2;
+    float sinPhi;
+    float cosPhi;
+    sincos(phi, sinPhi, cosPhi);
+
+    return normalize(
+        tangent * (cosPhi * sinTheta) +
+        bitangent * (sinPhi * sinTheta) +
+        axis * cosTheta);
 }
 
 struct PointLightData
@@ -63,7 +97,7 @@ struct DirectLightSample
     float  maxDist;
     float3 contribution;
     float3 illumination;
-    float  selectPdf;
+    float  proposalPdf; // full light proposal pdf for this sample
     float  targetLum;
     float  reservoirWeight;
     uint   lightType; // 1 = sun, 2 = point
@@ -102,7 +136,7 @@ uint2 GetTileIndex(uint2 pixelCoord)
     return pixelCoord / TILE_SIZE;
 }
 
-void EnqueueShadowRay(float3 origin, float3 direction, float maxDist, float3 illumination, float selectPdf, uint pixelIndex)
+void EnqueueShadowRay(float3 origin, float3 direction, float maxDist, float3 illumination, float proposalPdf, uint pixelIndex)
 {
     uint idx;
     InterlockedAdd(BufferSizes[CurBounce].shadowRays, 1, idx);
@@ -112,7 +146,7 @@ void EnqueueShadowRay(float3 origin, float3 direction, float maxDist, float3 ill
     sr.direction = direction;
     sr.maxDist = maxDist;
     sr.illumination = illumination;
-    sr.selectPdf = selectPdf;
+    sr.proposalPdf = proposalPdf;
     sr.pixelIndex = pixelIndex;
     ShadowRaysBuffer[idx] = sr;
 }
@@ -127,23 +161,35 @@ void ClearDirectLightReservoir(uint pixelIndex)
     reservoir.contribution = float3(0.0, 0.0, 0.0);
     reservoir.weightSum = 0.0;
     reservoir.surfaceNormal = float3(0.0, 0.0, 0.0);
-    reservoir.selectPdf = 0.0;
+    reservoir.proposalPdf = 0.0;
     reservoir.lightType = 0u;
     reservoir.lightIndex = 0u;
     reservoir.sampleCount = 0u;
     reservoir.selectedWeight = 0.0;
     DirectLightReservoirs[pixelIndex] = reservoir;
-    DirectLightReservoirDifference[pixelIndex] = _ShowDirectLightTemporalReuseDebug
+    DirectLightDebugOutput[pixelIndex] = _DirectLightDebugView == 4
         ? float3(0.03, 0.03, 0.03)
         : float3(0.0, 0.0, 0.0);
 }
 
-void MarkDirectLightTemporalReuseDebug(
+bool IsDirectLightRISEstimateDebugView()
+{
+    return _DirectLightDebugView == 2;
+}
+
+bool IsDirectLightRISErrorDebugView()
+{
+    return _DirectLightDebugView == 3;
+}
+
+bool IsDirectLightReservoirStatusDebugView()
+{
+    return _DirectLightDebugView == 4;
+}
+
+void MarkDirectLightReservoirStatusDebug(
     uint pixelIndex,
-    bool temporalReuseEnabled,
     bool hasHistoryFlag,
-    bool hasTemporalHistory,
-    bool hadPrevReservoir,
     bool accepted,
     bool selected,
     uint sampleCount)
@@ -151,14 +197,10 @@ void MarkDirectLightTemporalReuseDebug(
     float sampleSignal = lerp(0.08, 0.28, saturate((float)sampleCount / 8.0));
     float3 color = float3(0.0, 0.0, sampleSignal);
 
-    if (!temporalReuseEnabled)
+    if (sampleCount == 0u)
         color = float3(0.85, 0.0, 0.0);
     else if (!hasHistoryFlag)
         color = float3(0.85, 0.85, 0.0);
-    else if (!hasTemporalHistory)
-        color = float3(0.85, 0.45, 0.0);
-    else if (!hadPrevReservoir)
-        color = float3(0.0, 0.85, 0.85);
     else if (!accepted)
         color = float3(1.0, 0.35, 0.0);
     else if (selected)
@@ -166,7 +208,7 @@ void MarkDirectLightTemporalReuseDebug(
     else
         color = float3(0.0, 1.0, 0.0);
 
-    DirectLightReservoirDifference[pixelIndex] = color;
+    DirectLightDebugOutput[pixelIndex] = color;
 }
 
 float GetDirectLightTarget(float3 contribution)
@@ -176,15 +218,31 @@ float GetDirectLightTarget(float3 contribution)
 
 bool IsValidDirectLightSample(DirectLightSample sample)
 {
-    return sample.targetLum > 0.0 && sample.selectPdf > 0.0;
+    return sample.targetLum > 0.0 && sample.proposalPdf > 0.0;
+}
+
+float GetDirectLightResamplingWeight(float weightSum, float targetLum, uint sampleCount)
+{
+    if (targetLum <= 0.0 || sampleCount == 0u)
+        return 0.0;
+
+    return weightSum / targetLum / max((float)sampleCount, 1.0);
 }
 
 void CompleteDirectLightSample(inout DirectLightSample sample, float3 contribution)
 {
     sample.contribution = contribution;
     sample.targetLum = GetDirectLightTarget(contribution);
-    sample.reservoirWeight = sample.targetLum / max(sample.selectPdf, 1e-6);
-    sample.illumination = contribution / max(sample.selectPdf, 1e-6);
+    sample.reservoirWeight = sample.targetLum / max(sample.proposalPdf, 1e-6);
+    sample.illumination = contribution / max(sample.proposalPdf, 1e-6);
+}
+
+float3 GetDirectLightSurfaceNormal(RayHit hit, float3 V)
+{
+    float3 N = hit.normal;
+    if (hit.mode >= 3.0 && dot(V, N) < 0.0)
+        N = -N;
+    return N;
 }
 
 DirectLightReservoirData MakeInitialDirectLightReservoir(DirectLightSample sample, float3 surfaceNormal)
@@ -197,13 +255,13 @@ DirectLightReservoirData MakeInitialDirectLightReservoir(DirectLightSample sampl
     reservoir.contribution = sample.contribution;
     reservoir.weightSum = sample.reservoirWeight;
     reservoir.surfaceNormal = surfaceNormal;
-    reservoir.selectPdf = sample.selectPdf;
+    reservoir.proposalPdf = sample.proposalPdf;
     reservoir.lightType = sample.lightType;
     reservoir.lightIndex = sample.lightIndex;
     reservoir.sampleCount = 1u;
-    // For one candidate: W = (target / sourcePdf) / target = 1 / sourcePdf.
+    // For one candidate: W = (target / proposalPdf) / target = 1 / proposalPdf.
     // Final ReSTIR DI can reconstruct the current estimator as contribution * W.
-    reservoir.selectedWeight = reservoir.weightSum / max(sample.targetLum, 1e-6);
+    reservoir.selectedWeight = GetDirectLightResamplingWeight(reservoir.weightSum, sample.targetLum, 1u);
     return reservoir;
 }
 
@@ -211,7 +269,7 @@ bool BuildSunDirectLightSample(
     RayHit hit,
     float3 V,
     float3 throughput,
-    float selectPdf,
+    float proposalPdf,
     out DirectLightSample sample);
 
 bool BuildPointLightDirectSample(
@@ -219,7 +277,24 @@ bool BuildPointLightDirectSample(
     float3 V,
     float3 throughput,
     uint lightIdx,
-    float selectPdf,
+    float proposalPdf,
+    out DirectLightSample sample);
+
+bool ReevaluateSunDirectLightSample(
+    RayHit hit,
+    float3 V,
+    float3 throughput,
+    float3 sampleDir,
+    float proposalPdf,
+    out DirectLightSample sample);
+
+bool ReevaluatePointLightDirectSample(
+    RayHit hit,
+    float3 V,
+    float3 throughput,
+    uint lightIdx,
+    float3 samplePos,
+    float proposalPdf,
     out DirectLightSample sample);
 
 void StoreInitialDirectLightReservoir(DirectLightSample sample, float3 surfaceNormal, uint pixelIndex)
@@ -228,11 +303,6 @@ void StoreInitialDirectLightReservoir(DirectLightSample sample, float3 surfaceNo
         return;
 
     DirectLightReservoirs[pixelIndex] = MakeInitialDirectLightReservoir(sample, surfaceNormal);
-}
-
-void StoreInitialDirectLightReservoir(DirectLightSample sample, uint pixelIndex)
-{
-    StoreInitialDirectLightReservoir(sample, float3(0.0, 1.0, 0.0), pixelIndex);
 }
 
 bool GetPointLightCandidateRange(out uint lightCount, out uint lightOffset, out bool useCulledList)
@@ -273,158 +343,145 @@ uint ResolvePointLightIndex(uint candidateIndex, uint lightOffset, bool useCulle
         : candidateIndex;
 }
 
-void EnqueueDirectLightSample(DirectLightSample sample, float3 surfaceNormal, uint pixelIndex)
+bool ShouldRecordDirectLightReservoir()
 {
-    StoreInitialDirectLightReservoir(sample, surfaceNormal, pixelIndex);
-    EnqueueShadowRay(sample.origin, sample.direction, sample.maxDist, sample.illumination, sample.selectPdf, pixelIndex);
+    return CurBounce == 0 && (
+        _UseDirectLightReservoirRIS ||
+        IsDirectLightRISEstimateDebugView() ||
+        IsDirectLightRISErrorDebugView() ||
+        IsDirectLightReservoirStatusDebugView());
 }
 
-void EnqueueDirectLightSample(DirectLightSample sample, uint pixelIndex)
+void QueueDirectLightSample(DirectLightSample sample, uint pixelIndex)
 {
-    EnqueueDirectLightSample(sample, float3(0.0, 1.0, 0.0), pixelIndex);
+    EnqueueShadowRay(sample.origin, sample.direction, sample.maxDist, sample.illumination, sample.proposalPdf, pixelIndex);
 }
 
-bool UpdateDirectLightReservoirCandidate(inout DirectLightReservoirData reservoir, DirectLightSample sample, float3 surfaceNormal)
-{
-    if (sample.targetLum <= 0.0 || sample.selectPdf <= 0.0)
-        return false;
-
-    float w = sample.reservoirWeight;
-    reservoir.weightSum += w;
-    reservoir.sampleCount += 1u;
-
-    float r = RNG_Next(rng) * reservoir.weightSum;
-    if (r < w || reservoir.sampleCount == 1u)
-    {
-        reservoir.origin = sample.origin;
-        reservoir.maxDist = sample.maxDist;
-        reservoir.direction = sample.direction;
-        reservoir.targetLum = sample.targetLum;
-        reservoir.contribution = sample.contribution;
-        reservoir.surfaceNormal = surfaceNormal;
-        reservoir.selectPdf = sample.selectPdf;
-        reservoir.lightType = sample.lightType;
-        reservoir.lightIndex = sample.lightIndex;
-        reservoir.selectedWeight = reservoir.weightSum / max(reservoir.targetLum, 1e-6);
-        return true;
-    }
-
-    reservoir.selectedWeight = reservoir.weightSum / max(reservoir.targetLum, 1e-6);
-    return false;
-}
-
-bool BuildDirectLightReservoirCandidate(
+bool SampleDirectLightCandidate(
     RayHit hit,
     float3 V,
     float3 throughput,
-    DirectLightReservoirData reservoir,
+    bool hasSun,
+    uint pointLightOffset,
+    bool useCulledList,
+    uint candidateIndex,
+    float proposalPdf,
     out DirectLightSample sample)
 {
     sample = (DirectLightSample)0;
-    if (reservoir.sampleCount == 0u || reservoir.selectPdf <= 0.0)
-        return false;
-
-    sample.origin = hit.position + hit.normal * 1e-5;
-    sample.direction = float3(0.0, 0.0, 0.0);
-    sample.maxDist = reservoir.maxDist;
-    sample.contribution = float3(0.0, 0.0, 0.0);
-    sample.illumination = float3(0.0, 0.0, 0.0);
-    sample.selectPdf = reservoir.selectPdf;
-    sample.targetLum = 0.0;
-    sample.reservoirWeight = 0.0;
-    sample.lightType = reservoir.lightType;
-    sample.lightIndex = reservoir.lightIndex;
-    float3 prevNormal = normalize(reservoir.surfaceNormal);
-    if (dot(prevNormal, prevNormal) <= 0.0)
-        return false;
-
-    if (dot(hit.normal, prevNormal) < 0.7)
-        return false;
-
-    if (reservoir.lightType == 1u)
+    DirectLightSample branchSample = (DirectLightSample)0;
+    bool accepted = false;
+    if (hasSun && candidateIndex == 0u)
     {
-        float3 sampleDir = normalize(reservoir.direction);
-        if (dot(sampleDir, sampleDir) <= 0.0)
-            return false;
+        accepted = BuildSunDirectLightSample(hit, V, throughput, proposalPdf, branchSample);
+    }
+    else
+    {
+        uint pointCandidateIndex = candidateIndex - (hasSun ? 1u : 0u);
+        uint lightIdx = ResolvePointLightIndex(pointCandidateIndex, pointLightOffset, useCulledList);
+        accepted = BuildPointLightDirectSample(hit, V, throughput, lightIdx, proposalPdf, branchSample);
+    }
 
-        float NdotL = saturate(dot(hit.normal, sampleDir));
-        if (NdotL <= 0.0)
-            return false;
+    if (accepted)
+        sample = branchSample;
+    return accepted;
+}
 
-        float3 f_brdf;
-        float dummyPdf;
-        EvaluateBXDF_GivenDir(hit, V, sampleDir, /*out*/ f_brdf, /*out*/ dummyPdf);
+bool UpdateDirectLightRISSelection(
+    inout DirectLightSample selectedSample,
+    inout float weightSum,
+    inout bool hasSelectedSample,
+    DirectLightSample candidate)
+{
+    if (!IsValidDirectLightSample(candidate))
+        return false;
 
-        float3 color = _DirectionalLightColor.rgb * _DirectionalLightColor.a;
-        sample.direction = sampleDir;
-        sample.maxDist = reservoir.maxDist;
-        CompleteDirectLightSample(sample, throughput * color * f_brdf * NdotL);
+    float w = candidate.reservoirWeight;
+    weightSum += w;
+    if (!hasSelectedSample)
+    {
+        selectedSample = candidate;
+        hasSelectedSample = true;
         return true;
     }
 
-    if (reservoir.lightType == 2u)
+    float r = RNG_Next(rng) * weightSum;
+    if (r < w)
     {
-        PointLightData light = LoadPointLight(reservoir.lightIndex);
-        if (light.intensity <= 0.0 || light.range <= 0.0)
-            return false;
-
-        float3 samplePos = reservoir.origin + reservoir.direction * reservoir.maxDist;
-        float3 toSample = samplePos - hit.position;
-        float distS = length(toSample);
-        if (distS <= 0.0)
-            return false;
-
-        float3 Ls = toSample / distS;
-        float NdotL = saturate(dot(hit.normal, Ls));
-        if (NdotL <= 0.0)
-            return false;
-
-        float rangeAtten = GetPointLightRangeAttenuation(distS, light.range);
-        if (rangeAtten <= 0.0)
-            return false;
-
-        float3 f_brdf;
-        float dummyPdf;
-        EvaluateBXDF_GivenDir(hit, V, Ls, /*out*/ f_brdf, /*out*/ dummyPdf);
-
-        float3 Le = light.color * light.intensity;
-        float3 illum = throughput * Le * (f_brdf * NdotL) / max(distS * distS, 1e-6);
-
-        sample.direction = Ls;
-        sample.maxDist = distS;
-        CompleteDirectLightSample(sample, illum * rangeAtten);
+        selectedSample = candidate;
         return true;
     }
 
     return false;
+}
+
+int2 GetDirectLightNeighborOffset(uint neighborIndex)
+{
+    switch (neighborIndex & 7u)
+    {
+        case 0u: return int2(-1, 0);
+        case 1u: return int2(1, 0);
+        case 2u: return int2(0, -1);
+        case 3u: return int2(0, 1);
+        case 4u: return int2(-1, -1);
+        case 5u: return int2(1, -1);
+        case 6u: return int2(-1, 1);
+        default: return int2(1, 1);
+    }
+}
+
+bool TryGetDirectLightNeighborPixelIndex(uint pixelIndex, uint neighborOrdinal, out uint neighborPixelIndex)
+{
+    int2 pixelCoord = int2((int)(pixelIndex % _ScreenWidth), (int)(pixelIndex / _ScreenWidth));
+    int2 neighborCoord = pixelCoord + GetDirectLightNeighborOffset(neighborOrdinal);
+    if (neighborCoord.x < 0 || neighborCoord.y < 0 || neighborCoord.x >= (int)_ScreenWidth || neighborCoord.y >= (int)_ScreenHeight)
+    {
+        neighborPixelIndex = 0u;
+        return false;
+    }
+
+    neighborPixelIndex = (uint)(neighborCoord.y * (int)_ScreenWidth + neighborCoord.x);
+    return true;
 }
 
 bool BuildSunDirectLightSample(
     RayHit hit,
     float3 V,
     float3 throughput,
-    float selectPdf,
+    float proposalPdf,
     out DirectLightSample sample)
 {
+    float3 surfaceNormal = GetDirectLightSurfaceNormal(hit, V);
     sample.origin = hit.position + hit.normal * 1e-5;
     sample.direction = float3(0.0, 0.0, 0.0);
     sample.maxDist = 1e20;
     sample.contribution = float3(0.0, 0.0, 0.0);
     sample.illumination = float3(0.0, 0.0, 0.0);
-    sample.selectPdf = selectPdf;
+    sample.proposalPdf = proposalPdf;
     sample.targetLum = 0.0;
     sample.reservoirWeight = 0.0;
     sample.lightType = 1u;
     sample.lightIndex = 0u;
 
     float3 L0 = normalize(_InverseDirectionalLight);
-    float3 up = abs(L0.y) < 0.99 ? float3(0,1,0) : float3(1,0,0);
-    float3 right = normalize(cross(up, L0));
-    float3 up2 = cross(L0, right);
-    float2 d = SampleDisk(RNG_Next(rng), RNG_Next(rng)) * _SunAngularRadius;
-    float3 sampleDir = normalize(L0 + d.x * right + d.y * up2);
+    float3 sampleDir = L0;
+    float3 color = _DirectionalLightColor.rgb * _DirectionalLightColor.a;
+    if (_SunAngularRadius > 0.0)
+    {
+        float cosThetaMax = cos(_SunAngularRadius);
+        float solidAngle = max(GetSphericalCapSolidAngle(cosThetaMax), 1e-6);
+        sampleDir = SampleUniformSphericalCap(L0, cosThetaMax, RNG_Next(rng), RNG_Next(rng));
+        sample.proposalPdf *= rcp(solidAngle);
+        // DirectionalLight intensity in this project is treated as the legacy
+        // total directional contribution, not radiance per steradian. Once we
+        // broaden the sun to a finite spherical cap, convert that strength into
+        // a density over the cap so changing SunAngularRadius only changes the
+        // sampled support, not the overall direct-light energy.
+        color *= rcp(solidAngle);
+    }
 
-    float NdotL = saturate(dot(hit.normal, sampleDir));
+    sample.origin = hit.position + surfaceNormal * 1e-5;
+    float NdotL = saturate(dot(surfaceNormal, sampleDir));
     if (NdotL <= 0.0)
         return false;
 
@@ -432,8 +489,45 @@ bool BuildSunDirectLightSample(
     float dummyPdf;
     EvaluateBXDF_GivenDir(hit, V, sampleDir, /*out*/ f_brdf, /*out*/ dummyPdf);
 
-    float3 color = _DirectionalLightColor.rgb * _DirectionalLightColor.a;
     sample.direction = sampleDir;
+    CompleteDirectLightSample(sample, throughput * color * f_brdf * NdotL);
+    return true;
+}
+
+bool ReevaluateSunDirectLightSample(
+    RayHit hit,
+    float3 V,
+    float3 throughput,
+    float3 sampleDir,
+    float proposalPdf,
+    out DirectLightSample sample)
+{
+    float3 surfaceNormal = GetDirectLightSurfaceNormal(hit, V);
+    sample.origin = hit.position + surfaceNormal * 1e-5;
+    sample.direction = normalize(sampleDir);
+    sample.maxDist = 1e20;
+    sample.contribution = float3(0.0, 0.0, 0.0);
+    sample.illumination = float3(0.0, 0.0, 0.0);
+    sample.proposalPdf = proposalPdf;
+    sample.targetLum = 0.0;
+    sample.reservoirWeight = 0.0;
+    sample.lightType = 1u;
+    sample.lightIndex = 0u;
+
+    float NdotL = saturate(dot(surfaceNormal, sample.direction));
+    if (NdotL <= 0.0)
+        return false;
+
+    float3 color = _DirectionalLightColor.rgb * _DirectionalLightColor.a;
+    if (_SunAngularRadius > 0.0)
+    {
+        float solidAngle = max(GetSphericalCapSolidAngle(cos(_SunAngularRadius)), 1e-6);
+        color *= rcp(solidAngle);
+    }
+
+    float3 f_brdf;
+    float dummyPdf;
+    EvaluateBXDF_GivenDir(hit, V, sample.direction, /*out*/ f_brdf, /*out*/ dummyPdf);
     CompleteDirectLightSample(sample, throughput * color * f_brdf * NdotL);
     return true;
 }
@@ -443,15 +537,16 @@ bool BuildPointLightDirectSample(
     float3 V,
     float3 throughput,
     uint lightIdx,
-    float selectPdf,
+    float proposalPdf,
     out DirectLightSample sample)
 {
-    sample.origin = hit.position + hit.normal * 1e-5;
+    float3 surfaceNormal = GetDirectLightSurfaceNormal(hit, V);
+    sample.origin = hit.position + surfaceNormal * 1e-5;
     sample.direction = float3(0.0, 0.0, 0.0);
     sample.maxDist = 0.0;
     sample.contribution = float3(0.0, 0.0, 0.0);
     sample.illumination = float3(0.0, 0.0, 0.0);
-    sample.selectPdf = selectPdf;
+    sample.proposalPdf = proposalPdf;
     sample.targetLum = 0.0;
     sample.reservoirWeight = 0.0;
     sample.lightType = 2u;
@@ -483,7 +578,7 @@ bool BuildPointLightDirectSample(
     float3 toSample = samplePos - hit.position;
     float distS = length(toSample);
     float3 Ls = toSample / max(distS, 1e-6);
-    float NdotL = saturate(dot(hit.normal, Ls));
+    float NdotL = saturate(dot(surfaceNormal, Ls));
     if (NdotL <= 0.0)
         return false;
 
@@ -492,36 +587,161 @@ bool BuildPointLightDirectSample(
     EvaluateBXDF_GivenDir(hit, V, Ls, /*out*/ f_brdf, /*out*/ dummyPdf);
 
     float3 Le = light.color * light.intensity;
-    float3 illum;
+    float3 sampleLe = Le;
+    float3 contribution = throughput * Le * (f_brdf * NdotL);
     if (radius <= 1e-4)
     {
-        illum = throughput * Le * (f_brdf * NdotL) / max(distS * distS, 1e-6);
+        contribution *= rcp(max(distS * distS, 1e-6));
     }
     else
     {
-        float pdf_area = 1.0 / (PI * radius * radius);
+        float diskArea = max(GetDiskArea(radius), 1e-6);
+        float pdf_area = rcp(diskArea);
+        // PointLight intensity is also authored as the legacy total light
+        // strength. When we jitter visibility over a finite disk to soften
+        // shadows, convert that strength into a density over the disk so
+        // SourceRadius changes the support, not the average brightness.
+        sampleLe *= pdf_area;
         float3 nLight = normalize(hit.position - light.position);
         float cosThetaPrime = saturate(dot(nLight, -Ls));
         if (cosThetaPrime <= 1e-6)
             return false;
 
         float geom = cosThetaPrime / max(distS * distS, 1e-6);
-        illum = throughput * Le * (f_brdf * NdotL) * (geom / pdf_area);
+        contribution = throughput * sampleLe * (f_brdf * NdotL) * geom;
+        sample.proposalPdf *= pdf_area;
     }
 
     sample.direction = Ls;
     sample.maxDist = distS;
-    CompleteDirectLightSample(sample, illum * rangeAtten);
+    CompleteDirectLightSample(sample, contribution * rangeAtten);
+    return true;
+}
+
+bool ReevaluatePointLightDirectSample(
+    RayHit hit,
+    float3 V,
+    float3 throughput,
+    uint lightIdx,
+    float3 samplePos,
+    float proposalPdf,
+    out DirectLightSample sample)
+{
+    float3 surfaceNormal = GetDirectLightSurfaceNormal(hit, V);
+    sample.origin = hit.position + surfaceNormal * 1e-5;
+    sample.direction = float3(0.0, 0.0, 0.0);
+    sample.maxDist = 0.0;
+    sample.contribution = float3(0.0, 0.0, 0.0);
+    sample.illumination = float3(0.0, 0.0, 0.0);
+    sample.proposalPdf = proposalPdf;
+    sample.targetLum = 0.0;
+    sample.reservoirWeight = 0.0;
+    sample.lightType = 2u;
+    sample.lightIndex = lightIdx;
+
+    PointLightData light = LoadPointLight(lightIdx);
+    if (light.intensity <= 0.0 || light.range <= 0.0)
+        return false;
+
+    float3 toCenter = light.position - hit.position;
+    float distC = length(toCenter);
+    float rangeAtten = GetPointLightRangeAttenuation(distC, light.range);
+    if (rangeAtten <= 0.0)
+        return false;
+
+    float3 toSample = samplePos - hit.position;
+    float distS = length(toSample);
+    float3 Ls = toSample / max(distS, 1e-6);
+    float NdotL = saturate(dot(surfaceNormal, Ls));
+    if (NdotL <= 0.0)
+        return false;
+
+    float3 f_brdf;
+    float dummyPdf;
+    EvaluateBXDF_GivenDir(hit, V, Ls, /*out*/ f_brdf, /*out*/ dummyPdf);
+
+    float3 Le = light.color * light.intensity;
+    float radius = max(light.sourceRadius, 0.0);
+    float3 contribution = throughput * Le * (f_brdf * NdotL);
+    if (radius <= 1e-4)
+    {
+        contribution *= rcp(max(distS * distS, 1e-6));
+    }
+    else
+    {
+        float diskArea = max(GetDiskArea(radius), 1e-6);
+        float3 sampleLe = Le * rcp(diskArea);
+        float3 nLight = normalize(hit.position - light.position);
+        float cosThetaPrime = saturate(dot(nLight, -Ls));
+        if (cosThetaPrime <= 1e-6)
+            return false;
+
+        float geom = cosThetaPrime / max(distS * distS, 1e-6);
+        contribution = throughput * sampleLe * (f_brdf * NdotL) * geom;
+    }
+
+    sample.direction = Ls;
+    sample.maxDist = distS;
+    CompleteDirectLightSample(sample, contribution * rangeAtten);
+    return true;
+}
+
+bool BuildNeighborReusedDirectLightSample(
+    RayHit hit,
+    float3 V,
+    float3 throughput,
+    uint neighborPixelIndex,
+    DirectLightReservoirData prevReservoir,
+    out DirectLightSample candidate)
+{
+    candidate = (DirectLightSample)0;
+    if (prevReservoir.sampleCount == 0u || prevReservoir.selectedWeight <= 0.0 || prevReservoir.proposalPdf <= 0.0)
+        return false;
+
+    bool accepted = false;
+    if (prevReservoir.lightType == 1u)
+    {
+        accepted = ReevaluateSunDirectLightSample(
+            hit,
+            V,
+            throughput,
+            prevReservoir.direction,
+            prevReservoir.proposalPdf,
+            candidate);
+    }
+    else if (prevReservoir.lightType == 2u)
+    {
+        float3 samplePos = prevReservoir.origin + prevReservoir.direction * prevReservoir.maxDist;
+        accepted = ReevaluatePointLightDirectSample(
+            hit,
+            V,
+            throughput,
+            prevReservoir.lightIndex,
+            samplePos,
+            prevReservoir.proposalPdf,
+            candidate);
+    }
+
+    if (!accepted || !IsValidDirectLightSample(candidate))
+        return false;
+
+    candidate.reservoirWeight = candidate.targetLum * prevReservoir.selectedWeight * max((float)prevReservoir.sampleCount, 1.0);
     return true;
 }
 
 void GenerateShadowRays(RayHit hit, float3 V, float3 throughput, uint pixelIndex)
 {
     bool usePrimaryReservoir = CurBounce == 0;
+    bool recordPrimaryReservoir = ShouldRecordDirectLightReservoir();
+    uint risCount = max((uint)_DirectLightRISCandidateCount, 1u);
     bool useDirectLightRIS = CurBounce == 0 && _UseDirectLightReservoirRIS;
+    bool useNeighborReuse = useDirectLightRIS && _UseDirectLightReservoirNeighborReuse && _HasDirectLightReservoirHistory;
+    // This is previous-frame neighbor replay only. It is not the paper's
+    // temporal reuse pass, and it is not a full same-frame spatial pass.
+    float3 surfaceNormal = GetDirectLightSurfaceNormal(hit, V);
 
-    if (usePrimaryReservoir && _ShowDirectLightTemporalReuseDebug)
-        DirectLightReservoirDifference[pixelIndex] = float3(0.0, 0.0, 0.08);
+    if (usePrimaryReservoir && IsDirectLightReservoirStatusDebugView())
+        DirectLightDebugOutput[pixelIndex] = float3(0.0, 0.0, 0.08);
 
     bool hasSun = _DirectionalLightColor.a > 0.0;
 
@@ -533,69 +753,77 @@ void GenerateShadowRays(RayHit hit, float3 V, float3 throughput, uint pixelIndex
     uint candidateCount = (hasSun ? 1u : 0u) + (hasPointLights ? pointLightCount : 0u);
     if (candidateCount == 0u)
     {
-        if (usePrimaryReservoir && _ShowDirectLightTemporalReuseDebug)
-            DirectLightReservoirDifference[pixelIndex] = float3(0.08, 0.0, 0.0);
+        if (usePrimaryReservoir && IsDirectLightReservoirStatusDebugView())
+            DirectLightDebugOutput[pixelIndex] = float3(0.08, 0.0, 0.0);
         return;
     }
 
-    float selectPdf = 1.0 / (float)candidateCount;
+    float proposalPdf = 1.0 / (float)candidateCount;
     float u = RNG_Next(rng);
     uint candidateIndex = min(uint(u * candidateCount), candidateCount - 1u);
     DirectLightSample sample = (DirectLightSample)0;
     bool accepted = false;
 
-    if (hasSun && candidateIndex == 0u)
-    {
-        accepted = BuildSunDirectLightSample(hit, V, throughput, selectPdf, sample);
-    }
-    else
-    {
-        uint pointCandidateIndex = candidateIndex - (hasSun ? 1u : 0u);
-        uint lightIdx = ResolvePointLightIndex(pointCandidateIndex, pointLightOffset, useCulledList);
-        accepted = BuildPointLightDirectSample(hit, V, throughput, lightIdx, selectPdf, sample);
-    }
+    accepted = SampleDirectLightCandidate(
+        hit,
+        V,
+        throughput,
+        hasSun,
+        pointLightOffset,
+        useCulledList,
+        candidateIndex,
+        proposalPdf,
+        sample);
+
+    // Fallback keeps the first drawn candidate from the active proposal.
+    // In RIS mode this means the same proposal family as the RIS candidates.
+    DirectLightSample fallbackSample = sample;
+    bool hasAcceptedFallbackSample = accepted;
+    bool hasFallbackSample = accepted && IsValidDirectLightSample(sample);
+    uint pathRngStateAfterDirectLight = rng.state;
 
     if (!useDirectLightRIS)
     {
         if (!accepted)
         {
-            if (usePrimaryReservoir && _ShowDirectLightTemporalReuseDebug)
-                DirectLightReservoirDifference[pixelIndex] = float3(1.0, 0.0, 1.0);
+            if (usePrimaryReservoir && IsDirectLightReservoirStatusDebugView())
+                DirectLightDebugOutput[pixelIndex] = float3(1.0, 0.0, 1.0);
             return;
         }
 
-        if (usePrimaryReservoir)
+        if (usePrimaryReservoir && recordPrimaryReservoir)
         {
-            StoreInitialDirectLightReservoir(sample, hit.normal, pixelIndex);
-            if (_ShowDirectLightTemporalReuseDebug)
+            StoreInitialDirectLightReservoir(sample, surfaceNormal, pixelIndex);
+            if (IsDirectLightReservoirStatusDebugView())
             {
                 DirectLightReservoirData debugReservoir = DirectLightReservoirs[pixelIndex];
-                MarkDirectLightTemporalReuseDebug(
+                MarkDirectLightReservoirStatusDebug(
                     pixelIndex,
-                    _UseDirectLightReservoirTemporalReuse,
                     _HasDirectLightReservoirHistory,
-                    false,
-                    false,
                     false,
                     false,
                     debugReservoir.sampleCount);
             }
         }
 
-        EnqueueDirectLightSample(sample, hit.normal, pixelIndex);
+        rng.state = pathRngStateAfterDirectLight;
+        QueueDirectLightSample(sample, pixelIndex);
         return;
     }
 
-    uint risCount = max((uint)_DirectLightRISCandidateCount, 1u);
-    DirectLightReservoirData reservoir = (DirectLightReservoirData)0;
+    DirectLightSample selectedSample = (DirectLightSample)0;
     bool hasSelectedSample = false;
     bool selectedLastCandidate = false;
+    float weightSum = 0.0;
+    uint representedSampleCount = risCount;
 
-    if (accepted)
+    if (accepted && IsValidDirectLightSample(sample))
     {
-        reservoir = MakeInitialDirectLightReservoir(sample, hit.normal);
-        hasSelectedSample = true;
-        selectedLastCandidate = true;
+        selectedLastCandidate = UpdateDirectLightRISSelection(
+            selectedSample,
+            weightSum,
+            hasSelectedSample,
+            sample);
     }
 
     for (uint i = 1u; i < risCount; ++i)
@@ -605,59 +833,128 @@ void GenerateShadowRays(RayHit hit, float3 V, float3 throughput, uint pixelIndex
         sample = (DirectLightSample)0;
         accepted = false;
 
-        if (hasSun && candidateIndex == 0u)
-        {
-            accepted = BuildSunDirectLightSample(hit, V, throughput, selectPdf, sample);
-        }
-        else
-        {
-            uint pointCandidateIndex = candidateIndex - (hasSun ? 1u : 0u);
-            uint lightIdx = ResolvePointLightIndex(pointCandidateIndex, pointLightOffset, useCulledList);
-            accepted = BuildPointLightDirectSample(hit, V, throughput, lightIdx, selectPdf, sample);
-        }
+        accepted = SampleDirectLightCandidate(
+            hit,
+            V,
+            throughput,
+            hasSun,
+            pointLightOffset,
+            useCulledList,
+            candidateIndex,
+            proposalPdf,
+            sample);
 
-        if (!accepted)
+        if (!accepted || !IsValidDirectLightSample(sample))
             continue;
 
-        if (!hasSelectedSample)
-        {
-            reservoir = MakeInitialDirectLightReservoir(sample, hit.normal);
-            hasSelectedSample = true;
-            selectedLastCandidate = true;
-            continue;
-        }
+        selectedLastCandidate = UpdateDirectLightRISSelection(
+            selectedSample,
+            weightSum,
+            hasSelectedSample,
+            sample);
+    }
 
-        selectedLastCandidate = UpdateDirectLightReservoirCandidate(reservoir, sample, hit.normal);
+    if (useNeighborReuse)
+    {
+        uint neighborReuseCount = min((uint)max(_DirectLightNeighborReuseCount, 1), 8u);
+        uint neighborBase = (uint)_FrameCount & 7u;
+        for (uint i = 0u; i < neighborReuseCount; ++i)
+        {
+            uint neighborPixelIndex;
+            if (!TryGetDirectLightNeighborPixelIndex(pixelIndex, neighborBase + i, neighborPixelIndex))
+                continue;
+
+            DirectLightReservoirData prevReservoir = DirectLightReservoirsPrev[neighborPixelIndex];
+            DirectLightSample candidate = (DirectLightSample)0;
+            if (!BuildNeighborReusedDirectLightSample(hit, V, throughput, neighborPixelIndex, prevReservoir, candidate))
+                continue;
+
+            representedSampleCount += prevReservoir.sampleCount;
+            selectedLastCandidate = UpdateDirectLightRISSelection(
+                selectedSample,
+                weightSum,
+                hasSelectedSample,
+                candidate);
+        }
     }
 
     if (!hasSelectedSample)
     {
-        if (usePrimaryReservoir && _ShowDirectLightTemporalReuseDebug)
-            DirectLightReservoirDifference[pixelIndex] = float3(1.0, 0.0, 1.0);
+        if (hasAcceptedFallbackSample)
+        {
+            if (usePrimaryReservoir && recordPrimaryReservoir)
+            {
+                if (hasFallbackSample)
+                    StoreInitialDirectLightReservoir(fallbackSample, surfaceNormal, pixelIndex);
+                else
+                    ClearDirectLightReservoir(pixelIndex);
+            }
+            rng.state = pathRngStateAfterDirectLight;
+            QueueDirectLightSample(fallbackSample, pixelIndex);
+            return;
+        }
+
+        if (usePrimaryReservoir && IsDirectLightReservoirStatusDebugView())
+            DirectLightDebugOutput[pixelIndex] = float3(1.0, 0.0, 1.0);
+        rng.state = pathRngStateAfterDirectLight;
         return;
     }
 
-    reservoir.selectedWeight /= max((float)risCount, 1.0);
-    DirectLightReservoirs[pixelIndex] = reservoir;
-    if (usePrimaryReservoir && _ShowDirectLightTemporalReuseDebug)
+    float selectedWeight = GetDirectLightResamplingWeight(
+        weightSum,
+        selectedSample.targetLum,
+        representedSampleCount);
+    if (usePrimaryReservoir && recordPrimaryReservoir)
     {
-        MarkDirectLightTemporalReuseDebug(
-            pixelIndex,
-            _UseDirectLightReservoirTemporalReuse,
-            _HasDirectLightReservoirHistory,
-            false,
-            false,
-            true,
-            selectedLastCandidate,
-            reservoir.sampleCount);
+        DirectLightReservoirData debugReservoir = MakeInitialDirectLightReservoir(selectedSample, surfaceNormal);
+        debugReservoir.weightSum = weightSum;
+        debugReservoir.sampleCount = representedSampleCount;
+        debugReservoir.selectedWeight = selectedWeight;
+        DirectLightReservoirs[pixelIndex] = debugReservoir;
+        if (IsDirectLightReservoirStatusDebugView())
+        {
+            MarkDirectLightReservoirStatusDebug(
+                pixelIndex,
+                _HasDirectLightReservoirHistory,
+                true,
+                selectedLastCandidate,
+                representedSampleCount);
+        }
     }
 
-    float3 risIllumination = reservoir.contribution * reservoir.selectedWeight;
+    float3 risIllumination = selectedSample.contribution * selectedWeight;
+    bool validReservoirPayload =
+        all(isfinite(risIllumination)) &&
+        selectedWeight > 0.0 &&
+        dot(max(risIllumination, float3(0.0, 0.0, 0.0)), LUM) > 0.0;
+
+    if (!validReservoirPayload)
+    {
+        if (hasAcceptedFallbackSample)
+        {
+            if (usePrimaryReservoir && recordPrimaryReservoir)
+            {
+                if (hasFallbackSample)
+                    StoreInitialDirectLightReservoir(fallbackSample, surfaceNormal, pixelIndex);
+                else
+                    ClearDirectLightReservoir(pixelIndex);
+            }
+            rng.state = pathRngStateAfterDirectLight;
+            QueueDirectLightSample(fallbackSample, pixelIndex);
+            return;
+        }
+
+        rng.state = pathRngStateAfterDirectLight;
+        return;
+    }
+
+    rng.state = pathRngStateAfterDirectLight;
     EnqueueShadowRay(
-        reservoir.origin,
-        reservoir.direction,
-        reservoir.maxDist,
+        selectedSample.origin,
+        selectedSample.direction,
+        selectedSample.maxDist,
         risIllumination,
-        reservoir.selectPdf,
+        selectedSample.proposalPdf,
         pixelIndex);
+    return;
 }

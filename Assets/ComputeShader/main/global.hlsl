@@ -98,12 +98,11 @@ uint _BNodesCount;
 bool _OnlyDrawAlbedo;
 bool _OnlyDrawNormals;
 bool _OnlyDrawDepth;
-bool _UseDirectLightReservoirForPrimaryDirect;
-bool _ShowDirectLightReservoirDifference;
 bool _UseDirectLightReservoirRIS;
-bool _UseDirectLightReservoirTemporalReuse;
+bool _UseDirectLightReservoirNeighborReuse;
 bool _HasDirectLightReservoirHistory;
-bool _ShowDirectLightTemporalReuseDebug;
+int _DirectLightNeighborReuseCount;
+int _DirectLightDebugView;
 
 /// Debug
 
@@ -182,7 +181,7 @@ struct ShadowRayData
 {
     float3 origin;       float  maxDist;
     float3 direction;    uint   pixelIndex;
-    float3 illumination; float  selectPdf;
+    float3 illumination; float  proposalPdf;
 };
 
 struct DirectLightReservoirData
@@ -190,7 +189,7 @@ struct DirectLightReservoirData
     float3 origin;       float  maxDist;
     float3 direction;    float  targetLum;
     float3 contribution; float  weightSum;
-    float3 surfaceNormal; float  selectPdf;
+    float3 surfaceNormal; float  proposalPdf;
     uint   lightType;    uint   lightIndex;
     uint   sampleCount;  float  selectedWeight;
 };
@@ -202,7 +201,7 @@ RWStructuredBuffer<HitData>          GlobalHits;
 RWStructuredBuffer<ShadowRayData>    ShadowRaysBuffer;
 RWStructuredBuffer<DirectLightReservoirData> DirectLightReservoirs;
 StructuredBuffer<DirectLightReservoirData> DirectLightReservoirsPrev;
-RWStructuredBuffer<float3>            DirectLightReservoirDifference;
+RWStructuredBuffer<float3>            DirectLightDebugOutput;
 RWStructuredBuffer<PathContribution> GlobalColors;
 RWStructuredBuffer<uint>              IndirectArgs;
 
