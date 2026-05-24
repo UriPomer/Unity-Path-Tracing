@@ -145,6 +145,7 @@ public class Tracing : MonoBehaviour
     private readonly Vector4[] _directLightDiagnosticsData = new Vector4[22];
     private readonly Vector4[] _directLightDiagnosticsSnapshot = new Vector4[22];
     private bool _hasDirectLightDiagnosticsSnapshot = false;
+    private bool _firstFrameConfigWritten = false;
     private static readonly Vector3 LuminanceWeights = new Vector3(0.2126f, 0.7152f, 0.0722f);
     private int _previousTargetFrameRate = -1;
     private int _previousVSyncCount = -1;
@@ -341,6 +342,12 @@ public class Tracing : MonoBehaviour
         }
 
         SetShaderParameters();
+        if (!_firstFrameConfigWritten)
+        {
+            DiagnosticsWriter.WriteConfigLine(gameObject.scene.name, _currentRenderWidth, _currentRenderHeight,
+                UseDirectLightReservoirRIS, UseDirectLightReservoirNeighborReuse, TraceDepth);
+            _firstFrameConfigWritten = true;
+        }
         sampleCount++;
 
         Array.Clear(_directLightDiagnosticsData, 0, _directLightDiagnosticsData.Length);
@@ -607,6 +614,17 @@ public class Tracing : MonoBehaviour
         _directLightDiagnostics.GetData(_directLightDiagnosticsData);
         Array.Copy(_directLightDiagnosticsData, _directLightDiagnosticsSnapshot, _directLightDiagnosticsData.Length);
         _hasDirectLightDiagnosticsSnapshot = true;
+
+        // 写诊断出口
+        if (_hasPrimarySurfaceHistory)
+        {
+            DiagnosticsWriter.WriteFrameData(
+                sampleCount, sampleCount, DirectLightDiagnosticPixelOffset,
+                _directLightDiagnosticsData, gameObject.scene.name,
+                _currentRenderWidth, _currentRenderHeight,
+                UseDirectLightReservoirRIS, UseDirectLightReservoirNeighborReuse,
+                TraceDepth);
+        }
     }
 
     private int GetDirectLightDebugPixelIndex()
@@ -1100,12 +1118,14 @@ public class Tracing : MonoBehaviour
         _hasPrimarySurfaceHistory = false;
         _hasDirectLightReservoirHistory = false;
         _hasDirectLightDiagnosticsSnapshot = false;
+        _firstFrameConfigWritten = false;
     }
 
     void ResetAccumulationOnly()
     {
         sampleCount = 0;
         _hasDirectLightDiagnosticsSnapshot = false;
+        _firstFrameConfigWritten = false;
     }
 
     private bool IsDirectLightDebugViewActive()
