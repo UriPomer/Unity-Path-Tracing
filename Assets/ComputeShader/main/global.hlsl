@@ -40,6 +40,7 @@ float2 _Resolution;
 int _TraceDepth;
 float4x4 _CameraToWorld;
 float4x4 _CameraInverseProjection;
+float4x4 _PreviousCameraViewProjection;
 Texture2D<float4> _SkyboxTexture;
 SamplerState sampler_SkyboxTexture;
 float3 _InverseDirectionalLight;
@@ -98,11 +99,13 @@ uint _BNodesCount;
 bool _OnlyDrawAlbedo;
 bool _OnlyDrawNormals;
 bool _OnlyDrawDepth;
+bool _HasPrimarySurfaceHistory;
 bool _UseDirectLightReservoirRIS;
 bool _UseDirectLightReservoirNeighborReuse;
 bool _HasDirectLightReservoirHistory;
 int _DirectLightNeighborReuseCount;
 int _DirectLightDebugView;
+uint _DirectLightDebugPixelIndex;
 
 /// Debug
 
@@ -158,7 +161,9 @@ struct RayData
 struct PathContribution
 {
     float3 L;
+    float _padding0;
     float3 throughput;
+    float _padding1;
 };
 
 struct BufferSizeData
@@ -197,11 +202,16 @@ struct DirectLightReservoirData
 globallycoherent RWStructuredBuffer<BufferSizeData> BufferSizes;
 RWStructuredBuffer<RayData>          GlobalRays;
 RWStructuredBuffer<RayData>          GlobalRays2;
+StructuredBuffer<RayData>            ShadeRays;
 RWStructuredBuffer<HitData>          GlobalHits;
+StructuredBuffer<HitData>            ShadeHits;
+RWStructuredBuffer<HitData>          PrimarySurfaceHistory;
+StructuredBuffer<HitData>            PrimarySurfaceHistoryPrev;
 RWStructuredBuffer<ShadowRayData>    ShadowRaysBuffer;
 RWStructuredBuffer<DirectLightReservoirData> DirectLightReservoirs;
 StructuredBuffer<DirectLightReservoirData> DirectLightReservoirsPrev;
 RWStructuredBuffer<float3>            DirectLightDebugOutput;
+RWStructuredBuffer<float4>            DirectLightDiagnostics;
 RWStructuredBuffer<PathContribution> GlobalColors;
 RWStructuredBuffer<uint>              IndirectArgs;
 
@@ -256,6 +266,23 @@ RayHit GenRayHit()
     hit.material = GenMaterial(float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), 0, 0.0f, 0.0f, 1.0f, 1.0f);
     hit.mode = 0.0f;
     hit.should_break = false;
+    return hit;
+}
+
+HitData GenHitData()
+{
+    HitData hit;
+    hit.position = float3(0.0f, 0.0f, 0.0f);
+    hit.distance = 1.#INF;
+    hit.normal = float3(0.0f, 0.0f, 0.0f);
+    hit.mode = 0.0f;
+    hit.albedo = float3(0.0f, 0.0f, 0.0f);
+    hit.emission = float3(0.0f, 0.0f, 0.0f);
+    hit.emissionIntensity = 0.0f;
+    hit.roughness = 0.0f;
+    hit.metallic = 0.0f;
+    hit.alpha = 0.0f;
+    hit.ior = 1.0f;
     return hit;
 }
 

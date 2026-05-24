@@ -499,17 +499,17 @@ MonoBehaviour:
   SunFocus: 1
   SunAngularRadius: 0.0373
   TraceDepth: 8
-  targetFrameRate: 90
+  targetFrameRate: 30
+  FrameLimit: 0
   OnlyDrawAlbedo: 0
   OnlyDrawNormals: 0
   OnlyDrawDepth: 0
   DirectLightRISCandidateCount: 1
   UseDirectLightReservoirRIS: 1
-  UseDirectLightReservoirForPrimaryDirect: 0
-  UseDirectLightReservoirTemporalReuse: 0
   UseDirectLightReservoirNeighborReuse: 0
   DirectLightNeighborReuseCount: 4
   DirectLightDebugViewMode: 0
+  DirectLightDiagnosticPixelOffset: {x: 0, y: 0}
   Denoise: 0
   ToneMap: 1
   Exposure: 1

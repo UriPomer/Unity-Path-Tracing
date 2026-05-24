@@ -3,6 +3,8 @@
 #pragma kernel kernel_shade
 #pragma kernel kernel_shadow
 #pragma kernel kernel_finalize
+#pragma kernel kernel_copy_direct_light_reservoir_history
+#pragma kernel kernel_copy_primary_surface_history
 #pragma kernel TransferKernel
 
 #include "function.hlsl"
@@ -10,6 +12,9 @@
 #include "colors.hlsl"
 #include "test.hlsl"
 #include "trace.hlsl"
+
+RWStructuredBuffer<DirectLightReservoirData> DirectLightReservoirsPrevRW;
+RWStructuredBuffer<HitData> PrimarySurfaceHistoryPrevRW;
 
 // ==================== Kernel 0: Generate Primary Rays ====================
 
@@ -39,6 +44,8 @@ void kernel_generate(uint3 id : SV_DispatchThreadID)
     GlobalColors[id.x].L = float3(0, 0, 0);
     GlobalColors[id.x].throughput = float3(1, 1, 1);
     GlobalHits[id.x].distance = 1.#INF;
+    DirectLightDebugOutput[id.x] = float3(0, 0, 0);
+    PrimarySurfaceHistory[id.x] = GenHitData();
     ClearDirectLightReservoir(id.x);
 
     // Debug modes: write debug color to GlobalColors (finalize kernel will output it)
@@ -106,19 +113,25 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
     int rayCount = BufferSizes[CurBounce].traceRays;
     if (rayCount <= 0 || id.x >= (uint)rayCount) return;
 
-    RayData rd = GlobalRays[id.x];
+    RayData rd = ShadeRays[id.x];
     if (rd.throughput.x <= 0 && rd.throughput.y <= 0 && rd.throughput.z <= 0) return;
 
     rng.state = rd.rngState;
     _Pixel = uint2(rd.pixelIndex % _ScreenWidth, rd.pixelIndex / _ScreenWidth);
 
-    HitData hd = GlobalHits[id.x];
+    HitData hd = ShadeHits[id.x];
     float3 throughput = rd.throughput;
     float3 L = GlobalColors[rd.pixelIndex].L;
 
     // Miss → skybox
     if (hd.distance >= 1.#INF)
     {
+        if (CurBounce == 0)
+            WriteDirectLightDiagnosticSnapshot(rd.pixelIndex, false);
+
+        if (CurBounce == 0 && IsDirectLightNeighborReplayDebugView())
+            DirectLightDebugOutput[rd.pixelIndex] = GetDirectLightNeighborReplayDebugNoSurfaceColor();
+
         Ray ray;
         ray.origin = rd.origin;
         ray.dir = rd.direction;
@@ -142,6 +155,9 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
     hit.material.alpha = hd.alpha;
     hit.material.ior = hd.ior;
     hit.should_break = false;
+
+    if (CurBounce == 0)
+        PrimarySurfaceHistory[rd.pixelIndex] = hd;
 
     // Emission
     if (hit.material.emissionIntensity > 0.0f)
@@ -261,6 +277,24 @@ void kernel_finalize(uint3 id : SV_DispatchThreadID)
     }
 
     _Result[id.xy] = float4(GlobalColors[pixelIndex].L, 1.0f);
+}
+
+[numthreads(64, 1, 1)]
+void kernel_copy_direct_light_reservoir_history(uint3 id : SV_DispatchThreadID)
+{
+    uint pixelCount = _ScreenWidth * _ScreenHeight;
+    if (id.x >= pixelCount) return;
+
+    DirectLightReservoirsPrevRW[id.x] = DirectLightReservoirs[id.x];
+}
+
+[numthreads(64, 1, 1)]
+void kernel_copy_primary_surface_history(uint3 id : SV_DispatchThreadID)
+{
+    uint pixelCount = _ScreenWidth * _ScreenHeight;
+    if (id.x >= pixelCount) return;
+
+    PrimarySurfaceHistoryPrevRW[id.x] = PrimarySurfaceHistory[id.x];
 }
 
 // ==================== Kernel 5: Transfer (compute indirect dispatch args) ====================
