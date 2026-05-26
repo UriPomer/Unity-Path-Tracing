@@ -3,17 +3,25 @@
 #pragma kernel kernel_shade
 #pragma kernel kernel_shadow
 #pragma kernel kernel_finalize
-#pragma kernel kernel_copy_direct_light_reservoir_history
 #pragma kernel kernel_copy_primary_surface_history
 #pragma kernel TransferKernel
+#pragma kernel kernel_prepare_lights
+#pragma kernel kernel_generate_initial
+#pragma kernel kernel_temporal_resampling
+#pragma kernel kernel_shade_di_samples
 
 #include "function.hlsl"
 #include "bxdf.hlsl"
 #include "colors.hlsl"
 #include "test.hlsl"
 #include "trace.hlsl"
+#include "restir/restir_common.hlsl"
+#include "restir/reservoir.hlsl"
+#include "restir/prepare_lights.hlsl"
+#include "restir/generate_initial.hlsl"
+#include "restir/temporal_resampling.hlsl"
+#include "restir/shade_di.hlsl"
 
-RWStructuredBuffer<DirectLightReservoirData> DirectLightReservoirsPrevRW;
 RWStructuredBuffer<HitData> PrimarySurfaceHistoryPrevRW;
 
 // ==================== Kernel 0: Generate Primary Rays ====================
@@ -44,9 +52,7 @@ void kernel_generate(uint3 id : SV_DispatchThreadID)
     GlobalColors[id.x].L = float3(0, 0, 0);
     GlobalColors[id.x].throughput = float3(1, 1, 1);
     GlobalHits[id.x].distance = 1.#INF;
-    DirectLightDebugOutput[id.x] = float3(0, 0, 0);
     PrimarySurfaceHistory[id.x] = GenHitData();
-    ClearDirectLightReservoir(id.x);
 
     // Debug modes: write debug color to GlobalColors (finalize kernel will output it)
     if (_OnlyDrawAlbedo || _OnlyDrawDepth || _OnlyDrawNormals)
@@ -126,12 +132,6 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
     // Miss → skybox
     if (hd.distance >= 1.#INF)
     {
-        if (CurBounce == 0)
-            WriteDirectLightDiagnosticSnapshot(rd.pixelIndex, false);
-
-        if (CurBounce == 0 && IsDirectLightNeighborReplayDebugView())
-            DirectLightDebugOutput[rd.pixelIndex] = GetDirectLightNeighborReplayDebugNoSurfaceColor();
-
         Ray ray;
         ray.origin = rd.origin;
         ray.dir = rd.direction;
@@ -165,7 +165,8 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
 
     // Wavefront direct lighting: shade samples a light candidate and queues a shadow ray.
     // The shadow kernel is the only stage that resolves visibility and commits the contribution.
-    GenerateShadowRays(hit, -rd.direction, throughput, rd.pixelIndex);
+    if (!_UseReSTIRDI || CurBounce > 0)
+        GenerateShadowRays(hit, -rd.direction, throughput, rd.pixelIndex);
 
     // BXDF sampling
     Ray ray;
@@ -219,48 +220,10 @@ void kernel_shadow(uint3 id : SV_DispatchThreadID)
     ray.dir = sr.direction;
     ray.invDir = 1.0 / ray.dir;
 
-    // Any-hit: occluded -> skip
     if (IntersectTlasFast(ray, sr.maxDist))
-    {
-        if (CurBounce == 0 && _DirectLightDebugView == 4)
-            DirectLightDebugOutput[sr.pixelIndex] = float3(1.0, 0.0, 0.0);
         return;
-    }
 
-    float3 defaultDirect = sr.illumination;
-    float3 reservoirDirect = float3(0.0, 0.0, 0.0);
-    bool hasReservoir = false;
-    if (CurBounce == 0)
-    {
-        DirectLightReservoirData reservoir = DirectLightReservoirs[sr.pixelIndex];
-        if (reservoir.sampleCount > 0u)
-        {
-            reservoirDirect = reservoir.contribution * reservoir.selectedWeight;
-            hasReservoir = true;
-        }
-
-        if (_DirectLightDebugView == 1)
-        {
-            DirectLightDebugOutput[sr.pixelIndex] = max(defaultDirect, float3(0.0, 0.0, 0.0));
-        }
-        else if (_DirectLightDebugView == 2)
-        {
-            DirectLightDebugOutput[sr.pixelIndex] = hasReservoir
-                ? max(reservoirDirect, float3(0.0, 0.0, 0.0))
-                : float3(0.0, 0.0, 0.0);
-        }
-        else if (_DirectLightDebugView == 3)
-        {
-            DirectLightDebugOutput[sr.pixelIndex] = hasReservoir
-                ? abs(defaultDirect - reservoirDirect)
-                : float3(0.0, 0.0, 0.0);
-        }
-    }
-
-    // Unoccluded -> accumulate the validated shadow-ray payload. The render
-    // path always resolves sr.illumination here; DirectLightReservoirs are only
-    // carried alongside for debug views and staged reuse bookkeeping.
-    GlobalColors[sr.pixelIndex].L += defaultDirect;
+    GlobalColors[sr.pixelIndex].L += sr.illumination;
 }
 
 // ==================== Kernel 4: Finalize ====================
@@ -270,22 +233,7 @@ void kernel_finalize(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= _ScreenWidth || id.y >= _ScreenHeight) return;
     uint pixelIndex = id.y * _ScreenWidth + id.x;
-    if (_DirectLightDebugView != 0)
-    {
-        _Result[id.xy] = float4(DirectLightDebugOutput[pixelIndex], 1.0f);
-        return;
-    }
-
     _Result[id.xy] = float4(GlobalColors[pixelIndex].L, 1.0f);
-}
-
-[numthreads(64, 1, 1)]
-void kernel_copy_direct_light_reservoir_history(uint3 id : SV_DispatchThreadID)
-{
-    uint pixelCount = _ScreenWidth * _ScreenHeight;
-    if (id.x >= pixelCount) return;
-
-    DirectLightReservoirsPrevRW[id.x] = DirectLightReservoirs[id.x];
 }
 
 [numthreads(64, 1, 1)]

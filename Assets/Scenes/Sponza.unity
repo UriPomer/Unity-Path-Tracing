@@ -505,8 +505,9 @@ MonoBehaviour:
   OnlyDrawNormals: 0
   OnlyDrawDepth: 0
   DirectLightRISCandidateCount: 1
-  UseDirectLightReservoirRIS: 1
+  UseDirectLightReservoirRIS: 0
   UseDirectLightReservoirNeighborReuse: 0
+  UseReSTIRDI: 1
   DirectLightNeighborReuseCount: 4
   DirectLightDebugViewMode: 0
   DirectLightDiagnosticPixelOffset: {x: 0, y: 0}

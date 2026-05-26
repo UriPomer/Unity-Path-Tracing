@@ -34,41 +34,12 @@ public class TracingEditor : Editor
 
         DrawSection("Direct Light Sampling", () =>
         {
-            Draw("UseDirectLightReservoirRIS", "Use RIS");
             Draw("DirectLightRISCandidateCount", "Candidate Count");
         });
 
-        DrawSection("Prev-Frame Neighbor Replay", () =>
+        DrawSection("ReSTIR DI", () =>
         {
-            EditorGUILayout.HelpBox(
-                "This replays previous-frame reservoirs from nearby pixels. It is not the paper's full spatial reuse pass yet.",
-                MessageType.Info);
-            EditorGUILayout.HelpBox(
-                "Mode 5 colors: Gray = no first-hit surface, Magenta = replay path off, Blue = waiting for previous-frame history, Cyan = no direct-light candidates, Black = current pixel has no valid local direct-light sample, White = no stored previous reservoir, Orange = stored reservoir invalid, Red = valid source only, Yellow = compatible but re-eval failed, Green = re-evaluated. Debug view bypasses tone mapping and exposure.",
-                MessageType.None);
-            Draw("UseDirectLightReservoirNeighborReuse", "Use Prev-Frame Neighbor Replay");
-            Draw("DirectLightNeighborReuseCount", "Replay Neighbor Count");
-        });
-
-        DrawSection("Direct Light Debug", () =>
-        {
-            Draw("DirectLightDebugViewMode", "Debug View");
-            Draw("DirectLightDiagnosticPixelOffset", "Diagnostic Pixel Offset");
-        });
-
-        DrawSection("Center Pixel Diagnostics", () =>
-        {
-            Tracing tracing = (Tracing)target;
-            string diagnosticsText = string.Join("\n", tracing.GetDirectLightDiagnosticsSummaryLines());
-
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                GUILayout.FlexibleSpace();
-                if (GUILayout.Button("Copy All", GUILayout.Width(80f)))
-                    EditorGUIUtility.systemCopyBuffer = diagnosticsText;
-            }
-
-            EditorGUILayout.SelectableLabel(diagnosticsText, EditorStyles.textArea, GUILayout.MinHeight(90f));
+            Draw("UseReSTIRDI", "Use ReSTIR DI");
         });
 
         DrawSection("Output", () =>

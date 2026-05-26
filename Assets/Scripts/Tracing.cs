@@ -8,16 +8,6 @@ using UnityEngine.Rendering;
 using UnityEditor;
 #endif
 
-public enum DirectLightDebugView
-{
-    Off = 0,
-    ResolvedDirect = 1,
-    RISEstimate = 2,
-    RISError = 3,
-    ReservoirStatus = 4,
-    NeighborReplayStages = 5,
-}
-
 [RequireComponent(typeof(LightManager))]
 [RequireComponent(typeof(LightCullingManager))]
 public class Tracing : MonoBehaviour
@@ -51,11 +41,7 @@ public class Tracing : MonoBehaviour
     [SerializeField] bool OnlyDrawNormals = false;
     [SerializeField] bool OnlyDrawDepth = false;
     [SerializeField, Range(1, 16)] int DirectLightRISCandidateCount = 1;
-    [SerializeField] bool UseDirectLightReservoirRIS = false;
-    [SerializeField] bool UseDirectLightReservoirNeighborReuse = false;
-    [SerializeField, Range(1, 8)] int DirectLightNeighborReuseCount = 4;
-    [SerializeField] DirectLightDebugView DirectLightDebugViewMode = DirectLightDebugView.Off;
-    [SerializeField] Vector2Int DirectLightDiagnosticPixelOffset = Vector2Int.zero;
+    [SerializeField] bool UseReSTIRDI = false;
     [SerializeField] bool Denoise = true;
     private bool _OldDenoise = true;
 
@@ -85,9 +71,12 @@ public class Tracing : MonoBehaviour
     private int kernelShade;
     private int kernelShadow;
     private int kernelFinalize;
-    private int kernelCopyDirectLightReservoirHistory;
     private int kernelCopyPrimarySurfaceHistory;
     private int kernelTransfer;
+    private int kernelPrepareLights;
+    private int kernelGenerateInitial;
+    private int kernelTemporalResampling;
+    private int kernelShadeDISamples;
 
     // Multi-pass buffers
     private ComputeBuffer _globalRaysA;
@@ -97,9 +86,10 @@ public class Tracing : MonoBehaviour
     private ComputeBuffer _primarySurfaceHistoryPrev;
     private ComputeBuffer _shadowRays;
     private ComputeBuffer _directLightReservoirs;
-    private ComputeBuffer _directLightReservoirsPrev;
-    private ComputeBuffer _directLightDebugOutput;
-    private ComputeBuffer _directLightDiagnostics;
+    private ComputeBuffer _lightDataPacked;
+    private int _lastFrameReservoirOutputIdx = 0;
+    private int _restirShadingReservoirIdx = 0;
+    private bool _hasRestirHistory = false;
     private ComputeBuffer _globalColors;
     private ComputeBuffer _bufferSizes;
     private ComputeBuffer _indirectArgs;
@@ -109,8 +99,6 @@ public class Tracing : MonoBehaviour
     private const int HitDataStride = 76;          // 4×(float3+scalar) + 2×float + float = 4×16+8+4
     private const int ShadowRayDataStride = 48;    // 3×(float3+scalar)
     private const int DirectLightReservoirStride = 80; // matches DirectLightReservoirData (5 float4 rows)
-    private const int DirectLightDebugOutputStride = 12; // float3
-    private const int DirectLightDiagnosticsStride = 16; // float4
     private const int PathContributionStride = 32; // two float3 lanes plus explicit HLSL padding
     private const int BufferSizeDataStride = 8;    // int+int = 4+4
     private const int IndirectArgsStride = 4;      // uint x3 = 3 elements x 4 bytes each
@@ -135,18 +123,18 @@ public class Tracing : MonoBehaviour
     private int _oldTargetFrameRate = 90;
     private int _oldFrameLimit = 0;
     private int _oldDirectLightRISCandidateCount = 1;
-    private bool _oldUseDirectLightReservoirRIS = false;
-    private bool _oldUseDirectLightReservoirNeighborReuse = false;
-    private int _oldDirectLightNeighborReuseCount = 4;
+    private bool _oldUseReSTIRDI = false;
     private bool _hasPrimarySurfaceHistory = false;
-    private DirectLightDebugView _oldDirectLightDebugViewMode = DirectLightDebugView.Off;
-    private bool _hasDirectLightReservoirHistory = false;
     private Matrix4x4 _previousCameraViewProjection = Matrix4x4.identity;
-    private readonly Vector4[] _directLightDiagnosticsData = new Vector4[22];
-    private readonly Vector4[] _directLightDiagnosticsSnapshot = new Vector4[22];
-    private bool _hasDirectLightDiagnosticsSnapshot = false;
-    private bool _firstFrameConfigWritten = false;
-    private static readonly Vector3 LuminanceWeights = new Vector3(0.2126f, 0.7152f, 0.0722f);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LightDataPackedCPU
+    {
+        public Vector3 position; public float range;
+        public Vector3 color; public float intensity;
+        public Vector3 direction; public float sourceRadius;
+        public float power; public float cdf;
+        public uint lightType; public uint originalIndex;
+    }
     private int _previousTargetFrameRate = -1;
     private int _previousVSyncCount = -1;
     private int _previousRenderFrameInterval = -1;
@@ -184,9 +172,12 @@ public class Tracing : MonoBehaviour
         kernelShade = tracingShader.FindKernel("kernel_shade");
         kernelShadow = tracingShader.FindKernel("kernel_shadow");
         kernelFinalize = tracingShader.FindKernel("kernel_finalize");
-        kernelCopyDirectLightReservoirHistory = tracingShader.FindKernel("kernel_copy_direct_light_reservoir_history");
         kernelCopyPrimarySurfaceHistory = tracingShader.FindKernel("kernel_copy_primary_surface_history");
         kernelTransfer = tracingShader.FindKernel("TransferKernel");
+        kernelPrepareLights = tracingShader.FindKernel("kernel_prepare_lights");
+        kernelGenerateInitial = tracingShader.FindKernel("kernel_generate_initial");
+        kernelTemporalResampling = tracingShader.FindKernel("kernel_temporal_resampling");
+        kernelShadeDISamples = tracingShader.FindKernel("kernel_shade_di_samples");
 
         // Pre-allocate reusable arrays and names
         bvhKernels = new int[] { kernelGenerate, kernelTrace, kernelShade, kernelShadow };
@@ -228,7 +219,6 @@ public class Tracing : MonoBehaviour
 
         ReleaseBuffers();
         _hasPrimarySurfaceHistory = false;
-        _hasDirectLightReservoirHistory = false;
 
         int pixelCount = width * height;
 
@@ -239,13 +229,17 @@ public class Tracing : MonoBehaviour
         _primarySurfaceHistoryPrev = new ComputeBuffer(pixelCount, HitDataStride);
         // Keep headroom for future direct-light candidates/reservoir experiments.
         _shadowRays = new ComputeBuffer(pixelCount * 2, ShadowRayDataStride);
-        _directLightReservoirs = new ComputeBuffer(pixelCount, DirectLightReservoirStride);
-        _directLightReservoirsPrev = new ComputeBuffer(pixelCount, DirectLightReservoirStride);
-        _directLightDebugOutput = new ComputeBuffer(pixelCount, DirectLightDebugOutputStride);
-        _directLightDiagnostics = new ComputeBuffer(_directLightDiagnosticsData.Length, DirectLightDiagnosticsStride);
+        _directLightReservoirs = new ComputeBuffer(pixelCount * 3, DirectLightReservoirStride);
         _globalColors = new ComputeBuffer(pixelCount, PathContributionStride);
         _bufferSizes = new ComputeBuffer(TraceDepth + 1, BufferSizeDataStride);
         _indirectArgs = new ComputeBuffer(3, IndirectArgsStride, ComputeBufferType.IndirectArguments);
+
+        int maxLights = Mathf.Max(LightManager.Instance?.GetPointLightsCount() ?? 0, 1) + 1;
+        _lightDataPacked?.Release();
+        _lightDataPacked = new ComputeBuffer(maxLights * 2, sizeof(float) * 16);
+
+        _hasRestirHistory = false;
+        _lastFrameReservoirOutputIdx = 0;
 
         prevWidth = width;
         prevHeight = height;
@@ -261,13 +255,11 @@ public class Tracing : MonoBehaviour
         _primarySurfaceHistoryPrev?.Release(); _primarySurfaceHistoryPrev = null;
         _shadowRays?.Release(); _shadowRays = null;
         _directLightReservoirs?.Release(); _directLightReservoirs = null;
-        _directLightReservoirsPrev?.Release(); _directLightReservoirsPrev = null;
-        _directLightDebugOutput?.Release(); _directLightDebugOutput = null;
-        _directLightDiagnostics?.Release(); _directLightDiagnostics = null;
         _globalColors?.Release(); _globalColors = null;
         _bufferSizes?.Release(); _bufferSizes = null;
         _indirectArgs?.Release(); _indirectArgs = null;
-        _hasDirectLightDiagnosticsSnapshot = false;
+        _lightDataPacked?.Release(); _lightDataPacked = null;
+        _hasRestirHistory = false;
         prevWidth = 0;
         prevHeight = 0;
         prevTraceDepth = 0;
@@ -327,9 +319,7 @@ public class Tracing : MonoBehaviour
         CreateBuffersIfNeeded(renderDimensions.x, renderDimensions.y);
         if (FrameLimit > 0 && sampleCount >= FrameLimit)
         {
-            if (IsDirectLightDebugViewActive())
-                Graphics.Blit(target, destination);
-            else if (Denoise)
+            if (Denoise)
                 BlitToDisplay(frameConverged, destination);
             else
                 BlitToDisplay(target, destination);
@@ -342,16 +332,7 @@ public class Tracing : MonoBehaviour
         }
 
         SetShaderParameters();
-        if (!_firstFrameConfigWritten)
-        {
-            DiagnosticsWriter.WriteConfigLine(gameObject.scene.name, _currentRenderWidth, _currentRenderHeight,
-                UseDirectLightReservoirRIS, UseDirectLightReservoirNeighborReuse, TraceDepth);
-            _firstFrameConfigWritten = true;
-        }
         sampleCount++;
-
-        Array.Clear(_directLightDiagnosticsData, 0, _directLightDiagnosticsData.Length);
-        _directLightDiagnostics.SetData(_directLightDiagnosticsData);
 
         int pixelCount = _currentRenderWidth * _currentRenderHeight;
 
@@ -368,6 +349,14 @@ public class Tracing : MonoBehaviour
 
         // 2. Per-bounce loop (skip when debug modes set throughput=0)
         bool debugMode = OnlyDrawAlbedo || OnlyDrawNormals || OnlyDrawDepth;
+
+        // ReSTIR DI: direct lighting on primary hits (runs before wavefront bounce loop)
+        if (UseReSTIRDI && !debugMode)
+        {
+            tracingShader.SetInt("CurBounce", 0);
+            DispatchReSTIRDI(pixelCount);
+        }
+
         if (!debugMode)
         {
             bool readA = true;
@@ -420,14 +409,8 @@ public class Tracing : MonoBehaviour
             Mathf.CeilToInt(_currentRenderHeight / 8.0f), 1);
 
         tracingShader.Dispatch(kernelCopyPrimarySurfaceHistory, (pixelCount + 63) / 64, 1, 1);
-        tracingShader.Dispatch(kernelCopyDirectLightReservoirHistory, (pixelCount + 63) / 64, 1, 1);
-        CaptureDirectLightDiagnosticsSnapshot();
 
-        if (IsDirectLightDebugViewActive())
-        {
-            Graphics.Blit(target, destination);
-        }
-        else if (Denoise)
+        if (Denoise)
         {
             _addMaterial.SetFloat("_Sample", sampleCount);
             Graphics.Blit(target, frameConverged, _addMaterial);
@@ -439,7 +422,117 @@ public class Tracing : MonoBehaviour
         }
 
         _hasPrimarySurfaceHistory = true;
-        _hasDirectLightReservoirHistory = true;
+    }
+
+    private void DispatchReSTIRDI(int pixelCount)
+    {
+        if (!UseReSTIRDI) return;
+
+        int initialIdx = (_lastFrameReservoirOutputIdx + 1) % 3;
+        int temporalIdx = (_lastFrameReservoirOutputIdx + 2) % 3;
+        int prevIdx = _lastFrameReservoirOutputIdx;
+
+        int lightCount = 1 + LightManager.Instance.GetPointLightsCount();
+        // Clamp to buffer capacity
+        int maxLightSlots = _lightDataPacked != null ? _lightDataPacked.count : 0;
+        lightCount = Mathf.Min(lightCount, maxLightSlots);
+
+        // --- 1. Prepare lights ---
+        BindRestirCommonParams(kernelPrepareLights);
+        BindSceneBuffersToKernel(kernelPrepareLights);
+        tracingShader.SetBuffer(kernelPrepareLights, "_LightDataPacked", _lightDataPacked);
+        tracingShader.SetInt("_LightDataPackedCount", lightCount);
+        tracingShader.Dispatch(kernelPrepareLights, (lightCount + 63) / 64, 1, 1);
+
+        // --- 1b. Build CDF on CPU ---
+        if (lightCount > 0 && _lightDataPacked != null)
+        {
+            var lightData = new LightDataPackedCPU[lightCount];
+            _lightDataPacked.GetData(lightData, 0, 0, lightCount);
+            float runningCdf = 0f;
+            for (int i = 0; i < lightData.Length; i++)
+            {
+                runningCdf += lightData[i].power;
+                lightData[i].cdf = runningCdf;
+            }
+            _lightDataPacked.SetData(lightData, 0, 0, lightCount);
+        }
+
+        // --- 2. Generate initial reservoirs ---
+        BindRestirCommonParams(kernelGenerateInitial);
+        BindSceneBuffersToKernel(kernelGenerateInitial);
+        tracingShader.SetBuffer(kernelGenerateInitial, "DirectLightReservoirs", _directLightReservoirs);
+        tracingShader.SetBuffer(kernelGenerateInitial, "_RestirGbuffer", _primarySurfaceHistory);
+        tracingShader.SetBuffer(kernelGenerateInitial, "_RestirLightData", _lightDataPacked);
+        tracingShader.SetInt("_RestirLightCount", lightCount);
+        tracingShader.SetInt("_RestirInitialReservoirOffset", initialIdx * pixelCount);
+        tracingShader.SetInt("_RestirCandidateCount", DirectLightRISCandidateCount);
+        tracingShader.Dispatch(kernelGenerateInitial, (pixelCount + 63) / 64, 1, 1);
+
+        // --- 3. Temporal resampling ---
+        bool useTemporal = _hasRestirHistory;
+        if (useTemporal)
+        {
+            BindRestirCommonParams(kernelTemporalResampling);
+            BindSceneBuffersToKernel(kernelTemporalResampling);
+            tracingShader.SetBuffer(kernelTemporalResampling, "DirectLightReservoirs", _directLightReservoirs);
+            tracingShader.SetInt("_RestirInitialReservoirOffset", initialIdx * pixelCount);
+            tracingShader.SetInt("_RestirTemporalReservoirOffset", temporalIdx * pixelCount);
+            tracingShader.SetInt("_RestirPrevReservoirOffset", prevIdx * pixelCount);
+            tracingShader.SetBuffer(kernelTemporalResampling, "_RestirGbuffer", _primarySurfaceHistory);
+            tracingShader.SetBuffer(kernelTemporalResampling, "_RestirGbufferPrevious", _primarySurfaceHistoryPrev);
+            tracingShader.Dispatch(kernelTemporalResampling, (pixelCount + 63) / 64, 1, 1);
+        }
+
+        int shadingReservoirIdx = useTemporal ? temporalIdx : initialIdx;
+
+        // --- 4. Shade DI samples ---
+        BindRestirCommonParams(kernelShadeDISamples);
+        BindSceneBuffersToKernel(kernelShadeDISamples);
+        tracingShader.SetBuffer(kernelShadeDISamples, "DirectLightReservoirs", _directLightReservoirs);
+        tracingShader.SetBuffer(kernelShadeDISamples, "GlobalColors", _globalColors);
+        tracingShader.SetInt("_RestirShadingReservoirOffset", shadingReservoirIdx * pixelCount);
+        tracingShader.Dispatch(kernelShadeDISamples, (pixelCount + 63) / 64, 1, 1);
+
+        // Advance rotation
+        _lastFrameReservoirOutputIdx = temporalIdx;
+        _restirShadingReservoirIdx = shadingReservoirIdx;
+        _hasRestirHistory = true;
+    }
+
+    private void BindRestirCommonParams(int kernel)
+    {
+        tracingShader.SetInt("_ScreenWidth", _currentRenderWidth);
+        tracingShader.SetInt("_ScreenHeight", _currentRenderHeight);
+        tracingShader.SetInt("_FrameCount", (int)frameId);
+    }
+
+    private void BindSceneBuffersToKernel(int kernel)
+    {
+        if (BVHBuilder.VertexBuffer != null) tracingShader.SetBuffer(kernel, "_Vertices", BVHBuilder.VertexBuffer);
+        if (BVHBuilder.IndexBuffer != null) tracingShader.SetBuffer(kernel, "_Indices", BVHBuilder.IndexBuffer);
+        if (BVHBuilder.NormalBuffer != null) tracingShader.SetBuffer(kernel, "_Normals", BVHBuilder.NormalBuffer);
+        if (BVHBuilder.TangentBuffer != null) tracingShader.SetBuffer(kernel, "_Tangents", BVHBuilder.TangentBuffer);
+        if (BVHBuilder.UVBuffer != null) tracingShader.SetBuffer(kernel, "_UVs", BVHBuilder.UVBuffer);
+        if (BVHBuilder.MaterialBuffer != null) tracingShader.SetBuffer(kernel, "_Materials", BVHBuilder.MaterialBuffer);
+        if (BVHBuilder.MeshNodeBuffer != null)
+        {
+            tracingShader.SetInt("_TLASNodesCount", BVHBuilder.GetTLASNodes().Count);
+            tracingShader.SetBuffer(kernel, "_TLASNodes", BVHBuilder.MeshNodeBuffer);
+        }
+        if (BVHBuilder.BLASBuffer != null)
+        {
+            tracingShader.SetBuffer(kernel, "_BNodes", BVHBuilder.BLASBuffer);
+            tracingShader.SetInt("_BNodesCount", BVHBuilder.GetBLASNodes().Count);
+        }
+        if (BVHBuilder.TransformBuffer != null) tracingShader.SetBuffer(kernel, "_Transforms", BVHBuilder.TransformBuffer);
+        tracingShader.SetBuffer(kernel, "_PointLights", LightManager.Instance.pointLightsBuffer);
+        tracingShader.SetInt("_PointLightsCount", LightManager.Instance.GetPointLightsCount());
+        if (BVHBuilder.AlbedoTextures != null) tracingShader.SetTexture(kernel, "_AlbedoTextures", BVHBuilder.AlbedoTextures);
+        if (BVHBuilder.EmissionTextures != null) tracingShader.SetTexture(kernel, "_EmitTextures", BVHBuilder.EmissionTextures);
+        if (BVHBuilder.MetallicTextures != null) tracingShader.SetTexture(kernel, "_MetallicTextures", BVHBuilder.MetallicTextures);
+        if (BVHBuilder.NormalTextures != null) tracingShader.SetTexture(kernel, "_NormalTextures", BVHBuilder.NormalTextures);
+        if (BVHBuilder.RoughnessTextures != null) tracingShader.SetTexture(kernel, "_RoughnessTextures", BVHBuilder.RoughnessTextures);
     }
 
     private void Update()
@@ -500,6 +593,7 @@ public class Tracing : MonoBehaviour
         Matrix4x4 gpuProjection = GL.GetGPUProjectionMatrix(cam.projectionMatrix, false);
         tracingShader.SetMatrix("_CameraInverseProjection", cam.projectionMatrix.inverse);
         tracingShader.SetMatrix("_PreviousCameraViewProjection", _previousCameraViewProjection);
+        tracingShader.SetMatrix("_RestirPreviousViewProjection", _previousCameraViewProjection);
         tracingShader.SetFloat("_SunFocus", SunFocus);
         tracingShader.SetFloat("_SunAngularRadius", SunAngularRadius);
         tracingShader.SetFloat("_SkyboxIntensity", SkyboxIntensity);
@@ -524,32 +618,22 @@ public class Tracing : MonoBehaviour
         tracingShader.SetBuffer(kernelGenerate, "PrimarySurfaceHistory", _primarySurfaceHistory);
         tracingShader.SetBuffer(kernelGenerate, "PrimarySurfaceHistoryPrev", _primarySurfaceHistoryPrev);
         tracingShader.SetBuffer(kernelGenerate, "DirectLightReservoirs", _directLightReservoirs);
-        tracingShader.SetBuffer(kernelGenerate, "DirectLightReservoirsPrev", _directLightReservoirsPrev);
-        tracingShader.SetBuffer(kernelGenerate, "DirectLightDebugOutput", _directLightDebugOutput);
         tracingShader.SetBuffer(kernelTrace, "BufferSizes", _bufferSizes);
         tracingShader.SetBuffer(kernelShade, "GlobalColors", _globalColors);
         tracingShader.SetBuffer(kernelShade, "PrimarySurfaceHistory", _primarySurfaceHistory);
         tracingShader.SetBuffer(kernelShade, "PrimarySurfaceHistoryPrev", _primarySurfaceHistoryPrev);
         tracingShader.SetBuffer(kernelShade, "ShadowRaysBuffer", _shadowRays);
         tracingShader.SetBuffer(kernelShade, "DirectLightReservoirs", _directLightReservoirs);
-        tracingShader.SetBuffer(kernelShade, "DirectLightReservoirsPrev", _directLightReservoirsPrev);
-        tracingShader.SetBuffer(kernelShade, "DirectLightDebugOutput", _directLightDebugOutput);
-        tracingShader.SetBuffer(kernelShade, "DirectLightDiagnostics", _directLightDiagnostics);
         tracingShader.SetBuffer(kernelShade, "BufferSizes", _bufferSizes);
         tracingShader.SetBuffer(kernelShadow, "ShadowRaysBuffer", _shadowRays);
         tracingShader.SetBuffer(kernelShadow, "GlobalColors", _globalColors);
         tracingShader.SetBuffer(kernelShadow, "DirectLightReservoirs", _directLightReservoirs);
-        tracingShader.SetBuffer(kernelShadow, "DirectLightReservoirsPrev", _directLightReservoirsPrev);
-        tracingShader.SetBuffer(kernelShadow, "DirectLightDebugOutput", _directLightDebugOutput);
         tracingShader.SetBuffer(kernelShadow, "BufferSizes", _bufferSizes);
         tracingShader.SetBuffer(kernelCopyPrimarySurfaceHistory, "PrimarySurfaceHistory", _primarySurfaceHistory);
         tracingShader.SetBuffer(kernelCopyPrimarySurfaceHistory, "PrimarySurfaceHistoryPrevRW", _primarySurfaceHistoryPrev);
-        tracingShader.SetBuffer(kernelCopyDirectLightReservoirHistory, "DirectLightReservoirs", _directLightReservoirs);
-        tracingShader.SetBuffer(kernelCopyDirectLightReservoirHistory, "DirectLightReservoirsPrevRW", _directLightReservoirsPrev);
         tracingShader.SetBuffer(kernelTransfer, "BufferSizes", _bufferSizes);
         tracingShader.SetBuffer(kernelTransfer, "IndirectArgs", _indirectArgs);
         tracingShader.SetBuffer(kernelFinalize, "GlobalColors", _globalColors);
-        tracingShader.SetBuffer(kernelFinalize, "DirectLightDebugOutput", _directLightDebugOutput);
 
         // Rebind scene buffers/textures every frame. Shader recompiles during play can
         // invalidate texture bindings even when the BVH itself did not change.
@@ -584,12 +668,6 @@ public class Tracing : MonoBehaviour
         tracingShader.SetBool("_OnlyDrawAlbedo", OnlyDrawAlbedo);
         tracingShader.SetBool("_HasPrimarySurfaceHistory", _hasPrimarySurfaceHistory);
         tracingShader.SetInt("_DirectLightRISCandidateCount", DirectLightRISCandidateCount);
-        tracingShader.SetBool("_UseDirectLightReservoirRIS", UseDirectLightReservoirRIS);
-        tracingShader.SetBool("_UseDirectLightReservoirNeighborReuse", UseDirectLightReservoirNeighborReuse);
-        tracingShader.SetInt("_DirectLightNeighborReuseCount", DirectLightNeighborReuseCount);
-        tracingShader.SetBool("_HasDirectLightReservoirHistory", _hasDirectLightReservoirHistory);
-        tracingShader.SetInt("_DirectLightDebugView", (int)DirectLightDebugViewMode);
-        tracingShader.SetInt("_DirectLightDebugPixelIndex", GetDirectLightDebugPixelIndex());
         tracingShader.SetFloat("_CameraFar", cam.farClipPlane);
 
         // 设置光源缓冲区（绑定到所有需要的kernel）
@@ -601,147 +679,6 @@ public class Tracing : MonoBehaviour
         // Bind current light data immediately before dispatch so rendering does not depend on Update() timing.
         LightManager.Instance.UpdateBuffer(tracingShader, lightKernels);
         _previousCameraViewProjection = gpuProjection * cam.worldToCameraMatrix;
-    }
-
-    private void CaptureDirectLightDiagnosticsSnapshot()
-    {
-        if (_directLightDiagnostics == null)
-        {
-            _hasDirectLightDiagnosticsSnapshot = false;
-            return;
-        }
-
-        _directLightDiagnostics.GetData(_directLightDiagnosticsData);
-        Array.Copy(_directLightDiagnosticsData, _directLightDiagnosticsSnapshot, _directLightDiagnosticsData.Length);
-        _hasDirectLightDiagnosticsSnapshot = true;
-
-        // 写诊断出口
-        if (_hasPrimarySurfaceHistory)
-        {
-            DiagnosticsWriter.WriteFrameData(
-                sampleCount, sampleCount, DirectLightDiagnosticPixelOffset,
-                _directLightDiagnosticsData, gameObject.scene.name,
-                _currentRenderWidth, _currentRenderHeight,
-                UseDirectLightReservoirRIS, UseDirectLightReservoirNeighborReuse,
-                TraceDepth);
-        }
-    }
-
-    private int GetDirectLightDebugPixelIndex()
-    {
-        if (_currentRenderWidth <= 0 || _currentRenderHeight <= 0)
-            return 0;
-
-        int x = GetDirectLightDebugPixelX();
-        int y = GetDirectLightDebugPixelY();
-        return y * _currentRenderWidth + x;
-    }
-
-    public string[] GetDirectLightDiagnosticsSummaryLines()
-    {
-        if (_directLightDiagnostics == null || !_hasDirectLightDiagnosticsSnapshot)
-            return new[] { "Center pixel diagnostics unavailable." };
-
-        Vector4 flags = _directLightDiagnosticsSnapshot[0];
-        Vector4 current = _directLightDiagnosticsSnapshot[1];
-        Vector4 previous = _directLightDiagnosticsSnapshot[2];
-        Vector4 weights = _directLightDiagnosticsSnapshot[3];
-        Vector4 meta = _directLightDiagnosticsSnapshot[4];
-        Vector4 candidate = _directLightDiagnosticsSnapshot[5];
-        Vector4 firstDraw = _directLightDiagnosticsSnapshot[6];
-        Vector4 firstMeta = _directLightDiagnosticsSnapshot[7];
-        Vector4 risLocal = _directLightDiagnosticsSnapshot[8];
-        Vector4 risFinal = _directLightDiagnosticsSnapshot[9];
-        Vector4 material = _directLightDiagnosticsSnapshot[10];
-        Vector4 shading = _directLightDiagnosticsSnapshot[11];
-        Vector4 rawMaterial = _directLightDiagnosticsSnapshot[12];
-        Vector4 rawThroughput = _directLightDiagnosticsSnapshot[13];
-        Vector4 rawLight = _directLightDiagnosticsSnapshot[14];
-        Vector4 sampleScalars = _directLightDiagnosticsSnapshot[15];
-        Vector4 rawContribution = _directLightDiagnosticsSnapshot[16];
-        Vector4 finalSampleScalars = _directLightDiagnosticsSnapshot[17];
-        Vector4 finalRawContribution = _directLightDiagnosticsSnapshot[18];
-        Vector4 neighborCounts = _directLightDiagnosticsSnapshot[19];
-        Vector4 neighborState = _directLightDiagnosticsSnapshot[20];
-        Vector4 temporalReplayIndex = _directLightDiagnosticsSnapshot[21];
-        float rawAlbedoLum = ComputeDiagnosticLuminance(new Vector3(rawMaterial.x, rawMaterial.y, rawMaterial.z));
-        float rawThroughputLum = ComputeDiagnosticLuminance(new Vector3(rawThroughput.x, rawThroughput.y, rawThroughput.z));
-        float rawLightLum = ComputeDiagnosticLuminance(new Vector3(rawLight.x, rawLight.y, rawLight.z) * rawLight.w);
-        float materialAlbedoLum = rawMaterial.w > 0.0f ? rawAlbedoLum : material.w;
-        float shadingThroughputLum = rawThroughput.w > 0.0f ? rawThroughputLum : shading.w;
-        float shadingDirLightLum = rawLight.w > 0.0f ? rawLightLum : shading.z;
-        string shadingOrCompatibilityLine = UseDirectLightReservoirNeighborReuse
-            ? $"Temporal Compatibility: normalDot={shading.x:G6} planeCurrent={shading.y:G6} planePrevious={shading.z:G6} modeDelta={shading.w:G6}"
-            : $"Shading: NdotV={shading.x:G6} dirFirstBrdfLum={shading.y:G6} dirLightLum={shadingDirLightLum:G6} throughputLum={shadingThroughputLum:G6}";
-
-        return new[]
-        {
-            $"Direct Light Diagnostics ({GetDirectLightDebugPixelX()}, {GetDirectLightDebugPixelY()})",
-            $"PrimaryHit={flags.x:0} CurrentStored={flags.y:0} PrevStored={flags.z:0} PrevSourceValid={flags.w:0}",
-            $"History Current: targetLum={current.x:G6} weightSum={current.y:G6} sampleCount={current.z:G6} maxDist={current.w:G6}",
-            $"History Prev: targetLum={previous.x:G6} weightSum={previous.y:G6} sampleCount={previous.z:G6} maxDist={previous.w:G6}",
-            $"PDF/Weight: currentPdf={weights.x:G6} currentSelectedWeight={weights.y:G6} prevPdf={weights.z:G6} prevSelectedWeight={weights.w:G6}",
-            $"Meta: currentDirLen={meta.x:G6} prevDirLen={meta.y:G6} currentLightType={meta.z:G6} prevLightType={meta.w:G6}",
-            $"Light Candidates: total={candidate.x:G6} hasSun={candidate.y:0} pointLights={candidate.z:G6} firstIndex={candidate.w:G6}",
-            $"RIS Config: enabled={(UseDirectLightReservoirRIS ? 1 : 0)} drawCount={DirectLightRISCandidateCount:G6} neighborEnabled={(UseDirectLightReservoirNeighborReuse ? 1 : 0)} neighborCount={DirectLightNeighborReuseCount:G6}",
-            $"First Draw: accepted={firstDraw.x:0} valid={firstDraw.y:0} proposalPdf={firstDraw.z:G6} targetLum={firstDraw.w:G6}",
-            $"First Meta: reservoirWeight={firstMeta.x:G6} maxDist={firstMeta.y:G6} lightType={firstMeta.z:G6} sunNdotL={firstMeta.w:G6}",
-            $"RIS Local: selected={risLocal.x:0} localSelected={risLocal.y:0} weightSum={risLocal.z:G6} localWeightSum={risLocal.w:G6}",
-            $"RIS Final: represented={risFinal.x:G6} localRepresented={risFinal.y:G6} selectedWeight={risFinal.z:G6} payloadValid={risFinal.w:0}",
-            $"Material: mode={material.x:G6} roughness={material.y:G6} metallic={material.z:G6} albedoLum={materialAlbedoLum:G6}",
-            shadingOrCompatibilityLine,
-            $"Raw Material: albedo=({rawMaterial.x:G6}, {rawMaterial.y:G6}, {rawMaterial.z:G6}) finite={rawMaterial.w:0}",
-            $"Raw Throughput: value=({rawThroughput.x:G6}, {rawThroughput.y:G6}, {rawThroughput.z:G6}) finite={rawThroughput.w:0}",
-            $"Raw Light: rgba=({rawLight.x:G6}, {rawLight.y:G6}, {rawLight.z:G6}, {rawLight.w:G6})",
-            $"First Sample Scalars: targetFromContribution={sampleScalars.x:G6} storedTarget={sampleScalars.y:G6} storedReservoirWeight={sampleScalars.z:G6} finite={sampleScalars.w:0}",
-            $"First Raw Contribution: value=({rawContribution.x:G6}, {rawContribution.y:G6}, {rawContribution.z:G6}) finite={rawContribution.w:0}",
-            $"Final Selected Scalars: targetFromContribution={finalSampleScalars.x:G6} storedTarget={finalSampleScalars.y:G6} storedReservoirWeight={finalSampleScalars.z:G6} finite={finalSampleScalars.w:0}",
-            $"Final Raw Contribution: value=({finalRawContribution.x:G6}, {finalRawContribution.y:G6}, {finalRawContribution.z:G6}) finite={finalRawContribution.w:0}",
-            $"Neighbor Replay Counts: stored={neighborCounts.x:G6} source={neighborCounts.y:G6} compatible={neighborCounts.z:G6} reevaluated={neighborCounts.w:G6}",
-            $"Neighbor Replay State: requested={neighborState.x:0} active={neighborState.y:0} temporalPixel={neighborState.z:0} temporalStage={neighborState.w:G6}({DescribeTemporalReplayStage(neighborState.w)})",
-            $"Temporal Replay Index: current={temporalReplayIndex.x:G6} reprojected={temporalReplayIndex.y:G6} matchesCurrent={temporalReplayIndex.z:0} usedSamePixelFallback={temporalReplayIndex.w:0}",
-            $"Raw/Derived Check: albedoLumCPU={rawAlbedoLum:G6} delta={Mathf.Abs(rawAlbedoLum - materialAlbedoLum):G6} throughputLumCPU={rawThroughputLum:G6} delta={Mathf.Abs(rawThroughputLum - shadingThroughputLum):G6} dirLightLumCPU={rawLightLum:G6} delta={Mathf.Abs(rawLightLum - shadingDirLightLum):G6}"
-        };
-    }
-
-    private int GetDirectLightDebugPixelX()
-    {
-        if (_currentRenderWidth <= 0)
-            return 0;
-
-        return Mathf.Clamp(_currentRenderWidth / 2 + DirectLightDiagnosticPixelOffset.x, 0, Mathf.Max(_currentRenderWidth - 1, 0));
-    }
-
-    private int GetDirectLightDebugPixelY()
-    {
-        if (_currentRenderHeight <= 0)
-            return 0;
-
-        return Mathf.Clamp(_currentRenderHeight / 2 + DirectLightDiagnosticPixelOffset.y, 0, Mathf.Max(_currentRenderHeight - 1, 0));
-    }
-
-    // Keep CPU-side diagnostic reconstruction aligned with the shader luminance convention.
-    private static float ComputeDiagnosticLuminance(Vector3 value)
-    {
-        return Vector3.Dot(Vector3.Max(value, Vector3.zero), LuminanceWeights);
-    }
-
-    private static string DescribeTemporalReplayStage(float stage)
-    {
-        int stageIndex = Mathf.RoundToInt(stage);
-        switch (stageIndex)
-        {
-            case 0: return "none";
-            case 1: return "reprojected_stored";
-            case 2: return "reprojected_source_valid";
-            case 3: return "reprojected_compatible";
-            case 4: return "reprojected_accepted";
-            case 5: return "fallback_stored";
-            case 6: return "fallback_source_valid";
-            case 7: return "fallback_compatible";
-            case 8: return "fallback_accepted";
-            default: return $"stage_{stageIndex}";
-        }
     }
 
     private void OnDisable()
@@ -939,10 +876,7 @@ public class Tracing : MonoBehaviour
                _oldTargetFrameRate != targetFrameRate ||
                _oldFrameLimit != FrameLimit ||
                _oldDirectLightRISCandidateCount != DirectLightRISCandidateCount ||
-               _oldUseDirectLightReservoirRIS != UseDirectLightReservoirRIS ||
-               _oldUseDirectLightReservoirNeighborReuse != UseDirectLightReservoirNeighborReuse ||
-               _oldDirectLightNeighborReuseCount != DirectLightNeighborReuseCount ||
-               _oldDirectLightDebugViewMode != DirectLightDebugViewMode;
+               _oldUseReSTIRDI != UseReSTIRDI;
     }
 
     private void CacheRuntimeSettings()
@@ -957,10 +891,7 @@ public class Tracing : MonoBehaviour
         _oldTargetFrameRate = targetFrameRate;
         _oldFrameLimit = FrameLimit;
         _oldDirectLightRISCandidateCount = DirectLightRISCandidateCount;
-        _oldUseDirectLightReservoirRIS = UseDirectLightReservoirRIS;
-        _oldUseDirectLightReservoirNeighborReuse = UseDirectLightReservoirNeighborReuse;
-        _oldDirectLightNeighborReuseCount = DirectLightNeighborReuseCount;
-        _oldDirectLightDebugViewMode = DirectLightDebugViewMode;
+        _oldUseReSTIRDI = UseReSTIRDI;
     }
 
     private void ReleaseCommandBuffer()
@@ -1116,20 +1047,15 @@ public class Tracing : MonoBehaviour
     {
         sampleCount = 0;
         _hasPrimarySurfaceHistory = false;
-        _hasDirectLightReservoirHistory = false;
-        _hasDirectLightDiagnosticsSnapshot = false;
-        _firstFrameConfigWritten = false;
+        _hasRestirHistory = false;
+        _lastFrameReservoirOutputIdx = 0;
     }
 
     void ResetAccumulationOnly()
     {
         sampleCount = 0;
-        _hasDirectLightDiagnosticsSnapshot = false;
-        _firstFrameConfigWritten = false;
+        _hasRestirHistory = false;
+        _lastFrameReservoirOutputIdx = 0;
     }
 
-    private bool IsDirectLightDebugViewActive()
-    {
-        return DirectLightDebugViewMode != DirectLightDebugView.Off;
-    }
 }

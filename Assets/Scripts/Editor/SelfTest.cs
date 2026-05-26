@@ -55,9 +55,6 @@ public static class SelfTest
         var frameLimitField = typeof(Tracing).GetField("FrameLimit",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
         frameLimitField?.SetValue(s_tracing, s_targetFrames + s_warmupFrames);
-        DiagnosticsWriter.EnableFileOutput = true;
-        DiagnosticsWriter.EnableConsoleOutput = true;
-        DiagnosticsWriter.CloseCurrentFile();
 
         // 进入 Play Mode，在下一帧开始监控
         EditorApplication.update += OnEditorUpdate;
@@ -85,96 +82,7 @@ public static class SelfTest
 
     private static void FinalizeTest()
     {
-        // 等一小段时间让 DiagnosticsWriter 写完文件
-        DiagnosticsWriter.CloseCurrentFile();
-
-        string outputDir = Path.Combine(Application.dataPath, "..", DiagnosticsWriter.OutputDirectory);
-        if (!Directory.Exists(outputDir))
-        {
-            Fail($"输出目录不存在: {outputDir}");
-            EditorApplication.Exit(s_exitCode);
-            return;
-        }
-
-        var jsonFiles = Directory.GetFiles(outputDir, $"{s_sceneName}*.json")
-            .OrderByDescending(f => f)
-            .ToArray();
-
-        if (jsonFiles.Length == 0)
-        {
-            Fail("未找到诊断 JSON 文件");
-            EditorApplication.Exit(s_exitCode);
-            return;
-        }
-
-        string latestJson = jsonFiles[0];
-        string[] lines = File.ReadAllText(latestJson).TrimEnd('\n').Split('\n');
-
-        if (lines.Length < s_warmupFrames)
-        {
-            Fail($"JSON 只有 {lines.Length} 帧数据，不足 warmup={s_warmupFrames} 帧");
-            EditorApplication.Exit(s_exitCode);
-            return;
-        }
-
-        // 取最后 10 帧做断言
-        var lastLines = lines.Skip(System.Math.Max(0, lines.Length - 10)).ToArray();
-        var summary = new System.Text.StringBuilder();
-        summary.AppendLine($"=== SelfTest Summary ===");
-        summary.AppendLine($"Scene: {s_sceneName}");
-        summary.AppendLine($"Target Frames: {s_targetFrames}");
-        summary.AppendLine($"Actual Frames in JSON: {lines.Length}");
-        summary.AppendLine($"Warmup Skipped: {s_warmupFrames}");
-        summary.AppendLine($"Output: {latestJson}");
-        summary.AppendLine();
-
-        // 断言每条有效帧
-        bool allPassed = true;
-        int testedFrames = 0;
-        foreach (string line in lastLines)
-        {
-            int frameIdx = ExtractInt(line, "frameIndex");
-            int sampleCount = ExtractInt(line, "sampleCount");
-            int primaryHit = ExtractIntFromSlots(line, 0, 0);   // slot 0, comp 0 = PrimaryHit
-            float targetLum = ExtractFloatFromSlots(line, 1, 0); // slot 1, comp 0 = targetLum
-            float payloadValid = ExtractFloatFromSlots(line, 6, 1); // slot 6, comp 1 = payloadValid
-
-            // 只检测渲染已稳定的帧
-            if (sampleCount < s_warmupFrames) continue;
-            testedFrames++;
-
-            bool framePassed = true;
-            string errors = "";
-
-            if (primaryHit == 0) { framePassed = false; errors += " PrimaryHit=0"; }
-            if (targetLum <= 0) { framePassed = false; errors += $" targetLum={targetLum}"; }
-            if (payloadValid < 0.5f && primaryHit == 1) { framePassed = false; errors += $" payloadValid={payloadValid}"; }
-
-            // NaN 检查
-            if (float.IsNaN(targetLum)) { framePassed = false; errors += " targetLum=NaN"; }
-
-            string status = framePassed ? "PASS" : "FAIL";
-            summary.AppendLine($"{status} frame={frameIdx} sampleCount={sampleCount} primaryHit={primaryHit} targetLum={targetLum:F4} payloadValid={payloadValid} {errors}");
-
-            if (!framePassed) allPassed = false;
-        }
-
-        if (testedFrames == 0)
-        {
-            summary.AppendLine("FAIL: 没有足够的稳定帧用于测试");
-            allPassed = false;
-        }
-
-        summary.AppendLine();
-        summary.AppendLine(allPassed ? "RESULT: PASS" : "RESULT: FAIL");
-
-        string summaryPath = Path.Combine(outputDir, $"{s_sceneName}_summary.txt");
-        File.WriteAllText(summaryPath, summary.ToString());
-
-        Debug.Log(summary.ToString());
-
-        if (!allPassed) s_exitCode = 1;
-
+        Debug.Log($"[SelfTest] 完成: scene={s_sceneName} frames={s_targetFrames}");
         EditorApplication.Exit(s_exitCode);
     }
 

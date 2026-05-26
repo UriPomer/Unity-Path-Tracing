@@ -100,12 +100,7 @@ bool _OnlyDrawAlbedo;
 bool _OnlyDrawNormals;
 bool _OnlyDrawDepth;
 bool _HasPrimarySurfaceHistory;
-bool _UseDirectLightReservoirRIS;
-bool _UseDirectLightReservoirNeighborReuse;
-bool _HasDirectLightReservoirHistory;
-int _DirectLightNeighborReuseCount;
-int _DirectLightDebugView;
-uint _DirectLightDebugPixelIndex;
+bool _UseReSTIRDI;
 
 /// Debug
 
@@ -209,9 +204,6 @@ RWStructuredBuffer<HitData>          PrimarySurfaceHistory;
 StructuredBuffer<HitData>            PrimarySurfaceHistoryPrev;
 RWStructuredBuffer<ShadowRayData>    ShadowRaysBuffer;
 RWStructuredBuffer<DirectLightReservoirData> DirectLightReservoirs;
-StructuredBuffer<DirectLightReservoirData> DirectLightReservoirsPrev;
-RWStructuredBuffer<float3>            DirectLightDebugOutput;
-RWStructuredBuffer<float4>            DirectLightDiagnostics;
 RWStructuredBuffer<PathContribution> GlobalColors;
 RWStructuredBuffer<uint>              IndirectArgs;
 

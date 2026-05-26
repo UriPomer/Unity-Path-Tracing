@@ -80,3 +80,8 @@ crashlytics-build.properties
 .vscode
 .vsconfig
 .plastic
+
+Assets/_Recovery/
+Tools/
+Assets/_Recovery.meta
+docs/
