@@ -20,10 +20,15 @@ bool IsFiniteIndirectFloat3(float3 v)
     return all(abs(v) <= RESTIR_GI_FINITE_LIMIT);
 }
 
+// In RTXDI semantics, weightSum AFTER FinalizeIndirectReservoir already encodes
+// the unbiased contribution weight W = 1/p_hat(Y). selectedWeight is kept as a
+// mirror so existing readback/diagnostic code paths keep working without any
+// CPU-side struct reshuffle. We deliberately do NOT divide by (targetLum*M)
+// here -- that division is what produced the runaway 1e+29 selectedWeight
+// in pre-fix logs.
 float ComputeIndirectMISWeight(float weightSum, float targetLum, float sampleCount)
 {
-    if (targetLum <= 0.0 || sampleCount <= 0.0) return 0.0;
-    return weightSum / max(targetLum * sampleCount, 1e-6);
+    return max(weightSum, 0.0);
 }
 
 float ComputeIndirectProposalInversePdf(float proposalPdf)
@@ -334,9 +339,13 @@ void FinalizeIndirectReservoir(
     float normalizationNumerator,
     float normalizationDenominator)
 {
+    // RTXDI form: weightSum becomes the unbiased contribution weight W = 1/p_hat.
+    // denom == 0 short-circuits to 0 (mirrors RTXDI_FinalizeGIResampling).
     reservoir.weightSum = normalizationDenominator <= 0.0
         ? 0.0
         : (reservoir.weightSum * normalizationNumerator) / normalizationDenominator;
 
+    // selectedWeight is now a mirror of weightSum (kept for readback / diagnostics
+    // compatibility -- TracingContractsTests + restir_gi_*.jsonl still inspect it).
     reservoir.selectedWeight = ComputeIndirectMISWeight(reservoir.weightSum, reservoir.targetLum, reservoir.sampleCount);
 }
