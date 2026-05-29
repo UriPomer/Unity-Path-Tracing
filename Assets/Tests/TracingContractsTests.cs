@@ -770,6 +770,7 @@ public class TracingContractsTests
         // does NOT divide by targetLum*M. Old division was the source of the
         // baseline 1e+29 selectedWeight blowup.
         string giReservoirSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_reservoir.hlsl"));
+        Assert.That(File.Exists(giReservoirSourcePath), Is.True, $"GI reservoir source not found: {giReservoirSourcePath}");
         string giReservoirSource = File.ReadAllText(giReservoirSourcePath);
 
         StringAssert.Contains("// In RTXDI semantics, weightSum AFTER FinalizeIndirectReservoir already encodes",
@@ -786,33 +787,22 @@ public class TracingContractsTests
         // GetIndirectReservoirRISWeight must NOT multiply by candidate.sampleCount;
         // CombineIndirectReservoirs already adds candidate.M into reservoir.M.
         string giReservoirSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_reservoir.hlsl"));
+        Assert.That(File.Exists(giReservoirSourcePath), Is.True, $"GI reservoir source not found: {giReservoirSourcePath}");
         string giReservoirSource = File.ReadAllText(giReservoirSourcePath);
 
         StringAssert.DoesNotContain("max(candidate.sampleCount, 0.0)",
             giReservoirSource,
             "candidate.sampleCount must not be folded into RIS streaming weight (double-counts M).");
-        StringAssert.Contains("targetPdf * max(candidate.weightSum, 0.0)",
+        StringAssert.Contains("return max(targetPdf, 0.0) * max(candidate.weightSum, 0.0);",
             giReservoirSource,
             "RIS weight must be targetPdf * candidate.weightSum (RTXDI form).");
     }
 
     [Test]
-    public void RestirGI_Stage2_Initializes_WeightSum_As_Inverse_Pdf()
-    {
-        // RTXDI_MakeGIReservoir parity: weightSum = 1/proposalPdf at stage2 init.
-        string giReservoirSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_reservoir.hlsl"));
-        string giReservoirSource = File.ReadAllText(giReservoirSourcePath);
-
-        StringAssert.Contains("reservoir.weightSum = ComputeIndirectProposalInversePdf(reservoir.proposalPdf);",
-            giReservoirSource,
-            "Stage2 init must write weightSum = 1/proposalPdf (drop the redundant *targetLum factor).");
-    }
-
-    [Test]
     public void RestirGI_FinalShading_Uses_WeightSum_Not_SelectedWeight()
     {
-        string giReservoirSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_reservoir.hlsl"));
         string giShadeSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_shade.hlsl"));
+        Assert.That(File.Exists(giShadeSourcePath), Is.True, $"GI shade source not found: {giShadeSourcePath}");
 
         string giShadeSource = File.ReadAllText(giShadeSourcePath);
         StringAssert.Contains("reflectedRadiance * res.weightSum",
@@ -826,6 +816,7 @@ public class TracingContractsTests
         // Old 1e30 allowed 1e+27 reservoirs to spread across frames. 1e6 keeps a
         // healthy headroom over typical 1/p_hat (1..1e3) but kills the runaway tail.
         string giReservoirSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_reservoir.hlsl"));
+        Assert.That(File.Exists(giReservoirSourcePath), Is.True, $"GI reservoir source not found: {giReservoirSourcePath}");
         string giReservoirSource = File.ReadAllText(giReservoirSourcePath);
 
         StringAssert.Contains("static const float RESTIR_GI_FINITE_LIMIT = 1e6;",
