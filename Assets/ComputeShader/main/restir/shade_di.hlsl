@@ -2,8 +2,6 @@
 
 // Depends on: global.hlsl, intersection.hlsl (IntersectTlasFast), reservoir.hlsl
 
-uint _RestirShadingReservoirOffset;
-
 [numthreads(64, 1, 1)]
 void kernel_shade_di_samples(uint3 id : SV_DispatchThreadID)
 {

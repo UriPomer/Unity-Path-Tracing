@@ -9,6 +9,11 @@
 #pragma kernel kernel_generate_initial
 #pragma kernel kernel_temporal_resampling
 #pragma kernel kernel_shade_di_samples
+#pragma kernel kernel_generate_gi_secondary_surfaces
+#pragma kernel kernel_shade_gi_secondary_surfaces
+#pragma kernel kernel_temporal_gi_resampling
+#pragma kernel kernel_spatial_gi_resampling
+#pragma kernel kernel_shade_gi_samples
 
 #include "function.hlsl"
 #include "bxdf.hlsl"
@@ -21,6 +26,11 @@
 #include "restir/generate_initial.hlsl"
 #include "restir/temporal_resampling.hlsl"
 #include "restir/shade_di.hlsl"
+#include "restir/gi_reservoir.hlsl"
+#include "restir/gi_initial.hlsl"
+#include "restir/gi_temporal.hlsl"
+#include "restir/gi_spatial.hlsl"
+#include "restir/gi_shade.hlsl"
 
 RWStructuredBuffer<HitData> PrimarySurfaceHistoryPrevRW;
 
@@ -167,6 +177,14 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
     // The shadow kernel is the only stage that resolves visibility and commits the contribution.
     if (!_UseReSTIRDI || CurBounce > 0)
         GenerateShadowRays(hit, -rd.direction, throughput, rd.pixelIndex);
+
+    // ReSTIR GI replaces the primary indirect continuation path. Later bounces still
+    // use the regular path tracing loop.
+    if (_UseReSTIRGI && CurBounce == 0)
+    {
+        GlobalColors[rd.pixelIndex].L = L;
+        return;
+    }
 
     // BXDF sampling
     Ray ray;

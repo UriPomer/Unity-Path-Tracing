@@ -87,6 +87,13 @@ float3 GetMaterialF0(Material mat)
 
 void GetOpaqueLobeWeights(Material mat, out float specProb, out float diffProb)
 {
+    if (mat.metallic < 0.001 && mat.roughness >= 0.999)
+    {
+        specProb = 0.0;
+        diffProb = 1.0;
+        return;
+    }
+
     // These are sampling probabilities, not exact energy-conservation equations.
     // We use them for BSDF lobe selection in Russian roulette:
     //
@@ -116,6 +123,16 @@ void GetOpaqueLobeWeights(Material mat, out float specProb, out float diffProb)
 
     specProb = specWeight / sum;
     diffProb = diffWeight / sum;
+
+    // Very rough dielectrics behave much more like diffuse reflectors than glossy mirrors.
+    // Without this boost, rough walls still spend too many samples on GGX VNDF specular picks,
+    // which then frequently reflect below the hemisphere and collapse into zero-throughput tails.
+    if (mat.metallic < 0.999)
+    {
+        float roughDiffuseBoost = saturate(mat.roughness * mat.roughness);
+        diffProb = lerp(diffProb, 1.0, roughDiffuseBoost);
+        specProb = 1.0 - diffProb;
+    }
 }
 
 // Smith GGX shadowing-masking function
@@ -220,11 +237,13 @@ float3 SampleGGXVNDF(float3 N, float3 V, float alpha, float2 Xi)
     return normalize(H.x * tangentX + H.y * tangentY + H.z * N);
 }
 
-void EvaluateBXDFWithDotAndPDF(RayHit hit, inout Ray ray, out float3 f_brdf)
+void EvaluateBXDFWithDotAndPDFDetailed(RayHit hit, inout Ray ray, out float3 f_brdf, out bool sampledSpecular, out float zeroReasonCode)
 {
     float3 V = -ray.dir;
     float roulette = RNG_Next(rng);
     f_brdf = 0;
+    sampledSpecular = false;
+    zeroReasonCode = 0.0;
     float pdf;
     float3 rayOutDir;
 
@@ -245,6 +264,7 @@ void EvaluateBXDFWithDotAndPDF(RayHit hit, inout Ray ray, out float3 f_brdf)
         float reflChance = 1.0 - (1.0 - fresnel) * (1.0 - hit.material.metallic);
         if (roulette < reflChance)
         {
+            sampledSpecular = true;
             float3 brdfCos;
             float microPdf;
             SpecReflModel(hit, V, rayOutDir, H, brdfCos, microPdf);
@@ -255,6 +275,7 @@ void EvaluateBXDFWithDotAndPDF(RayHit hit, inout Ray ray, out float3 f_brdf)
         }
         else
         {
+            sampledSpecular = true;
             rayOutDir = normalize(refract(ray.dir, hit.normal, 1.0 / hit.material.ior));
             float3 refrWeight = 1.0;
             SpecRefrModel(hit, V, rayOutDir, H, refrWeight);
@@ -266,9 +287,16 @@ void EvaluateBXDFWithDotAndPDF(RayHit hit, inout Ray ray, out float3 f_brdf)
     {
         float specProb, diffProb;
         GetOpaqueLobeWeights(hit.material, specProb, diffProb);
+        bool isPerfectMetal = hit.material.metallic >= 0.999 && hit.material.roughness < 1e-4;
+        if (isPerfectMetal)
+        {
+            specProb = 1.0;
+            diffProb = 0.0;
+        }
 
         if (roulette < specProb)
         {
+            sampledSpecular = true;
             if (hit.material.roughness < 1e-4)
             {
                 rayOutDir = reflect(-V, hit.normal);
@@ -277,6 +305,7 @@ void EvaluateBXDFWithDotAndPDF(RayHit hit, inout Ray ray, out float3 f_brdf)
                 {
                     ray.dir = rayOutDir;
                     f_brdf = 0.0;
+                    zeroReasonCode = 1.0;
                     return;
                 }
 
@@ -284,6 +313,8 @@ void EvaluateBXDFWithDotAndPDF(RayHit hit, inout Ray ray, out float3 f_brdf)
                 float3 F = SchlickFresnel(saturate(dot(hit.normal, V)), F0);
                 pdf = max(specProb, 1e-3);
                 f_brdf = F / pdf;
+                if (all(f_brdf <= 0.0))
+                    zeroReasonCode = 3.0;
             }
             else
             {
@@ -296,6 +327,7 @@ void EvaluateBXDFWithDotAndPDF(RayHit hit, inout Ray ray, out float3 f_brdf)
                 {
                     ray.dir = rayOutDir;
                     f_brdf = 0.0;
+                    zeroReasonCode = 2.0;
                     return;
                 }
 
@@ -324,6 +356,13 @@ void EvaluateBXDFWithDotAndPDF(RayHit hit, inout Ray ray, out float3 f_brdf)
     }
 
     ray.dir = rayOutDir;
+}
+
+void EvaluateBXDFWithDotAndPDF(RayHit hit, inout Ray ray, out float3 f_brdf)
+{
+    bool sampledSpecular;
+    float zeroReasonCode;
+    EvaluateBXDFWithDotAndPDFDetailed(hit, ray, f_brdf, sampledSpecular, zeroReasonCode);
 }
 
 void EvaluateBXDF_GivenDir(RayHit hit, float3 V, float3 L, out float3 f_brdf, out float pdf)

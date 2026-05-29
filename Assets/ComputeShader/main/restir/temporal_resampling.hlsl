@@ -2,11 +2,6 @@
 
 // Depends on: global.hlsl, trace.hlsl, bxdf.hlsl, reservoir.hlsl
 
-uint _RestirTemporalReservoirOffset;
-uint _RestirPrevReservoirOffset;
-StructuredBuffer<HitData> _RestirGbufferPrevious;
-float4x4 _RestirPreviousViewProjection;
-
 bool ReevaluatePrevReservoir(
     HitData hd,
     DirectLightReservoirData prev,
@@ -85,9 +80,10 @@ void kernel_temporal_resampling(uint3 id : SV_DispatchThreadID)
     if (!ReevaluatePrevReservoir(hdCur, prev, prevSample)) return;
     if (!IsValidDirectLightSample(prevSample)) return;
 
-    // MIS combine: M_cur * W_cur + M_prev * W_prev
-    float curW = cur.weightSum * (float)max(cur.sampleCount, 1u);
-    float prevW = prev.weightSum * (float)max(prev.sampleCount, 1u);
+    // weightSum already stores the reservoir normalization term. Multiplying by
+    // sampleCount again explodes selectedWeight during temporal reuse.
+    float curW = cur.weightSum;
+    float prevW = prev.weightSum;
     float combinedWS = curW + prevW;
     uint combinedSC = cur.sampleCount + max(prev.sampleCount, 1u);
 

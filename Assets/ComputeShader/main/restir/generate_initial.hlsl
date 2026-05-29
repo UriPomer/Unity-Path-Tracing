@@ -2,12 +2,6 @@
 
 // Depends on: global.hlsl, trace.hlsl, bxdf.hlsl, function.hlsl, reservoir.hlsl
 
-StructuredBuffer<HitData> _RestirGbuffer;
-StructuredBuffer<LightDataPacked> _RestirLightData;
-uint _RestirLightCount;
-uint _RestirInitialReservoirOffset;
-uint _RestirCandidateCount;
-
 [numthreads(64, 1, 1)]
 void kernel_generate_initial(uint3 id : SV_DispatchThreadID)
 {

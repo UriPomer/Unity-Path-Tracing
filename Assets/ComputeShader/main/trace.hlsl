@@ -3,9 +3,9 @@
 #include "global.hlsl"
 #include "bxdf.hlsl"
 
-float3 SampleSkybox(Ray ray)
+float3 SampleSkyboxDirection(float3 direction)
 {
-    float3 dir = normalize(ray.dir);
+    float3 dir = normalize(direction);
     float2 uv = float2(atan2(dir.z, dir.x), acos(clamp(dir.y, -1.0, 1.0)));
     uv /= float2(2.0 * PI, PI);
     uv.x += 0.5;
@@ -24,6 +24,11 @@ float3 SampleSkybox(Ray ray)
     //                 * _DirectionalLightColor.a;
 
     return envColor * _SkyboxIntensity;
+}
+
+float3 SampleSkybox(Ray ray)
+{
+    return SampleSkyboxDirection(ray.dir);
 }
 
 // trace a ray and returns hit immediately (for shadow rays)

@@ -101,6 +101,7 @@ bool _OnlyDrawNormals;
 bool _OnlyDrawDepth;
 bool _HasPrimarySurfaceHistory;
 bool _UseReSTIRDI;
+bool _UseReSTIRGI;
 
 /// Debug
 
@@ -194,6 +195,26 @@ struct DirectLightReservoirData
     uint   sampleCount;  float  selectedWeight;
 };
 
+struct IndirectReservoirData
+{
+    float3 secondaryPosition;  float proposalPdf;
+    float3 secondaryNormal;    float targetLum;
+    float3 radiance;           float weightSum;
+    float3 contribution;       float selectedWeight;
+    float3 primaryNormal;      float sampleCount;
+};
+
+struct SecondarySurfaceData
+{
+    float3 position;           float proposalPdf;
+    float3 normal;             float primaryDistance;
+    float3 throughput;         float flags;
+    float3 albedo;             float roughness;
+    float3 emissionRadiance;   float metallic;
+    float  alpha;              float ior;
+    float  mode;               float reserved;
+};
+
 globallycoherent RWStructuredBuffer<BufferSizeData> BufferSizes;
 RWStructuredBuffer<RayData>          GlobalRays;
 RWStructuredBuffer<RayData>          GlobalRays2;
@@ -204,12 +225,18 @@ RWStructuredBuffer<HitData>          PrimarySurfaceHistory;
 StructuredBuffer<HitData>            PrimarySurfaceHistoryPrev;
 RWStructuredBuffer<ShadowRayData>    ShadowRaysBuffer;
 RWStructuredBuffer<DirectLightReservoirData> DirectLightReservoirs;
+RWStructuredBuffer<IndirectReservoirData> IndirectReservoirs;
+RWStructuredBuffer<SecondarySurfaceData> SecondarySurfaces;
+RWStructuredBuffer<float4> ReSTIRDebugData;
+StructuredBuffer<IndirectReservoirData> IndirectReservoirsRead;
+StructuredBuffer<SecondarySurfaceData> SecondarySurfacesRead;
 RWStructuredBuffer<PathContribution> GlobalColors;
 RWStructuredBuffer<uint>              IndirectArgs;
 
 int  CurBounce;
 uint _ScreenWidth;
 uint _ScreenHeight;
+uint _RestirDebugPixelIndex;
 
 // ==================== End Multi-Pass ====================
 

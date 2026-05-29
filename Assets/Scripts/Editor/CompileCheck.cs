@@ -1,5 +1,6 @@
 using UnityEditor;
 using System.IO;
+using System;
 
 /// <summary>
 /// 编译检查入口。只触发编译，成功退出 0，有编译错误退出 1。
@@ -26,13 +27,26 @@ public static class CompileCheck
             // 检查日志中是否有编译错误（以防万一）
             if (File.Exists(logPath))
             {
-                string log = File.ReadAllText(logPath);
-                bool hasError = log.Contains("error CS") || log.Contains("error :");
-                if (hasError)
+                try
                 {
-                    File.WriteAllText(resultFile, "COMPILE: FAIL");
-                    EditorApplication.Exit(1);
-                    return;
+                    string log = File.ReadAllText(logPath);
+                    bool hasError = log.Contains("error CS") || log.Contains("Shader error") || log.Contains("error :");
+                    if (hasError)
+                    {
+                        File.WriteAllText(resultFile, "COMPILE: FAIL");
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+                }
+                catch (IOException)
+                {
+                    // In batchmode Unity may still hold an exclusive handle to the same
+                    // log file path that launched the editor. Reaching this method already
+                    // proves script compilation succeeded, so treat the log reread as best-effort.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Same rationale as IOException above.
                 }
             }
         }

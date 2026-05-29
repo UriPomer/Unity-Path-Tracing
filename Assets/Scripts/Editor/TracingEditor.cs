@@ -42,6 +42,14 @@ public class TracingEditor : Editor
             Draw("UseReSTIRDI", "Use ReSTIR DI");
         });
 
+        DrawSection("ReSTIR GI", () =>
+        {
+            Draw("UseReSTIRGI", "Use ReSTIR GI");
+            Draw("WriteReSTIRGIDiagnostics", "Write GI Diagnostics");
+            Draw("WriteReSTIRGIDiagnosticDetails", "Write GI Diagnostic Details");
+            Draw("ReSTIRGIDiagnosticFrameInterval", "GI Diagnostic Frame Interval");
+        });
+
         DrawSection("Output", () =>
         {
             Draw("Denoise", "Denoise");
