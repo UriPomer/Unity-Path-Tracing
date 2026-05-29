@@ -289,9 +289,13 @@ void InitializeIndirectReservoirSample(
     reservoir.sampleCount = 1.0;
 }
 
+// risWeight = targetPdf * W ; W is inverse-PDF (=weightSum after Finalize, =1/proposalPdf at stage2 init).
+// Unlike RTXDI we keep weightSum semantics consistent across stages, so weightSum itself encodes W.
+// candidate.sampleCount is added to reservoir.M separately by CombineIndirectReservoirs and MUST NOT be
+// folded into the streamed RIS weight (otherwise M is double-counted).
 float GetIndirectReservoirRISWeight(IndirectReservoirData candidate, float targetPdf)
 {
-    return max(targetPdf, 0.0) * ComputeIndirectProposalInversePdf(candidate.proposalPdf) * max(candidate.sampleCount, 0.0);
+    return max(targetPdf, 0.0) * max(candidate.weightSum, 0.0);
 }
 
 bool CombineIndirectReservoirs(
