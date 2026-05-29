@@ -4,6 +4,9 @@ static const float RESTIR_GI_MAX_RESERVOIR_SAMPLES = 32.0;
 static const float RESTIR_GI_MAX_JACOBIAN = 3.0;
 static const float RESTIR_GI_MIN_JACOBIAN = 1.0 / 3.0;
 static const float RESTIR_GI_DISCARD_JACOBIAN = 10.0;
+// ~30x above worst-case legitimate weightSum (typical 1/p_hat in [1,1e3] x M_max=32 ~= 3.2e4).
+// Old 1e30 ceiling let weightSum=1e27..1e29 firefly reservoirs survive IsIndirectReservoirValid
+// and propagate into next-frame / spatial-neighbor reuse, producing bubble-noise white-out.
 static const float RESTIR_GI_FINITE_LIMIT = 1e6;
 static const float RESTIR_GI_MIN_PROPOSAL_PDF = 1e-3;
 
