@@ -109,7 +109,16 @@ void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
         prevCandidate.proposalPdf = prevCandidate.proposalPdf > 0.0
             ? max(prevCandidate.proposalPdf / jacobian, RESTIR_GI_MIN_PROPOSAL_PDF)
             : 0.0;
-        prevCandidate.sampleCount = min(max(prevCandidate.sampleCount, 1.0), RESTIR_GI_MAX_RESERVOIR_SAMPLES - 1.0);
+        // M-cap with proportional Wsum scaling (TrueTrace-style firefly fence):
+        // ratio of streamed weight to streamed sample count must stay invariant when
+        // we drop history beyond MAX-1 samples, otherwise stale reservoirs accumulate
+        // unbounded weightSum across frames.
+        float prevSampleCountClamped = min(max(prevCandidate.sampleCount, 1.0), RESTIR_GI_MAX_RESERVOIR_SAMPLES - 1.0);
+        if (prevCandidate.sampleCount > prevSampleCountClamped && prevCandidate.sampleCount > 0.0)
+        {
+            prevCandidate.weightSum *= prevSampleCountClamped / prevCandidate.sampleCount;
+        }
+        prevCandidate.sampleCount = prevSampleCountClamped;
 
         bool candidateSelected = CombineIndirectReservoirs(outR, prevCandidate, RNG_Next(rng), prevTargetLumCur);
         if (candidateSelected)
@@ -127,7 +136,13 @@ void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    outR.sampleCount = min(outR.sampleCount, RESTIR_GI_MAX_RESERVOIR_SAMPLES);
+    // Same proportional-scale M cap, applied to the streamed reservoir before Finalize.
+    float outSampleCountClamped = min(outR.sampleCount, RESTIR_GI_MAX_RESERVOIR_SAMPLES);
+    if (outR.sampleCount > outSampleCountClamped && outR.sampleCount > 0.0)
+    {
+        outR.weightSum *= outSampleCountClamped / outR.sampleCount;
+    }
+    outR.sampleCount = outSampleCountClamped;
     float pi = selectedTargetPdf;
     float piSum = curTargetPdf * max(cur.sampleCount, 1.0);
     float temporalP = 0.0;
