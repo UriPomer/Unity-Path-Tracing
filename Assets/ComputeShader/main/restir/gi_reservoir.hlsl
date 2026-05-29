@@ -282,14 +282,20 @@ void InitializeIndirectReservoirSample(
     float3 contribution,
     float3 primaryNormal)
 {
+    // RTXDI_MakeGIReservoir parity (Reservoir.hlsl:188-202):
+    //   weightSum = 1 / samplePdf
+    // i.e. weightSum encodes W (inverse PDF) directly, not targetLum/p.
+    // This makes stage2 reservoirs already in the "after Finalize" form so
+    // CombineIndirectReservoirs can use risWeight = targetPdf * candidate.weightSum
+    // without an extra Finalize() pass.
     reservoir.secondaryPosition = secondaryPosition;
     reservoir.proposalPdf = max(proposalPdf, RESTIR_GI_MIN_PROPOSAL_PDF);
     reservoir.secondaryNormal = secondaryNormal;
     reservoir.targetLum = targetLum;
     reservoir.radiance = radiance;
-    reservoir.weightSum = targetLum * ComputeIndirectProposalInversePdf(reservoir.proposalPdf);
+    reservoir.weightSum = ComputeIndirectProposalInversePdf(reservoir.proposalPdf);
     reservoir.contribution = contribution;
-    reservoir.selectedWeight = ComputeIndirectMISWeight(reservoir.weightSum, targetLum, 1.0);
+    reservoir.selectedWeight = reservoir.weightSum;  // mirror, see ComputeIndirectMISWeight
     reservoir.primaryNormal = primaryNormal;
     reservoir.sampleCount = 1.0;
 }
