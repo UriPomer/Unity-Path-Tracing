@@ -4,7 +4,7 @@ static const float RESTIR_GI_MAX_RESERVOIR_SAMPLES = 32.0;
 static const float RESTIR_GI_MAX_JACOBIAN = 3.0;
 static const float RESTIR_GI_MIN_JACOBIAN = 1.0 / 3.0;
 static const float RESTIR_GI_DISCARD_JACOBIAN = 10.0;
-static const float RESTIR_GI_FINITE_LIMIT = 1e30;
+static const float RESTIR_GI_FINITE_LIMIT = 1e6;
 static const float RESTIR_GI_MIN_PROPOSAL_PDF = 1e-3;
 
 bool IsFiniteIndirectScalar(float v)
