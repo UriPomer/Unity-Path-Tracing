@@ -112,9 +112,9 @@ void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
         // M-cap with proportional Wsum scaling (TrueTrace-style firefly fence):
         // ratio of streamed weight to streamed sample count must stay invariant when
         // we drop history beyond MAX-1 samples, otherwise stale reservoirs accumulate
-        // unbounded weightSum across frames.
+        // unbounded weightSum across frames. The floor at 1.0 guarantees sampleCount > 0.
         float prevSampleCountClamped = min(max(prevCandidate.sampleCount, 1.0), RESTIR_GI_MAX_RESERVOIR_SAMPLES - 1.0);
-        if (prevCandidate.sampleCount > prevSampleCountClamped && prevCandidate.sampleCount > 0.0)
+        if (prevCandidate.sampleCount > prevSampleCountClamped)
         {
             prevCandidate.weightSum *= prevSampleCountClamped / prevCandidate.sampleCount;
         }
@@ -137,8 +137,12 @@ void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
     }
 
     // Same proportional-scale M cap, applied to the streamed reservoir before Finalize.
+    // Defensive: with the current single-candidate-then-break loop above, outR.sampleCount
+    // is bounded by 1 (from cur) + (MAX-1) (from prev's pre-clamp) = MAX, so the scaling
+    // branch is currently a no-op. If the loop is ever extended to combine multiple
+    // prevCandidates without breaking, the fence becomes load-bearing.
     float outSampleCountClamped = min(outR.sampleCount, RESTIR_GI_MAX_RESERVOIR_SAMPLES);
-    if (outR.sampleCount > outSampleCountClamped && outR.sampleCount > 0.0)
+    if (outR.sampleCount > outSampleCountClamped)
     {
         outR.weightSum *= outSampleCountClamped / outR.sampleCount;
     }
