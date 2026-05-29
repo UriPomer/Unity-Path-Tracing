@@ -4,9 +4,12 @@ static const float RESTIR_GI_MAX_RESERVOIR_SAMPLES = 32.0;
 static const float RESTIR_GI_MAX_JACOBIAN = 3.0;
 static const float RESTIR_GI_MIN_JACOBIAN = 1.0 / 3.0;
 static const float RESTIR_GI_DISCARD_JACOBIAN = 10.0;
-// ~30x above worst-case legitimate weightSum (typical 1/p_hat in [1,1e3] x M_max=32 ~= 3.2e4).
-// Old 1e30 ceiling let weightSum=1e27..1e29 firefly reservoirs survive IsIndirectReservoirValid
-// and propagate into next-frame / spatial-neighbor reuse, producing bubble-noise white-out.
+// Reservoir validity ceiling. weightSum encodes W = 1/p_hat (after Finalize, M cancels in
+// the denominator), so legitimate values sit in roughly [0, 1e3] for our scenes. 1e6 leaves
+// generous headroom but cuts off the runaway tail: pre-fix, weightSum=1e+27..1e+29 firefly
+// reservoirs survived IsIndirectReservoirValid and propagated into next-frame / spatial-neighbor
+// reuse, producing bubble-noise white-out. Also gates positions/normals/radiance/contribution
+// so 1e6 must accommodate world-space coordinates too (fine for any sub-1000-km scene).
 static const float RESTIR_GI_FINITE_LIMIT = 1e6;
 static const float RESTIR_GI_MIN_PROPOSAL_PDF = 1e-3;
 
@@ -301,10 +304,9 @@ void InitializeIndirectReservoirSample(
 }
 
 // risWeight = targetPdf * W ; W is the unbiased contribution weight stored in candidate.weightSum.
-// Final-state semantics (after Task 4): W = 1/proposalPdf at stage2 init; W = renormalized RIS sum
-// after FinalizeIndirectReservoir; either way candidate.weightSum encodes W directly.
-// TODO(Task4): InitializeIndirectReservoirSample currently writes weightSum = targetLum/p (not 1/p),
-// so for fresh stage2 candidates risWeight carries a spurious targetLum factor until Task 4 lands.
+// W = 1/proposalPdf at stage2 init (InitializeIndirectReservoirSample);
+// W = renormalized RIS sum after FinalizeIndirectReservoir.
+// Either way candidate.weightSum encodes W directly.
 // candidate.sampleCount is added to reservoir.M separately by CombineIndirectReservoirs and MUST NOT
 // be folded into the streamed RIS weight (otherwise M is double-counted).
 float GetIndirectReservoirRISWeight(IndirectReservoirData candidate, float targetPdf)
