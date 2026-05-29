@@ -336,12 +336,23 @@ public static class SelfTest
         bool sawValidTemporalSummary = temporalSummaryLines.Any(line =>
             IsFinitePositive(ExtractFloat(line, "proposalPdf")) &&
             IsFinitePositive(ExtractFloat(line, "targetLum")) &&
-            IsFinitePositive(ExtractFloat(line, "weightSum")) &&
-            IsFinitePositive(ExtractFloat(line, "selectedWeight")) &&
+            IsFinitePositiveBounded(ExtractFloat(line, "weightSum"), MaxValidGIWeightSum) &&
+            IsFinitePositiveBounded(ExtractFloat(line, "selectedWeight"), MaxValidGISelectedWeight) &&
             IsFinitePositive(ExtractFloat(line, "sampleCountM")));
         if (!sawValidTemporalSummary)
         {
-            Fail("GI temporal diagnostics never reported a valid temporal reservoir summary");
+            Fail("GI temporal diagnostics never reported a valid temporal reservoir summary (with weightSum<=1e6, selectedWeight<=1e6 bound)");
+            return;
+        }
+
+        // Hard upper-bound sweep: catch any frame where the runaway-RIS tail
+        // returned (regression detector for the baseline_pre_fix scenario).
+        string runawayTemporalLine = temporalSummaryLines.FirstOrDefault(line =>
+            ExtractFloat(line, "weightSum") > MaxValidGIWeightSum ||
+            ExtractFloat(line, "selectedWeight") > MaxValidGISelectedWeight);
+        if (runawayTemporalLine != null)
+        {
+            Fail($"GI temporal weightSum/selectedWeight exceeded firefly bound (>1e6): {runawayTemporalLine}");
             return;
         }
 
@@ -379,11 +390,19 @@ public static class SelfTest
         bool sawValidFinalSummary = finalSummaryLines.Any(line =>
             ExtractBool(line, "finalContributionFinite") &&
             ExtractBool(line, "finalContributionPositive") &&
-            IsFinitePositive(ExtractFloat(line, "finalContributionLum")) &&
+            IsFinitePositiveBounded(ExtractFloat(line, "finalContributionLum"), MaxValidGIFinalContributionLum) &&
             IsFinitePositive(ExtractFloat(line, "globalLightDeltaLum")));
         if (!sawValidFinalSummary)
         {
-            Fail("GI final diagnostics never reported a finite positive final GI contribution");
+            Fail("GI final diagnostics never reported a finite positive final GI contribution within bound (<=1e4)");
+            return;
+        }
+
+        string runawayFinalLine = finalSummaryLines.FirstOrDefault(line =>
+            ExtractFloat(line, "finalContributionLum") > MaxValidGIFinalContributionLum);
+        if (runawayFinalLine != null)
+        {
+            Fail($"GI finalContributionLum exceeded firefly bound (>1e4): {runawayFinalLine}");
             return;
         }
 
@@ -462,15 +481,15 @@ public static class SelfTest
             return;
         }
 
-        if (!IsFinitePositive(weightSum))
+        if (!IsFinitePositiveBounded(weightSum, MaxValidGIWeightSum))
         {
-            Fail($"Invalid GI weightSum: {weightSum.ToString("R", CultureInfo.InvariantCulture)}");
+            Fail($"GI weightSum out of bound (must be 0<x<=1e6): {weightSum.ToString("R", CultureInfo.InvariantCulture)}");
             return;
         }
 
-        if (!IsFinitePositive(selectedWeight))
+        if (!IsFinitePositiveBounded(selectedWeight, MaxValidGISelectedWeight))
         {
-            Fail($"Invalid GI selectedWeight: {selectedWeight.ToString("R", CultureInfo.InvariantCulture)}");
+            Fail($"GI selectedWeight out of bound (must be 0<x<=1e6): {selectedWeight.ToString("R", CultureInfo.InvariantCulture)}");
             return;
         }
 
@@ -595,6 +614,15 @@ public static class SelfTest
     {
         if (File.Exists(path))
             File.Delete(path);
+    }
+
+    private const float MaxValidGIWeightSum = 1e6f;
+    private const float MaxValidGISelectedWeight = 1e6f;
+    private const float MaxValidGIFinalContributionLum = 1e4f;
+
+    private static bool IsFinitePositiveBounded(float v, float upperBound)
+    {
+        return IsFinitePositive(v) && v <= upperBound;
     }
 
     private static bool IsFinitePositive(float value)
