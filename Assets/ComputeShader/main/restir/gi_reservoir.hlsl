@@ -114,27 +114,23 @@ bool EvaluateIndirectRadianceAtSurface(
     return true;
 }
 
+// Validity-gated wrapper around EvaluateIndirectRadianceAtSurface for reservoir samples:
+// returns the reflected radiance integrand (f_brdf * NdotL * sample.radiance) for finite,
+// valid reservoir samples. Callers multiply by sample.weightSum themselves to obtain the
+// unbiased GI estimate radiance * NdotL * f_brdf * W (RTXDI FinalShading.hlsl:66 parity).
 bool EvaluateIndirectSampleAtSurface(
     HitData hd,
     IndirectReservoirData sample,
-    out float3 f_brdf,
-    out float3 weightedRadiance,
     out float3 reflectedRadiance)
 {
-    f_brdf = 0.0;
-    weightedRadiance = 0.0;
     reflectedRadiance = 0.0;
 
     if (!IsIndirectReservoirValid(sample) || hd.distance >= 1e19)
         return false;
 
-    if (!EvaluateIndirectRadianceAtSurface(hd, sample.secondaryPosition, sample.radiance, f_brdf, reflectedRadiance))
-        return false;
-
-    // weightedRadiance kept as a precomputation for callers; weightSum already encodes
-    // the unbiased contribution weight W after Finalize / stage2 init.
-    weightedRadiance = sample.radiance * sample.weightSum;
-    return IsFiniteIndirectFloat3(reflectedRadiance) && IsFiniteIndirectFloat3(weightedRadiance);
+    float3 f_brdf;
+    return EvaluateIndirectRadianceAtSurface(hd, sample.secondaryPosition, sample.radiance, f_brdf, reflectedRadiance)
+        && IsFiniteIndirectFloat3(reflectedRadiance);
 }
 
 bool ReevaluateIndirectReservoirAtSurface(
@@ -148,10 +144,8 @@ bool ReevaluateIndirectReservoirAtSurface(
     contribution = 0.0;
     targetLum = 0.0;
 
-    float3 f_brdf;
-    float3 weightedRadiance;
     float3 reflectedRadiance;
-    if (!EvaluateIndirectSampleAtSurface(hd, sample, f_brdf, weightedRadiance, reflectedRadiance))
+    if (!EvaluateIndirectSampleAtSurface(hd, sample, reflectedRadiance))
         return false;
 
     radiance = max(sample.radiance, 0.0);
@@ -185,10 +179,8 @@ bool ReevaluateIndirectReservoirAtSurfaceDebug(
         return false;
     }
 
-    float3 f_brdf;
-    float3 weightedRadiance;
     float3 reflectedRadiance;
-    if (!EvaluateIndirectSampleAtSurface(hd, sample, f_brdf, weightedRadiance, reflectedRadiance))
+    if (!EvaluateIndirectSampleAtSurface(hd, sample, reflectedRadiance))
     {
         RayHit primaryHit = BuildPrimaryRayHit(hd);
         float3 cameraPos = float3(_CameraToWorld._m03, _CameraToWorld._m13, _CameraToWorld._m23);
@@ -211,6 +203,7 @@ bool ReevaluateIndirectReservoirAtSurfaceDebug(
             return false;
         }
 
+        float3 f_brdf;
         float proposalPdf;
         EvaluateBXDF_GivenDir(primaryHit, V, L, f_brdf, proposalPdf);
         if (!IsFiniteIndirectFloat3(f_brdf))

@@ -8,9 +8,7 @@ bool EvaluateVisibleGISample(
     weightedReflectedRadiance = 0.0;
 
     float3 reflectedRadiance;
-    float3 weightedRadiance;
-    float3 trueBrdf;
-    if (!EvaluateIndirectSampleAtSurface(hd, res, trueBrdf, weightedRadiance, reflectedRadiance))
+    if (!EvaluateIndirectSampleAtSurface(hd, res, reflectedRadiance))
         return false;
 
     RayHit primaryHit = BuildPrimaryRayHit(hd);
