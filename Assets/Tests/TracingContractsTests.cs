@@ -594,8 +594,8 @@ public class TracingContractsTests
         StringAssert.Contains("GetDirectLightSurfaceNormal(primaryHit, V);", giReservoirSource);
         StringAssert.Contains("EvaluateBXDF_GivenDir(primaryHit, V, L, f_brdf, proposalPdf);", giReservoirSource);
         StringAssert.DoesNotContain("if (proposalPdf <= 1e-6 || !all(isfinite(f_brdf)))", giReservoirSource);
-        StringAssert.Contains("if (!all(isfinite(f_brdf)))", giReservoirSource);
-        StringAssert.Contains("float3 reflectedRadiance = max(f_brdf * NdotL * radiance, 0.0);", giReservoirSource);
+        StringAssert.Contains("if (!IsFiniteIndirectFloat3(f_brdf))", giReservoirSource);
+        StringAssert.Contains("float3 reflected = max(f_brdf * NdotL * radiance, 0.0);", giReservoirSource);
         StringAssert.Contains("targetLum = max(reflectedRadiance.x, max(reflectedRadiance.y, reflectedRadiance.z));", giReservoirSource);
     }
 
@@ -610,13 +610,16 @@ public class TracingContractsTests
         string giReservoirSource = File.ReadAllText(giReservoirSourcePath);
         string giShadeSource = File.ReadAllText(giShadeSourcePath);
 
+        // Helper signature: thin wrapper that returns reflectedRadiance only.
         StringAssert.Contains("bool EvaluateIndirectSampleAtSurface(", giReservoirSource);
-        StringAssert.Contains("EvaluateIndirectSampleAtSurface(hd, res, trueBrdf, weightedRadiance, reflectedRadiance)", giShadeSource);
-        StringAssert.Contains("weightedRadiance = sample.radiance * sample.selectedWeight;", giReservoirSource);
-        StringAssert.Contains("return all(isfinite(reflectedRadiance)) && all(isfinite(weightedRadiance));", giReservoirSource);
-        StringAssert.Contains("weightedReflectedRadiance = reflectedRadiance * res.selectedWeight;", giShadeSource);
-        StringAssert.DoesNotContain("finalTrueBrdf * finalWeightedRadiance", giShadeSource);
-        StringAssert.DoesNotContain("initialTrueBrdf * initialWeightedRadiance", giShadeSource);
+        StringAssert.Contains("EvaluateIndirectSampleAtSurface(hd, res, reflectedRadiance)", giShadeSource);
+        // Final shading multiplies reflectedRadiance by reservoir.weightSum (RTXDI FinalShading.hlsl:66 parity).
+        StringAssert.Contains("weightedReflectedRadiance = reflectedRadiance * res.weightSum;", giShadeSource);
+        // Old dead out-param patterns must be gone.
+        StringAssert.DoesNotContain("trueBrdf, weightedRadiance", giShadeSource);
+        StringAssert.DoesNotContain("weightedRadiance = sample.radiance * sample.selectedWeight", giReservoirSource);
+        // Pre-fix shading-by-selectedWeight pattern must be gone.
+        StringAssert.DoesNotContain("weightedReflectedRadiance = reflectedRadiance * res.selectedWeight", giShadeSource);
     }
 
     [Test]
@@ -740,20 +743,94 @@ public class TracingContractsTests
     }
 
     [Test]
-    public void RestirGI_Reservoir_Keeps_Raw_WeightSum_Separate_From_SelectedWeight()
+    public void RestirGI_SelectedWeight_Mirrors_WeightSum_For_Stride_Compat()
     {
         string giReservoirSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_reservoir.hlsl"));
         Assert.That(File.Exists(giReservoirSourcePath), Is.True, $"GI reservoir source not found: {giReservoirSourcePath}");
 
         string giReservoirSource = File.ReadAllText(giReservoirSourcePath);
 
+        // ComputeIndirectProposalInversePdf is the inverse-PDF helper still in use.
         StringAssert.Contains("float ComputeIndirectProposalInversePdf(float proposalPdf)", giReservoirSource);
-        StringAssert.Contains("reservoir.weightSum = targetLum * ComputeIndirectProposalInversePdf(proposalPdf);", giReservoirSource);
-        StringAssert.Contains("reservoir.selectedWeight = ComputeIndirectMISWeight(reservoir.weightSum, targetLum, 1.0);", giReservoirSource);
-        StringAssert.Contains("return max(targetPdf, 0.0) * ComputeIndirectProposalInversePdf(candidate.proposalPdf) * max(candidate.sampleCount, 0.0);", giReservoirSource);
-        StringAssert.Contains("reservoir.selectedWeight = ComputeIndirectMISWeight(reservoir.weightSum, reservoir.targetLum, reservoir.sampleCount);", giReservoirSource);
-        StringAssert.DoesNotContain("reservoir.selectedWeight = proposalPdf > 0.0 ? rcp(proposalPdf) : 0.0;", giReservoirSource);
-        StringAssert.DoesNotContain("return max(targetPdf, 0.0) * max(candidate.selectedWeight, 0.0) * max(candidate.sampleCount, 0.0);", giReservoirSource);
+        // Stage2 init now writes weightSum = 1/p (RTXDI_MakeGIReservoir parity).
+        StringAssert.Contains("reservoir.weightSum = ComputeIndirectProposalInversePdf(reservoir.proposalPdf);", giReservoirSource);
+        // selectedWeight is now a mirror of weightSum at init.
+        StringAssert.Contains("reservoir.selectedWeight = reservoir.weightSum;", giReservoirSource);
+        // RIS streaming weight no longer multiplies by sampleCount (M-double-count fix).
+        StringAssert.Contains("return max(targetPdf, 0.0) * max(candidate.weightSum, 0.0);", giReservoirSource);
+        StringAssert.DoesNotContain("max(candidate.sampleCount, 0.0)", giReservoirSource);
+        // Old stage2 form (targetLum * ...) must be gone.
+        StringAssert.DoesNotContain("reservoir.weightSum = targetLum * ComputeIndirectProposalInversePdf", giReservoirSource);
+    }
+
+    [Test]
+    public void RestirGI_Finalize_Does_Not_Divide_By_TargetLum_Times_M()
+    {
+        // RTXDI parity: FinalizeGIResampling sets weightSum = (wsum*num)/denom and
+        // does NOT divide by targetLum*M. Old division was the source of the
+        // baseline 1e+29 selectedWeight blowup.
+        string giReservoirSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_reservoir.hlsl"));
+        string giReservoirSource = File.ReadAllText(giReservoirSourcePath);
+
+        StringAssert.Contains("// In RTXDI semantics, weightSum AFTER FinalizeIndirectReservoir already encodes",
+            giReservoirSource,
+            "ComputeIndirectMISWeight comment must mark RTXDI-parity intent so it isn't reverted to a /(targetLum*M) form.");
+        StringAssert.DoesNotContain("weightSum / max(targetLum * sampleCount",
+            giReservoirSource,
+            "Old MIS divisor must be removed");
+    }
+
+    [Test]
+    public void RestirGI_RIS_Stream_Weight_Has_No_Extra_M_Multiplier()
+    {
+        // GetIndirectReservoirRISWeight must NOT multiply by candidate.sampleCount;
+        // CombineIndirectReservoirs already adds candidate.M into reservoir.M.
+        string giReservoirSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_reservoir.hlsl"));
+        string giReservoirSource = File.ReadAllText(giReservoirSourcePath);
+
+        StringAssert.DoesNotContain("max(candidate.sampleCount, 0.0)",
+            giReservoirSource,
+            "candidate.sampleCount must not be folded into RIS streaming weight (double-counts M).");
+        StringAssert.Contains("targetPdf * max(candidate.weightSum, 0.0)",
+            giReservoirSource,
+            "RIS weight must be targetPdf * candidate.weightSum (RTXDI form).");
+    }
+
+    [Test]
+    public void RestirGI_Stage2_Initializes_WeightSum_As_Inverse_Pdf()
+    {
+        // RTXDI_MakeGIReservoir parity: weightSum = 1/proposalPdf at stage2 init.
+        string giReservoirSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_reservoir.hlsl"));
+        string giReservoirSource = File.ReadAllText(giReservoirSourcePath);
+
+        StringAssert.Contains("reservoir.weightSum = ComputeIndirectProposalInversePdf(reservoir.proposalPdf);",
+            giReservoirSource,
+            "Stage2 init must write weightSum = 1/proposalPdf (drop the redundant *targetLum factor).");
+    }
+
+    [Test]
+    public void RestirGI_FinalShading_Uses_WeightSum_Not_SelectedWeight()
+    {
+        string giReservoirSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_reservoir.hlsl"));
+        string giShadeSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_shade.hlsl"));
+
+        string giShadeSource = File.ReadAllText(giShadeSourcePath);
+        StringAssert.Contains("reflectedRadiance * res.weightSum",
+            giShadeSource,
+            "EvaluateVisibleGISample must use radiance * weightSum (RTXDI FinalShading parity).");
+    }
+
+    [Test]
+    public void RestirGI_Finite_Limit_Tightened_For_Firefly_Containment()
+    {
+        // Old 1e30 allowed 1e+27 reservoirs to spread across frames. 1e6 keeps a
+        // healthy headroom over typical 1/p_hat (1..1e3) but kills the runaway tail.
+        string giReservoirSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_reservoir.hlsl"));
+        string giReservoirSource = File.ReadAllText(giReservoirSourcePath);
+
+        StringAssert.Contains("static const float RESTIR_GI_FINITE_LIMIT = 1e6;",
+            giReservoirSource,
+            "RESTIR_GI_FINITE_LIMIT must be 1e6 to contain firefly bubble propagation.");
     }
 
     private static string ExtractMethodBody(string source, string methodName)
