@@ -131,7 +131,9 @@ bool EvaluateIndirectSampleAtSurface(
     if (!EvaluateIndirectRadianceAtSurface(hd, sample.secondaryPosition, sample.radiance, f_brdf, reflectedRadiance))
         return false;
 
-    weightedRadiance = sample.radiance * sample.selectedWeight;
+    // weightedRadiance kept as a precomputation for callers; weightSum already encodes
+    // the unbiased contribution weight W after Finalize / stage2 init.
+    weightedRadiance = sample.radiance * sample.weightSum;
     return IsFiniteIndirectFloat3(reflectedRadiance) && IsFiniteIndirectFloat3(weightedRadiance);
 }
 

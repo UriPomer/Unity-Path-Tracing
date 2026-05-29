@@ -34,7 +34,9 @@ bool EvaluateVisibleGISample(
     if (IntersectTlasFast(shadowRay, tMax))
         return false;
 
-    weightedReflectedRadiance = reflectedRadiance * res.selectedWeight;
+    // RTXDI parity: FinalShading.hlsl:66 -> radiance * reservoir.weightSum.
+    // After Finalize, weightSum encodes the unbiased contribution weight W = 1/p_hat.
+    weightedReflectedRadiance = reflectedRadiance * res.weightSum;
     return all(isfinite(weightedReflectedRadiance));
 }
 
