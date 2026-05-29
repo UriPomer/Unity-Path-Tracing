@@ -333,26 +333,28 @@ public static class SelfTest
             return;
         }
 
+        // Hard upper-bound sweep FIRST: a regression that produces 100% runaway frames
+        // would still pass the Any() check below (no valid frame -> "never reported"
+        // message) and the engineer would chase the wrong cause. Run the sweep up front
+        // so any out-of-bound entry surfaces with the correct firefly diagnostic.
+        string runawayTemporalLine = temporalSummaryLines.FirstOrDefault(line =>
+            ExtractFloat(line, "weightSum") > MaxValidGIRISWeight ||
+            ExtractFloat(line, "selectedWeight") > MaxValidGIRISWeight);
+        if (runawayTemporalLine != null)
+        {
+            Fail($"GI temporal weightSum/selectedWeight exceeded firefly bound (>1e6): {runawayTemporalLine}");
+            return;
+        }
+
         bool sawValidTemporalSummary = temporalSummaryLines.Any(line =>
             IsFinitePositive(ExtractFloat(line, "proposalPdf")) &&
             IsFinitePositive(ExtractFloat(line, "targetLum")) &&
-            IsFinitePositiveBounded(ExtractFloat(line, "weightSum"), MaxValidGIWeightSum) &&
-            IsFinitePositiveBounded(ExtractFloat(line, "selectedWeight"), MaxValidGISelectedWeight) &&
+            IsFinitePositiveBounded(ExtractFloat(line, "weightSum"), MaxValidGIRISWeight) &&
+            IsFinitePositiveBounded(ExtractFloat(line, "selectedWeight"), MaxValidGIRISWeight) &&
             IsFinitePositive(ExtractFloat(line, "sampleCountM")));
         if (!sawValidTemporalSummary)
         {
             Fail("GI temporal diagnostics never reported a valid temporal reservoir summary (with weightSum<=1e6, selectedWeight<=1e6 bound)");
-            return;
-        }
-
-        // Hard upper-bound sweep: catch any frame where the runaway-RIS tail
-        // returned (regression detector for the baseline_pre_fix scenario).
-        string runawayTemporalLine = temporalSummaryLines.FirstOrDefault(line =>
-            ExtractFloat(line, "weightSum") > MaxValidGIWeightSum ||
-            ExtractFloat(line, "selectedWeight") > MaxValidGISelectedWeight);
-        if (runawayTemporalLine != null)
-        {
-            Fail($"GI temporal weightSum/selectedWeight exceeded firefly bound (>1e6): {runawayTemporalLine}");
             return;
         }
 
@@ -387,6 +389,15 @@ public static class SelfTest
             return;
         }
 
+        // Sweep first; see temporal-summary block above for why ordering matters.
+        string runawayFinalLine = finalSummaryLines.FirstOrDefault(line =>
+            ExtractFloat(line, "finalContributionLum") > MaxValidGIFinalContributionLum);
+        if (runawayFinalLine != null)
+        {
+            Fail($"GI finalContributionLum exceeded firefly bound (>1e4): {runawayFinalLine}");
+            return;
+        }
+
         bool sawValidFinalSummary = finalSummaryLines.Any(line =>
             ExtractBool(line, "finalContributionFinite") &&
             ExtractBool(line, "finalContributionPositive") &&
@@ -395,14 +406,6 @@ public static class SelfTest
         if (!sawValidFinalSummary)
         {
             Fail("GI final diagnostics never reported a finite positive final GI contribution within bound (<=1e4)");
-            return;
-        }
-
-        string runawayFinalLine = finalSummaryLines.FirstOrDefault(line =>
-            ExtractFloat(line, "finalContributionLum") > MaxValidGIFinalContributionLum);
-        if (runawayFinalLine != null)
-        {
-            Fail($"GI finalContributionLum exceeded firefly bound (>1e4): {runawayFinalLine}");
             return;
         }
 
@@ -481,13 +484,13 @@ public static class SelfTest
             return;
         }
 
-        if (!IsFinitePositiveBounded(weightSum, MaxValidGIWeightSum))
+        if (!IsFinitePositiveBounded(weightSum, MaxValidGIRISWeight))
         {
             Fail($"GI weightSum out of bound (must be 0<x<=1e6): {weightSum.ToString("R", CultureInfo.InvariantCulture)}");
             return;
         }
 
-        if (!IsFinitePositiveBounded(selectedWeight, MaxValidGISelectedWeight))
+        if (!IsFinitePositiveBounded(selectedWeight, MaxValidGIRISWeight))
         {
             Fail($"GI selectedWeight out of bound (must be 0<x<=1e6): {selectedWeight.ToString("R", CultureInfo.InvariantCulture)}");
             return;
@@ -616,8 +619,12 @@ public static class SelfTest
             File.Delete(path);
     }
 
-    private const float MaxValidGIWeightSum = 1e6f;
-    private const float MaxValidGISelectedWeight = 1e6f;
+    // Mirrors RESTIR_GI_FINITE_LIMIT (gi_reservoir.hlsl). HLSL only enforces this on
+    // selectedWeight via IsIndirectReservoirValid; the C# test extends the bound to
+    // weightSum as well for stricter regression detection. Both reservoir scalars share
+    // the same bound because in the post-fix RTXDI semantics selectedWeight mirrors
+    // weightSum (Task 3).
+    private const float MaxValidGIRISWeight = 1e6f;
     private const float MaxValidGIFinalContributionLum = 1e4f;
 
     private static bool IsFinitePositiveBounded(float v, float upperBound)
