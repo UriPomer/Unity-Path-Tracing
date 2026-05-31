@@ -427,6 +427,19 @@ public static class SelfTest
             return;
         }
 
+        // Sweep first; same ordering rationale as temporal/final blocks above.
+        // spatialNormalizationDenominator = selectedTargetPdf * piSum, where piSum
+        // sums targetPdf*M across up to 8 neighbors. With the M-cap fence in
+        // gi_spatial.hlsl, this stays well below 1e8; without it the 2026-05-31
+        // Sponza regression hit 7.3e6 with 7/8 active neighbors and 36k piSum.
+        string runawaySpatialLine = spatialSummaryLines.FirstOrDefault(line =>
+            ExtractFloat(line, "spatialNormalizationDenominator") > MaxValidGISpatialDenom);
+        if (runawaySpatialLine != null)
+        {
+            Fail($"GI spatial normalizationDenominator exceeded firefly bound (>1e8): {runawaySpatialLine}");
+            return;
+        }
+
         bool sawSelectedProbeZeroTargetFailure = spatialSummaryLines.Any(line =>
             ExtractFloat(line, "spatialShaderReevaluateFailZeroTarget") > 0.0f);
         if (sawSelectedProbeZeroTargetFailure)
@@ -626,6 +639,10 @@ public static class SelfTest
     // weightSum (Task 3).
     private const float MaxValidGIRISWeight = 1e6f;
     private const float MaxValidGIFinalContributionLum = 1e4f;
+    // Spatial denom = selectedTargetPdf * piSum (piSum aggregates targetPdf*M over 8 neighbors).
+    // With M-capped to RESTIR_GI_MAX_RESERVOIR_SAMPLES, the product is naturally one
+    // order of magnitude looser than per-reservoir weightSum/selectedWeight (1e6).
+    private const float MaxValidGISpatialDenom = 1e8f;
 
     private static bool IsFinitePositiveBounded(float v, float upperBound)
     {

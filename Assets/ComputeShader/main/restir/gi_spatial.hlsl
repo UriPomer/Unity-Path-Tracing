@@ -127,7 +127,17 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
         neighborCandidate.proposalPdf = neighborCandidate.proposalPdf > 0.0
             ? max(neighborCandidate.proposalPdf / jacobian, RESTIR_GI_MIN_PROPOSAL_PDF)
             : 0.0;
-        neighborCandidate.sampleCount = min(max(neighborCandidate.sampleCount, 1.0), RESTIR_GI_MAX_RESERVOIR_SAMPLES - 1.0);
+        // M-cap with proportional Wsum scaling, mirroring gi_temporal.hlsl. Without this
+        // the spatial RIS streaming weight can drift unbounded across multi-neighbor reuse:
+        // the 2026-05-31 Sponza regression showed spatialNormalizationDenominator hitting
+        // 7.3e6 with 7/8 active neighbors. Scaling weightSum by clamped/sampleCount keeps
+        // the streamed-weight to streamed-count ratio invariant when history is dropped.
+        float neighborSampleCountClamped = min(max(neighborCandidate.sampleCount, 1.0), RESTIR_GI_MAX_RESERVOIR_SAMPLES - 1.0);
+        if (neighborCandidate.sampleCount > neighborSampleCountClamped)
+        {
+            neighborCandidate.weightSum *= neighborSampleCountClamped / neighborCandidate.sampleCount;
+        }
+        neighborCandidate.sampleCount = neighborSampleCountClamped;
 
         cachedResult |= (1u << uint(neighborSampleIdx));
         combinedCount++;
@@ -143,7 +153,16 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    outR.sampleCount = min(outR.sampleCount, RESTIR_GI_MAX_RESERVOIR_SAMPLES);
+    // Same proportional-scale M cap, applied to the streamed reservoir before the second
+    // (normalization) pass. With up to 8 neighbors combined, outR.sampleCount can reach
+    // 1 (cur) + 8 * (MAX-1) which exceeds MAX; without scaling weightSum the per-neighbor
+    // RIS contributions would still be summed at full magnitude.
+    float outSampleCountClamped = min(outR.sampleCount, RESTIR_GI_MAX_RESERVOIR_SAMPLES);
+    if (outR.sampleCount > outSampleCountClamped)
+    {
+        outR.weightSum *= outSampleCountClamped / outR.sampleCount;
+    }
+    outR.sampleCount = outSampleCountClamped;
 
     float pi = selectedTargetPdf;
     float piSum = curTargetPdf * max(cur.sampleCount, 1.0);

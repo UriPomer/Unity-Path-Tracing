@@ -824,6 +824,28 @@ public class TracingContractsTests
             "RESTIR_GI_FINITE_LIMIT must be 1e6 to contain firefly bubble propagation.");
     }
 
+    [Test]
+    public void RestirGI_Spatial_MCap_Scales_WeightSum_Proportionally()
+    {
+        // 2026-05-31 Sponza regression showed spatialNormalizationDenominator hitting
+        // 7.3e6 with 7/8 active neighbors. Cause: spatial RIS streaming weight had
+        // sampleCount clamped without proportional Wsum scaling, so streamed weight
+        // stayed at full magnitude while M was capped. Fence required at BOTH the
+        // per-neighbor candidate site AND the post-loop outR site, mirroring gi_temporal.hlsl.
+        string giSpatialSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_spatial.hlsl"));
+        Assert.That(File.Exists(giSpatialSourcePath), Is.True, $"GI spatial source not found: {giSpatialSourcePath}");
+
+        string giSpatialSource = File.ReadAllText(giSpatialSourcePath);
+
+        StringAssert.Contains("neighborCandidate.weightSum *= neighborSampleCountClamped / neighborCandidate.sampleCount;",
+            giSpatialSource,
+            "Spatial per-neighbor candidate must scale weightSum by clamped/sampleCount when M-capping (TrueTrace fence).");
+
+        StringAssert.Contains("outR.weightSum *= outSampleCountClamped / outR.sampleCount;",
+            giSpatialSource,
+            "Spatial outR must scale weightSum by clamped/sampleCount before Finalize when M exceeds the cap.");
+    }
+
     private static string ExtractMethodBody(string source, string methodName)
     {
         Match signature = Regex.Match(
