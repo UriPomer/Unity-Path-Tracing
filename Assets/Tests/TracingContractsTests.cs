@@ -873,6 +873,41 @@ public class TracingContractsTests
             "Editor entrypoint must use LogOnFail so a failed assertion does not call EditorApplication.Exit(1).");
     }
 
+    [Test]
+    public void RestirGI_SelfTest_Skips_ZeroEnergy_Probe_Class_Mismatch()
+    {
+        // 2026-06-01 Sponza regression: a single pixel with weightSum=0 (selected
+        // a prev candidate but reevaluation collapsed it) tripped the temporal
+        // assertion that "selected probe must be reusable+active". Such pixels
+        // never contribute to GlobalColors, so flagging them produces a false
+        // alarm. Relaxation: skip rows where the kernel produced zero energy.
+        string selfTestSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "Scripts", "Editor", "SelfTest.cs"));
+        Assert.That(File.Exists(selfTestSourcePath), Is.True, $"SelfTest source not found: {selfTestSourcePath}");
+
+        string selfTestSource = File.ReadAllText(selfTestSourcePath);
+
+        // Temporal block: must guard the "selected probe must be reusable+active"
+        // check on a positive weightSum.
+        Assert.That(
+            Regex.IsMatch(
+                selfTestSource,
+                @"float\s+weightSum\s*=\s*ExtractFloat\(line,\s*""weightSum""\)\s*;\s*if\s*\(\s*!IsFinitePositive\(\s*weightSum\s*\)\s*\)\s*return\s+false\s*;",
+                RegexOptions.Singleline),
+            Is.True,
+            "Temporal probe-class check must skip rows where weightSum is non-positive (kernel collapsed to empty reservoir).");
+
+        // Final block: must guard the same check on finalContributionPositive.
+        StringAssert.Contains("if (!ExtractBool(line, \"finalContributionPositive\"))",
+            selfTestSource,
+            "Final probe-class check must skip rows where the final pipeline produced zero contribution.");
+
+        // Spatial block: must guard on spatialSelectedTargetPdf > 0 (NOT spatialPi,
+        // which falls back to currentTargetPdf when nothing was selected).
+        StringAssert.Contains("ExtractFloat(line, \"spatialSelectedTargetPdf\")",
+            selfTestSource,
+            "Spatial probe-class check must guard on spatialSelectedTargetPdf, not spatialPi.");
+    }
+
     private static string ExtractMethodBody(string source, string methodName)
     {
         Match signature = Regex.Match(

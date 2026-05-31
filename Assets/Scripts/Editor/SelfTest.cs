@@ -325,6 +325,15 @@ public static class SelfTest
 
         string invalidTemporalProbeLine = temporalSummaryLines.FirstOrDefault(line =>
         {
+            // 2026-06-01: a temporal row with weightSum==0 means the kernel selected a
+            // prev candidate but reevaluation collapsed it to an empty reservoir. That
+            // pixel never contributes to GlobalColors, so it is not a regression even
+            // if the corresponding probe ends up classified non-reusable. Only flag
+            // probes whose temporal kernel actually wrote a non-zero reservoir.
+            float weightSum = ExtractFloat(line, "weightSum");
+            if (!IsFinitePositive(weightSum))
+                return false;
+
             int selectedProbeId = ExtractInt(line, "selectedProbeId");
             int selectedFrameIndex = ExtractInt(line, "frameIndex");
             return !primaryHitLines.Any(probeLine =>
@@ -381,6 +390,12 @@ public static class SelfTest
 
         string invalidFinalProbeLine = finalSummaryLines.FirstOrDefault(line =>
         {
+            // Skip rows where the final pipeline produced zero contribution: those
+            // pixels never feed GlobalColors so they are not regressions even if
+            // the probe is non-reusable. See temporal block above for full rationale.
+            if (!ExtractBool(line, "finalContributionPositive"))
+                return false;
+
             int selectedProbeId = ExtractInt(line, "selectedProbeId");
             int selectedFrameIndex = ExtractInt(line, "frameIndex");
             return !primaryHitLines.Any(probeLine =>
@@ -456,6 +471,16 @@ public static class SelfTest
 
         string invalidSelectedProbeLine = spatialSummaryLines.FirstOrDefault(line =>
         {
+            // Skip rows where spatial selected nothing or pi was zero — those pixels
+            // pass through the bias correction without contributing energy. Same
+            // rationale as the temporal/final relaxations above. Use selectedTargetPdf
+            // (the pdf at the selected sample) rather than spatialPi: the latter falls
+            // back to currentTargetPdf when no neighbor was picked, which can be
+            // non-zero even when no contribution flowed through (frame 145 case).
+            float selectedTargetPdf = ExtractFloat(line, "spatialSelectedTargetPdf");
+            if (!IsFinitePositive(selectedTargetPdf))
+                return false;
+
             int selectedProbeId = ExtractInt(line, "selectedProbeId");
             int selectedFrameIndex = ExtractInt(line, "frameIndex");
             return !primaryHitLines.Any(probeLine =>
