@@ -846,6 +846,33 @@ public class TracingContractsTests
             "Spatial outR must scale weightSum by clamped/sampleCount before Finalize when M exceeds the cap.");
     }
 
+    [Test]
+    public void RestirGI_SelfTest_Has_Editor_Menu_Entry()
+    {
+        // The batchmode SelfTest.Run entrypoint requires Unity Hub + command-line
+        // launch, which the user does not run. The editor menu entry lets the
+        // same upper-bound assertions execute against the latest editor-Play
+        // jsonl logs without batchmode. If this string disappears the editor
+        // user has no way to exercise the SelfTest assertions at all.
+        string selfTestSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "Assets", "Scripts", "Editor", "SelfTest.cs"));
+        Assert.That(File.Exists(selfTestSourcePath), Is.True, $"SelfTest source not found: {selfTestSourcePath}");
+
+        string selfTestSource = File.ReadAllText(selfTestSourcePath);
+
+        StringAssert.Contains("[MenuItem(\"Tools/Verify GI Logs\")]",
+            selfTestSource,
+            "SelfTest must expose a Tools/Verify GI Logs editor menu so play-mode logs can be verified without batchmode.");
+        StringAssert.Contains("VerifyGILogsFromEditor",
+            selfTestSource,
+            "SelfTest editor menu must dispatch to VerifyGILogsFromEditor.");
+        StringAssert.Contains("FindLatestDiagnosticOutputDir",
+            selfTestSource,
+            "Editor entrypoint must look up the latest Tools/Output/<timestamp>/ subdir produced by Tracing.GetDiagnosticOutputPath, not the legacy non-timestamped paths.");
+        StringAssert.Contains("FailMode.LogOnFail",
+            selfTestSource,
+            "Editor entrypoint must use LogOnFail so a failed assertion does not call EditorApplication.Exit(1).");
+    }
+
     private static string ExtractMethodBody(string source, string methodName)
     {
         Match signature = Regex.Match(

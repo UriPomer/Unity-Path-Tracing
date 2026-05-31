@@ -41,6 +41,12 @@ public static class SelfTest
     private static long s_startTicks;
     private static int s_lastSampleCount;
     private static string s_logPath;
+    // Failure routing: batchmode wants exit(1) on Fail(), the editor menu wants
+    // a dialog + Console error so the editor stays alive. Default to ExitOnFail
+    // for backwards compatibility with the existing Run() batchmode entrypoint.
+    private enum FailMode { ExitOnFail, LogOnFail }
+    private static FailMode s_failMode = FailMode.ExitOnFail;
+    private static string s_lastFailReason;
 
     [InitializeOnLoadMethod]
     private static void Initialize()
@@ -711,7 +717,87 @@ public static class SelfTest
     private static void Fail(string reason)
     {
         s_exitCode = 1;
-        SessionState.SetInt(SessionKeyExitCode, s_exitCode);
+        s_lastFailReason = reason;
+        // SessionState is only meaningful for the batchmode Run() path, which
+        // survives domain reloads. The editor menu runs synchronously inside
+        // one editor frame, so writing to SessionState there would just leak
+        // state into a future batchmode run.
+        if (s_failMode == FailMode.ExitOnFail)
+            SessionState.SetInt(SessionKeyExitCode, s_exitCode);
         Debug.LogError($"[SelfTest] FAIL: {reason}");
+    }
+
+    // Editor-only entrypoint that runs the same upper-bound assertions Run()
+    // performs, but against the most-recent Tools/Output/<timestamp>/ subdirectory
+    // produced by Tracing.GetDiagnosticOutputPath during a regular Play session.
+    // This means the Editor user gets the same regression coverage as batchmode
+    // without ever invoking -batchmode -executeMethod.
+    [MenuItem("Tools/Verify GI Logs")]
+    public static void VerifyGILogsFromEditor()
+    {
+        s_failMode = FailMode.LogOnFail;
+        s_exitCode = 0;
+        s_lastFailReason = null;
+
+        string latestDir = FindLatestDiagnosticOutputDir();
+        if (latestDir == null)
+        {
+            string msg = "No Tools/Output/<timestamp>/ subdirectory found. Play the scene with WriteReSTIRGIDiagnostics enabled, then re-run this menu.";
+            Debug.LogError($"[SelfTest] {msg}");
+            EditorUtility.DisplayDialog("Verify GI Logs", $"FAIL: {msg}", "OK");
+            s_failMode = FailMode.ExitOnFail;
+            return;
+        }
+
+        s_giProbePath = Path.Combine(latestDir, "restir_gi_probe.jsonl");
+        s_giTemporalStatsPath = Path.Combine(latestDir, "restir_gi_temporal_stats.jsonl");
+        s_giFinalStatsPath = Path.Combine(latestDir, "restir_gi_final_stats.jsonl");
+        s_giSpatialStatsPath = Path.Combine(latestDir, "restir_gi_spatial_stats.jsonl");
+        s_sceneName = "(editor-play)";
+        s_enableReSTIRGI = true;
+
+        Debug.Log($"[SelfTest] Verifying GI logs in {latestDir}");
+        ValidateReSTIRGIProbe();
+
+        if (s_exitCode == 0)
+        {
+            string okMsg = $"PASS\n\nLogs verified: {latestDir}";
+            Debug.Log($"[SelfTest] PASS — {latestDir}");
+            EditorUtility.DisplayDialog("Verify GI Logs", okMsg, "OK");
+        }
+        else
+        {
+            string failMsg = $"FAIL: {s_lastFailReason}\n\nLogs: {latestDir}";
+            EditorUtility.DisplayDialog("Verify GI Logs", failMsg, "OK");
+        }
+
+        // Restore default so any subsequent batchmode Run() in the same editor
+        // session still exits on failure as designed.
+        s_failMode = FailMode.ExitOnFail;
+    }
+
+    private static string FindLatestDiagnosticOutputDir()
+    {
+        string rootOutputDir = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Tools", "Output"));
+        if (!Directory.Exists(rootOutputDir))
+            return null;
+
+        // Tracing.GetDiagnosticOutputPath uses "yyyy-MM-dd_HHmmss" with optional
+        // "_N" collision suffix. Lexicographic sort matches chronological order
+        // for the timestamp portion; collision suffixes preserve relative order
+        // because they are appended to identical timestamps.
+        var subdirs = Directory.GetDirectories(rootOutputDir);
+        if (subdirs.Length == 0)
+            return null;
+
+        Array.Sort(subdirs, StringComparer.Ordinal);
+        // Walk from most-recent to oldest and pick the first one that actually
+        // contains the GI probe log; older runs might be empty or partial.
+        for (int i = subdirs.Length - 1; i >= 0; i--)
+        {
+            if (File.Exists(Path.Combine(subdirs[i], "restir_gi_probe.jsonl")))
+                return subdirs[i];
+        }
+        return null;
     }
 }
