@@ -12,6 +12,9 @@ void kernel_shade_di_samples(uint3 id : SV_DispatchThreadID)
     if (!IsReservoirValid(res))
     {
         RestirTelemetryCount(RESTIR_COUNTER_DI_SHADE_INVALID_RESERVOIR, id.x);
+        WriteDirectReservoirTelemetry(
+            6u, RESTIR_STAGE_DI_SHADE, RESTIR_REASON_INVALID_SURFACE, id.x,
+            res, 0.0, 0.0);
         return;
     }
 
@@ -24,6 +27,11 @@ void kernel_shade_di_samples(uint3 id : SV_DispatchThreadID)
     if (IntersectTlasFast(shadowRay, tMax))
     {
         RestirTelemetryCount(RESTIR_COUNTER_DI_SHADE_VISIBILITY_REJECTED, id.x);
+        WriteDirectReservoirTelemetry(
+            6u, RESTIR_STAGE_DI_SHADE, RESTIR_REASON_VISIBILITY_REJECTED, id.x,
+            res,
+            float4((float)res.lightType, (float)res.lightIndex, (float)res.sampleCount, res.selectedWeight),
+            float4(0.0, 0.0, 0.0, tMax));
         return;
     }
 
@@ -32,18 +40,16 @@ void kernel_shade_di_samples(uint3 id : SV_DispatchThreadID)
     if (!all(isfinite(di)))
     {
         RestirTelemetryCountCritical(RESTIR_COUNTER_CRITICAL_NONFINITE);
+        WriteDirectReservoirTelemetry(
+            6u, RESTIR_STAGE_DI_SHADE, RESTIR_REASON_NONFINITE_CONTRIBUTION, id.x,
+            res,
+            float4((float)res.lightType, (float)res.lightIndex, (float)res.sampleCount, res.selectedWeight),
+            float4(di, tMax));
         return;
     }
     RestirTelemetryCount(RESTIR_COUNTER_DI_SHADE_POSITIVE_CONTRIBUTION, id.x);
-    RestirTelemetryWriteRecord(
-        6u,
-        RESTIR_STAGE_DI_SHADE,
-        RESTIR_REASON_NONE,
-        id.x,
-        float4(res.origin, res.maxDist),
-        float4(res.direction, res.targetLum),
-        float4(res.contribution, res.weightSum),
-        float4(res.surfaceNormal, res.proposalPdf),
+    WriteDirectReservoirTelemetry(
+        6u, RESTIR_STAGE_DI_SHADE, RESTIR_REASON_NONE, id.x, res,
         float4((float)res.lightType, (float)res.lightIndex, (float)res.sampleCount, res.selectedWeight),
         float4(di, tMax));
     GlobalColors[id.x].L += max(di, float3(0, 0, 0));

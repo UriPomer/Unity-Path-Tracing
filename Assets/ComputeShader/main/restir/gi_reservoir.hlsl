@@ -4,29 +4,22 @@ static const float RESTIR_GI_MAX_RESERVOIR_SAMPLES = 32.0;
 static const float RESTIR_GI_MAX_JACOBIAN = 3.0;
 static const float RESTIR_GI_MIN_JACOBIAN = 1.0 / 3.0;
 static const float RESTIR_GI_DISCARD_JACOBIAN = 10.0;
-// Reservoir validity ceiling. weightSum encodes the RIS unbiased contribution weight
-// (UCW), i.e. the selected sample's final estimator multiplier. In our scenes it usually
-// sits in roughly [0, 1e3]. 1e6 leaves
-// generous headroom but cuts off the runaway tail: pre-fix, weightSum=1e+27..1e+29 firefly
-// reservoirs survived IsIndirectReservoirValid and propagated into next-frame / spatial-neighbor
-// reuse, producing bubble-noise white-out. Also gates positions/normals/radiance/contribution
-// so 1e6 must accommodate world-space coordinates too (fine for any sub-1000-km scene).
-static const float RESTIR_GI_FINITE_LIMIT = 1e6;
-static const float RESTIR_GI_MIN_PROPOSAL_PDF = 1e-3;
+static const float RESTIR_GI_MIN_REUSE_PROPOSAL_PDF = 1e-8;
+static const uint RESTIR_GI_RESERVOIR_FLAG_ENVIRONMENT = 1u;
 
 bool IsFiniteIndirectScalar(float v)
 {
-    return abs(v) <= RESTIR_GI_FINITE_LIMIT;
+    return isfinite(v);
 }
 
 bool IsFiniteIndirectFloat3(float3 v)
 {
-    return all(abs(v) <= RESTIR_GI_FINITE_LIMIT);
+    return all(isfinite(v));
 }
 
 // In RTXDI semantics, weightSum AFTER FinalizeIndirectReservoir already encodes
-// the RIS unbiased contribution weight W. It is the selected sample's final
-// multiplier, not another targetLum/M-normalized value. selectedWeight is kept
+// the RIS unbiased contribution weight W. It is the selected sample's final estimator multiplier,
+// not another targetLum/M-normalized value. selectedWeight is kept
 // as a mirror so existing readback/diagnostic code paths keep working without
 // any CPU-side struct reshuffle. We deliberately do NOT divide by (targetLum*M)
 // here -- that division is what produced the runaway 1e+29 selectedWeight in
@@ -38,13 +31,14 @@ float ComputeIndirectMISWeight(float weightSum, float targetLum, float sampleCou
 
 float ComputeIndirectProposalInversePdf(float proposalPdf)
 {
-    return proposalPdf > 0.0 ? rcp(max(proposalPdf, RESTIR_GI_MIN_PROPOSAL_PDF)) : 0.0;
+    return proposalPdf > 0.0 ? rcp(proposalPdf) : 0.0;
 }
 
 bool IsIndirectReservoirValid(IndirectReservoirData r)
 {
     return r.targetLum > 0.0 && r.weightSum > 0.0 &&
         r.sampleCount > 0.0 && r.sampleCount <= RESTIR_GI_MAX_RESERVOIR_SAMPLES &&
+        (r.sampleFlags & ~RESTIR_GI_RESERVOIR_FLAG_ENVIRONMENT) == 0u &&
         IsFiniteIndirectFloat3(r.secondaryPosition) &&
         IsFiniteIndirectFloat3(r.secondaryNormal) &&
         IsFiniteIndirectFloat3(r.radiance) &&
@@ -53,6 +47,34 @@ bool IsIndirectReservoirValid(IndirectReservoirData r)
         IsFiniteIndirectScalar(r.selectedWeight) &&
         IsFiniteIndirectScalar(r.sampleCount) &&
         r.proposalPdf > 0.0;
+}
+
+bool IsIndirectEnvironmentSample(uint sampleFlags)
+{
+    return (sampleFlags & RESTIR_GI_RESERVOIR_FLAG_ENVIRONMENT) != 0u;
+}
+
+bool ResolveIndirectSampleDirection(
+    HitData hd,
+    float3 secondaryPosition,
+    uint sampleFlags,
+    out float3 direction,
+    out float distance)
+{
+    float3 directionVector = IsIndirectEnvironmentSample(sampleFlags)
+        ? secondaryPosition
+        : secondaryPosition - hd.position;
+    float directionLength = length(directionVector);
+    if (directionLength <= 1e-5 || !isfinite(directionLength))
+    {
+        direction = 0.0;
+        distance = 0.0;
+        return false;
+    }
+
+    direction = directionVector / directionLength;
+    distance = IsIndirectEnvironmentSample(sampleFlags) ? 1e20 : directionLength;
+    return all(isfinite(direction));
 }
 
 RayHit BuildPrimaryRayHit(HitData hd)
@@ -76,6 +98,7 @@ RayHit BuildPrimaryRayHit(HitData hd)
 bool EvaluateIndirectRadianceAtSurface(
     HitData hd,
     float3 secondaryPosition,
+    uint sampleFlags,
     float3 sampleRadiance,
     out float3 f_brdf,
     out float3 reflectedRadiance)
@@ -92,12 +115,10 @@ bool EvaluateIndirectRadianceAtSurface(
     float3 primaryNormal = GetDirectLightSurfaceNormal(primaryHit, V);
     primaryHit.normal = primaryNormal;
 
-    float3 toSecondary = secondaryPosition - hd.position;
-    float distToSecondary = length(toSecondary);
-    if (distToSecondary <= 1e-5)
+    float3 L;
+    float distToSecondary;
+    if (!ResolveIndirectSampleDirection(hd, secondaryPosition, sampleFlags, L, distToSecondary))
         return false;
-
-    float3 L = toSecondary / distToSecondary;
     float NdotL = saturate(dot(primaryNormal, L));
     if (NdotL <= 0.0)
         return false;
@@ -131,8 +152,27 @@ bool EvaluateIndirectSampleAtSurface(
         return false;
 
     float3 f_brdf;
-    return EvaluateIndirectRadianceAtSurface(hd, sample.secondaryPosition, sample.radiance, f_brdf, reflectedRadiance)
+    return EvaluateIndirectRadianceAtSurface(hd, sample.secondaryPosition, sample.sampleFlags, sample.radiance, f_brdf, reflectedRadiance)
         && IsFiniteIndirectFloat3(reflectedRadiance);
+}
+
+bool IsIndirectSampleVisibleAtSurface(HitData hd, IndirectReservoirData sample)
+{
+    float3 direction;
+    float distance;
+    if (!ResolveIndirectSampleDirection(hd, sample.secondaryPosition, sample.sampleFlags, direction, distance))
+        return false;
+
+    RayHit primaryHit = BuildPrimaryRayHit(hd);
+    float3 cameraPos = float3(_CameraToWorld._m03, _CameraToWorld._m13, _CameraToWorld._m23);
+    float3 V = normalize(cameraPos - hd.position);
+    float3 primaryNormal = GetDirectLightSurfaceNormal(primaryHit, V);
+    Ray shadowRay;
+    shadowRay.origin = hd.position + primaryNormal * 1e-5;
+    shadowRay.dir = direction;
+    shadowRay.invDir = 1.0 / direction;
+    float tMax = IsIndirectEnvironmentSample(sample.sampleFlags) ? distance : distance * 0.999;
+    return !IntersectTlasFast(shadowRay, tMax);
 }
 
 bool ReevaluateIndirectReservoirAtSurface(
@@ -189,15 +229,13 @@ bool ReevaluateIndirectReservoirAtSurfaceDebug(
         float3 V = normalize(cameraPos - hd.position);
         float3 primaryNormal = GetDirectLightSurfaceNormal(primaryHit, V);
 
-        float3 toSecondary = sample.secondaryPosition - hd.position;
-        float distToSecondary = length(toSecondary);
-        if (distToSecondary <= 1e-5)
+        float3 L;
+        float distToSecondary;
+        if (!ResolveIndirectSampleDirection(hd, sample.secondaryPosition, sample.sampleFlags, L, distToSecondary))
         {
             failureCode = 3u;
             return false;
         }
-
-        float3 L = toSecondary / distToSecondary;
         float NdotL = saturate(dot(primaryNormal, L));
         if (NdotL <= 0.0)
         {
@@ -234,8 +272,12 @@ float CalculateIndirectJacobian(
     float3 receiverPos,
     float3 neighborReceiverPos,
     float3 neighborSamplePos,
-    float3 neighborSampleNormal)
+    float3 neighborSampleNormal,
+    uint sampleFlags)
 {
+    if (IsIndirectEnvironmentSample(sampleFlags))
+        return 1.0;
+
     float3 toNew = receiverPos - neighborSamplePos;
     float3 toOld = neighborReceiverPos - neighborSamplePos;
 
@@ -280,33 +322,32 @@ void InitializeIndirectReservoirSample(
     float targetLum,
     float3 radiance,
     float3 contribution,
-    float3 primaryNormal)
+    uint sampleFlags)
 {
     // RTXDI_MakeGIReservoir parity (Reservoir.hlsl:188-202):
     //   weightSum = 1 / samplePdf
     // i.e. the no-resampling reservoir starts with the path inverse PDF, not targetLum/p.
-    // This makes stage2 reservoirs already in the "after Finalize" form so
-    // CombineIndirectReservoirs can use risWeight = targetPdf * candidate.weightSum
-    // without an extra Finalize() pass.
+    // This makes stage2 reservoirs already in the "after Finalize" form. Reuse restores
+    // their represented candidate domain through targetPdf * weightSum * M.
     reservoir.secondaryPosition = secondaryPosition;
-    reservoir.proposalPdf = max(proposalPdf, RESTIR_GI_MIN_PROPOSAL_PDF);
+    reservoir.proposalPdf = proposalPdf;
     reservoir.secondaryNormal = secondaryNormal;
     reservoir.targetLum = targetLum;
     reservoir.radiance = radiance;
     reservoir.weightSum = ComputeIndirectProposalInversePdf(reservoir.proposalPdf);
     reservoir.contribution = contribution;
     reservoir.selectedWeight = reservoir.weightSum;  // mirror, see ComputeIndirectMISWeight
-    reservoir.primaryNormal = primaryNormal;
+    reservoir.sampleFlags = sampleFlags;
+    reservoir.reserved = 0.0;
     reservoir.sampleCount = 1.0;
 }
 
-// risWeight = targetPdf * W. candidate.weightSum is the selected sample multiplier:
-// 1/proposalPdf for a fresh stage2 reservoir, or the finalized UCW after reuse.
-// candidate.sampleCount is added to reservoir.M separately by CombineIndirectReservoirs and MUST NOT
-// be folded into the streamed RIS weight (otherwise M is double-counted).
+// A reused reservoir's finalized weight is normalized over its candidate domain.
+// Restore that domain count when streaming it into the next reservoir, as in RTXDI's
+// targetPdf * weightSum * M combination rule. Fresh reservoirs have M = 1.
 float GetIndirectReservoirRISWeight(IndirectReservoirData candidate, float targetPdf)
 {
-    return max(targetPdf, 0.0) * max(candidate.weightSum, 0.0);
+    return max(targetPdf, 0.0) * max(candidate.weightSum, 0.0) * max(candidate.sampleCount, 0.0);
 }
 
 bool CombineIndirectReservoirs(
@@ -331,7 +372,7 @@ bool CombineIndirectReservoirs(
         reservoir.targetLum = targetPdf;
         reservoir.radiance = candidate.radiance;
         reservoir.contribution = candidate.contribution;
-        reservoir.primaryNormal = candidate.primaryNormal;
+        reservoir.sampleFlags = candidate.sampleFlags;
     }
 
     return selectSample;
@@ -352,4 +393,25 @@ void FinalizeIndirectReservoir(
     // selectedWeight is now a mirror of weightSum (kept for readback / diagnostics
     // compatibility -- TracingContractsTests + restir_gi_*.jsonl still inspect it).
     reservoir.selectedWeight = ComputeIndirectMISWeight(reservoir.weightSum, reservoir.targetLum, reservoir.sampleCount);
+}
+
+void WriteIndirectReservoirTelemetry(
+    uint recordIndex,
+    uint stage,
+    uint reason,
+    uint pixelIndex,
+    IndirectReservoirData reservoir,
+    float4 stageData)
+{
+    RestirTelemetryWriteRecord(
+        recordIndex,
+        stage,
+        reason,
+        pixelIndex,
+        float4(reservoir.secondaryPosition, reservoir.proposalPdf),
+        float4(reservoir.secondaryNormal, reservoir.targetLum),
+        float4(reservoir.radiance, reservoir.weightSum),
+        float4(reservoir.contribution, reservoir.selectedWeight),
+        float4((float)reservoir.sampleFlags, reservoir.reserved, reservoir.sampleCount),
+        stageData);
 }

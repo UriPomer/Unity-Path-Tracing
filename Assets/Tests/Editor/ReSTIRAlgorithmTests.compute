@@ -1,0 +1,33 @@
+#pragma kernel kernel_test_restir_algorithm
+
+#include "../../ComputeShader/main/global.hlsl"
+#include "../../ComputeShader/main/restir/telemetry.hlsl"
+#include "../../ComputeShader/main/restir/reservoir.hlsl"
+
+RWStructuredBuffer<float4> ReSTIRAlgorithmTestOutput;
+
+[numthreads(1, 1, 1)]
+void kernel_test_restir_algorithm(uint3 id : SV_DispatchThreadID)
+{
+    HitData materialA = (HitData)0;
+    materialA.mode = 1.0;
+    materialA.albedo = float3(0.8, 0.7, 0.6);
+    materialA.roughness = 0.5;
+    materialA.metallic = 0.1;
+    materialA.alpha = 1.0;
+    materialA.ior = 1.5;
+
+    HitData materialSimilar = materialA;
+    materialSimilar.albedo = float3(0.75, 0.68, 0.58);
+    materialSimilar.roughness = 0.55;
+
+    HitData materialDifferent = materialA;
+    materialDifferent.albedo = float3(0.05, 0.05, 0.05);
+    materialDifferent.metallic = 0.9;
+
+    ReSTIRAlgorithmTestOutput[0] = float4(
+        ComputeMISWeight(12.0, 2.0, 3u),
+        ComputeDirectBiasCorrectedWeight(12.0, 2.0, 1.5, 9.0),
+        AreRestirMaterialsSimilar(materialA, materialSimilar) ? 1.0 : 0.0,
+        AreRestirMaterialsSimilar(materialA, materialDifferent) ? 1.0 : 0.0);
+}

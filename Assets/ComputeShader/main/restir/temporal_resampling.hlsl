@@ -44,16 +44,17 @@ void kernel_temporal_resampling(uint3 id : SV_DispatchThreadID)
 
     DirectLightReservoirData cur = DirectLightReservoirs[curIdx];
     DirectLightReservoirs[outIdx] = cur;
-    if (!IsReservoirValid(cur))
-    {
+    bool currentReservoirValid = IsReservoirValid(cur);
+    if (!currentReservoirValid)
         RestirTelemetryCount(RESTIR_COUNTER_DI_TEMPORAL_INVALID_CURRENT, id.x);
-        return;
-    }
 
     HitData hdCur = _RestirGbuffer[id.x];
     if (hdCur.distance >= 1e19)
     {
         RestirTelemetryCount(RESTIR_COUNTER_DI_TEMPORAL_INVALID_CURRENT, id.x);
+        WriteDirectReservoirTelemetry(
+            5u, RESTIR_STAGE_DI_TEMPORAL, RESTIR_REASON_INVALID_SURFACE, id.x,
+            cur, 0.0, 0.0);
         return;
     }
 
@@ -62,12 +63,18 @@ void kernel_temporal_resampling(uint3 id : SV_DispatchThreadID)
     if (prevClip.w <= 1e-6)
     {
         RestirTelemetryCount(RESTIR_COUNTER_DI_TEMPORAL_REPROJECTION_OOB, id.x);
+        WriteDirectReservoirTelemetry(
+            5u, RESTIR_STAGE_DI_TEMPORAL, RESTIR_REASON_REPROJECTION_OOB, id.x,
+            cur, 0.0, 0.0);
         return;
     }
     float2 prevUV = prevClip.xy / prevClip.w;
     if (any(prevUV < -1.0) || any(prevUV > 1.0))
     {
         RestirTelemetryCount(RESTIR_COUNTER_DI_TEMPORAL_REPROJECTION_OOB, id.x);
+        WriteDirectReservoirTelemetry(
+            5u, RESTIR_STAGE_DI_TEMPORAL, RESTIR_REASON_REPROJECTION_OOB, id.x,
+            cur, 0.0, 0.0);
         return;
     }
     float2 prevScreen = prevUV * 0.5 + 0.5;
@@ -81,12 +88,18 @@ void kernel_temporal_resampling(uint3 id : SV_DispatchThreadID)
     if (!IsReservoirValid(prev))
     {
         RestirTelemetryCount(RESTIR_COUNTER_DI_TEMPORAL_INVALID_HISTORY, id.x);
+        WriteDirectReservoirTelemetry(
+            5u, RESTIR_STAGE_DI_TEMPORAL, RESTIR_REASON_INVALID_HISTORY, id.x,
+            cur, 0.0, float4((float)prevPx.x, (float)prevPx.y, 0.0, 0.0));
         return;
     }
     HitData hdPrev = _RestirGbufferPrevious[prevPxIdx];
     if (hdPrev.distance >= 1e19)
     {
         RestirTelemetryCount(RESTIR_COUNTER_DI_TEMPORAL_INVALID_HISTORY, id.x);
+        WriteDirectReservoirTelemetry(
+            5u, RESTIR_STAGE_DI_TEMPORAL, RESTIR_REASON_INVALID_HISTORY, id.x,
+            cur, 0.0, float4((float)prevPx.x, (float)prevPx.y, 0.0, 0.0));
         return;
     }
 
@@ -99,6 +112,9 @@ void kernel_temporal_resampling(uint3 id : SV_DispatchThreadID)
                               hdPrev.position, prevN, hdPrev.mode))
     {
         RestirTelemetryCount(RESTIR_COUNTER_DI_TEMPORAL_INCOMPATIBLE, id.x);
+        WriteDirectReservoirTelemetry(
+            5u, RESTIR_STAGE_DI_TEMPORAL, RESTIR_REASON_INCOMPATIBLE_SURFACE, id.x,
+            cur, 0.0, float4((float)prevPx.x, (float)prevPx.y, 0.0, 0.0));
         return;
     }
 
@@ -107,28 +123,50 @@ void kernel_temporal_resampling(uint3 id : SV_DispatchThreadID)
     if (!ReevaluatePrevReservoir(hdCur, prev, prevSample))
     {
         RestirTelemetryCount(RESTIR_COUNTER_DI_TEMPORAL_REEVALUATION_REJECTED, id.x);
+        WriteDirectReservoirTelemetry(
+            5u, RESTIR_STAGE_DI_TEMPORAL, RESTIR_REASON_REEVALUATION_REJECTED, id.x,
+            cur, 0.0, float4((float)prevPx.x, (float)prevPx.y, 0.0, 0.0));
         return;
     }
     if (!IsValidDirectLightSample(prevSample))
     {
         RestirTelemetryCount(RESTIR_COUNTER_DI_TEMPORAL_REEVALUATION_REJECTED, id.x);
+        WriteDirectReservoirTelemetry(
+            5u, RESTIR_STAGE_DI_TEMPORAL, RESTIR_REASON_ZERO_TARGET, id.x,
+            cur, 0.0, float4((float)prevPx.x, (float)prevPx.y, 0.0, 0.0));
         return;
     }
 
     // Rebuild the history candidate's effective weight on the current surface.
     // Using the previous surface's raw weightSum here biases selection toward
     // stale history and freezes the temporal pattern.
-    float curW = cur.weightSum;
-    float prevW = prev.selectedWeight * prevSample.targetLum * max((float)prev.sampleCount, 1.0);
+    uint currentM = min(cur.sampleCount, RESTIR_DI_MAX_RESERVOIR_SAMPLES);
+    uint previousM = min(
+        max(prev.sampleCount, 1u),
+        RESTIR_DI_MAX_RESERVOIR_SAMPLES - currentM);
+    if (previousM == 0u)
+    {
+        WriteDirectReservoirTelemetry(
+            5u, RESTIR_STAGE_DI_TEMPORAL, RESTIR_REASON_INVALID_HISTORY, id.x,
+            cur, 0.0, float4((float)prevPx.x, (float)prevPx.y, 0.0, 0.0));
+        return;
+    }
+    if (prev.sampleCount > previousM)
+        RestirTelemetryCount(RESTIR_COUNTER_DI_TEMPORAL_M_CAPPED, id.x);
+
+    float curW = currentReservoirValid ? cur.weightSum : 0.0;
+    float prevW = prev.selectedWeight * prevSample.targetLum * (float)previousM;
     float combinedWS = curW + prevW;
-    uint combinedSC = cur.sampleCount + max(prev.sampleCount, 1u);
+    uint combinedSC = currentM + previousM;
 
     uint2 pixel = uint2(id.x % _ScreenWidth, id.x / _ScreenWidth);
     RNG_SeedPixel(rng, pixel, _FrameCount);
 
-    DirectLightReservoirData outR = cur;
+    DirectLightReservoirData outR = (DirectLightReservoirData)0;
+    if (currentReservoirValid)
+        outR = cur;
     bool selectedPrevious = false;
-    if (RNG_Next(rng) * combinedWS < prevW)
+    if (!currentReservoirValid || RNG_Next(rng) * combinedWS < prevW)
     {
         selectedPrevious = true;
         outR.origin = prevSample.origin;
@@ -143,7 +181,17 @@ void kernel_temporal_resampling(uint3 id : SV_DispatchThreadID)
     outR.weightSum = combinedWS;
     outR.sampleCount = combinedSC;
     outR.surfaceNormal = curN;
-    outR.selectedWeight = ComputeMISWeight(combinedWS, outR.targetLum, combinedSC);
+
+    DirectLightSample selectedAtPrevious = (DirectLightSample)0;
+    float temporalP = ReevaluatePrevReservoir(hdPrev, outR, selectedAtPrevious)
+        ? selectedAtPrevious.targetLum
+        : 0.0;
+    if (temporalP > 0.0 && !IsDirectLightSampleVisible(selectedAtPrevious))
+        temporalP = 0.0;
+    float selectedTargetPdf = outR.targetLum;
+    float pi = selectedPrevious ? temporalP : selectedTargetPdf;
+    float piSum = selectedTargetPdf * (float)currentM + temporalP * (float)previousM;
+    outR.selectedWeight = ComputeDirectBiasCorrectedWeight(combinedWS, selectedTargetPdf, pi, piSum);
     DirectLightReservoirs[outIdx] = outR;
     RestirTelemetryCount(RESTIR_COUNTER_DI_TEMPORAL_HISTORY_COMBINED, id.x);
     if (selectedPrevious)
@@ -156,17 +204,12 @@ void kernel_temporal_resampling(uint3 id : SV_DispatchThreadID)
         RestirTelemetryCount(RESTIR_COUNTER_DI_TEMPORAL_NONFINITE_OUTPUT, id.x);
         RestirTelemetryCountCritical(RESTIR_COUNTER_CRITICAL_NONFINITE);
     }
-    RestirTelemetryWriteRecord(
-        5u,
-        RESTIR_STAGE_DI_TEMPORAL,
+    WriteDirectReservoirTelemetry(
+        5u, RESTIR_STAGE_DI_TEMPORAL,
         outputFinite ? RESTIR_REASON_NONE : RESTIR_REASON_NONFINITE_RESERVOIR,
-        id.x,
-        float4(outR.origin, outR.maxDist),
-        float4(outR.direction, outR.targetLum),
-        float4(outR.contribution, outR.weightSum),
-        float4(outR.surfaceNormal, outR.proposalPdf),
+        id.x, outR,
         float4(selectedPrevious ? 1.0 : 0.0, curW, prevW, combinedWS),
-        float4((float)combinedSC, outR.selectedWeight, (float)prevPx.x, (float)prevPx.y));
+        float4((float)combinedSC, outR.selectedWeight, pi, piSum));
 
     if (id.x == _RestirDebugPixelIndex)
     {
@@ -175,5 +218,6 @@ void kernel_temporal_resampling(uint3 id : SV_DispatchThreadID)
             curW,
             prevW,
             combinedWS);
+        ReSTIRDebugData[1] = float4(pi, piSum, (float)currentM, (float)previousM);
     }
 }

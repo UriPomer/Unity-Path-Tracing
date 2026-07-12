@@ -66,10 +66,19 @@ public class ReSTIRDiagnosticsTests
         StringAssert.Contains("SetPrivateField(tracing, \"UseReSTIRDI\", true);", selfTest);
         StringAssert.Contains("SetPrivateField(tracing, \"UseReSTIRGI\", true);", selfTest);
         StringAssert.Contains("SetPrivateField(tracing, \"Denoise\", false);", selfTest);
+        StringAssert.Contains("GetBoolArg(\"-toggleRestirModes\", false)", selfTest);
+        StringAssert.Contains("ApplyReSTIRModePhase(s_tracing, s_modePhase);", selfTest);
+        StringAssert.Contains("ReSTIR mode reset observed", selfTest);
+        StringAssert.Contains("observedModes.Contains(1)", selfTest);
+        StringAssert.Contains("observedModes.Contains(2)", selfTest);
+        StringAssert.Contains("observedModes.Contains(3)", selfTest);
         StringAssert.Contains("(Denoise ? 16 : 0)", tracing);
         StringAssert.Contains("useReSTIRDI", session);
         StringAssert.Contains("useReSTIRGI", session);
         StringAssert.Contains("denoise", session);
+        StringAssert.Contains("Stopwatch.GetTimestamp() - renderStartTimestamp", tracing);
+        StringAssert.Contains("RequestCapture(_restirTelemetry, frameMilliseconds)", tracing);
+        StringAssert.DoesNotContain("Time.unscaledDeltaTime * 1000.0", tracing);
         StringAssert.Contains("restir_di_stats.jsonl", verifier);
         StringAssert.Contains("DI initial/temporal/shade rows", verifier);
     }
@@ -79,8 +88,10 @@ public class ReSTIRDiagnosticsTests
     {
         string giInitial = RestirShader("gi_initial.hlsl");
         string giShade = RestirShader("gi_shade.hlsl");
+        string common = RestirShader("restir_common.hlsl");
 
-        StringAssert.DoesNotContain("IsDirectLightSampleVisible", giInitial);
+        StringAssert.Contains("IsDirectLightSampleVisible(selectedSample)", giInitial);
+        StringAssert.Contains("return !IntersectTlasFast(shadowRay, tMax);", common);
         StringAssert.Contains("if (!IsGISecondaryBypass(sampleFlags))\n        data.throughput = 1.0;", giInitial);
         StringAssert.DoesNotContain("ApplyGIContributionFence", giShade);
         StringAssert.DoesNotContain("RESTIR_GI_FIRE_FLY_LUM_LIMIT", giShade);
@@ -88,17 +99,37 @@ public class ReSTIRDiagnosticsTests
     }
 
     [Test]
-    public void Direct_Light_Cdf_Is_Built_On_Gpu_Without_Readback()
+    public void Async_Readback_Uses_The_Generation_Captured_With_The_Request()
+    {
+        string session = File.ReadAllText(ProjectFile("Assets", "Scripts", "ReSTIRDiagnosticsSession.cs"));
+
+        StringAssert.Contains("ProcessPacketWords(_packetWords, context.Generation, out string error)", session);
+        StringAssert.DoesNotContain("ProcessPacketWords(_packetWords, Generation, out string error)", session,
+            "A mode toggle may advance the live generation while an older valid readback is still pending.");
+    }
+
+    [Test]
+    public void Render_Frame_Uses_One_Frame_Id_Across_Primary_And_ReSTIR_Kernels()
+    {
+        string tracing = File.ReadAllText(ProjectFile("Assets", "Scripts", "Tracing.cs"));
+
+        StringAssert.Contains("SetInt(\"_FrameCount\", (int)++frameId)", tracing);
+        StringAssert.DoesNotContain("SetInt(\"_FrameCount\", (int)frameId++)", tracing,
+            "Post-increment makes primary generation use the previous frame while ReSTIR uses the next one.");
+    }
+
+    [Test]
+    public void Direct_Light_Candidate_Selection_Does_Not_Require_A_Second_Gpu_Cdf()
     {
         string tracing = File.ReadAllText(ProjectFile("Assets", "Scripts", "Tracing.cs"));
         string compute = File.ReadAllText(ProjectFile("Assets", "ComputeShader", "main", "Tracing.compute"));
-        string prepare = RestirShader("prepare_lights.hlsl");
+        string initial = RestirShader("generate_initial.hlsl");
 
         StringAssert.DoesNotContain(".GetData(", tracing);
-        StringAssert.Contains("FindKernel(\"kernel_build_light_cdf\")", tracing);
-        StringAssert.Contains("Dispatch(kernelBuildLightCdf, 1, 1, 1)", tracing);
-        StringAssert.Contains("#pragma kernel kernel_build_light_cdf", compute);
-        StringAssert.Contains("void kernel_build_light_cdf", prepare);
+        StringAssert.DoesNotContain("FindKernel(\"kernel_build_light_cdf\")", tracing);
+        StringAssert.DoesNotContain("Dispatch(kernelBuildLightCdf, 1, 1, 1)", tracing);
+        StringAssert.DoesNotContain("#pragma kernel kernel_build_light_cdf", compute);
+        StringAssert.Contains("SampleDirectLightCandidate(", initial);
     }
 
     [TestCase(1, true)]
@@ -326,7 +357,7 @@ public class ReSTIRDiagnosticsTests
         StringAssert.Contains("RESTIR_COUNTER_GI_INITIAL_INVALID_SECONDARY", giInitial);
         StringAssert.Contains("RESTIR_COUNTER_GI_INITIAL_ZERO_TARGET", giInitial);
         StringAssert.Contains("RESTIR_COUNTER_GI_INITIAL_ACCEPTED", giInitial);
-        StringAssert.Contains("RestirTelemetryClaimSelectedPixel", giInitial);
+        StringAssert.Contains("WriteIndirectReservoirTelemetry", giInitial);
         StringAssert.Contains("InitializeIndirectReservoirSample(", giInitial);
 
         string giTemporal = RestirShader("gi_temporal.hlsl");

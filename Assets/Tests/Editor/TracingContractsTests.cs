@@ -273,7 +273,7 @@ public class TracingContractsTests
         StringAssert.Contains("GI temporal stats file not found", methodBody);
         StringAssert.Contains("GI temporal stats file is empty", methodBody);
         StringAssert.Contains("GI temporal diagnostics selected a probe that was not reusable+active", methodBody);
-        StringAssert.Contains("GI temporal diagnostics never reported a valid temporal reservoir summary", methodBody);
+        StringAssert.Contains("GI temporal diagnostics never reported a finite positive temporal reservoir summary", methodBody);
         StringAssert.Contains("GI final stats file not found", methodBody);
         StringAssert.Contains("GI final stats file is empty", methodBody);
         StringAssert.Contains("GI final diagnostics selected a probe that was not reusable+active", methodBody);
@@ -296,13 +296,15 @@ public class TracingContractsTests
     {
         string session = File.ReadAllText(ProjectFile("Assets", "Scripts", "ReSTIRDiagnosticsSession.cs"));
         string temporal = RestirShader("gi_temporal.hlsl");
+        string giReservoir = RestirShader("gi_reservoir.hlsl");
 
         StringAssert.Contains("restir_gi_temporal_stats.jsonl", session);
         StringAssert.Contains("case ReSTIRTelemetryStage.GITemporal", session);
         StringAssert.Contains("RESTIR_STAGE_GI_TEMPORAL", temporal);
-        StringAssert.Contains("float4(outR.radiance, outR.weightSum)", temporal);
-        StringAssert.Contains("float4(outR.contribution, outR.selectedWeight)", temporal);
-        StringAssert.Contains("float4(outR.primaryNormal, outR.sampleCount)", temporal);
+        StringAssert.Contains("WriteIndirectReservoirTelemetry(", temporal);
+        StringAssert.Contains("float4(reservoir.radiance, reservoir.weightSum)", giReservoir);
+        StringAssert.Contains("float4(reservoir.contribution, reservoir.selectedWeight)", giReservoir);
+        StringAssert.Contains("float4((float)reservoir.sampleFlags, reservoir.reserved, reservoir.sampleCount)", giReservoir);
     }
 
     [Test]
@@ -310,12 +312,14 @@ public class TracingContractsTests
     {
         string session = File.ReadAllText(ProjectFile("Assets", "Scripts", "ReSTIRDiagnosticsSession.cs"));
         string finalShade = RestirShader("gi_shade.hlsl");
+        string giReservoir = RestirShader("gi_reservoir.hlsl");
 
         StringAssert.Contains("restir_gi_final_stats.jsonl", session);
         StringAssert.Contains("case ReSTIRTelemetryStage.GIFinal", session);
         StringAssert.Contains("RESTIR_STAGE_GI_FINAL", finalShade);
-        StringAssert.Contains("float4(finalRes.radiance, finalRes.weightSum)", finalShade);
-        StringAssert.Contains("float4(finalRes.contribution, finalRes.selectedWeight)", finalShade);
+        StringAssert.Contains("WriteIndirectReservoirTelemetry(", finalShade);
+        StringAssert.Contains("float4(reservoir.radiance, reservoir.weightSum)", giReservoir);
+        StringAssert.Contains("float4(reservoir.contribution, reservoir.selectedWeight)", giReservoir);
         StringAssert.Contains("float4(gi, rawLum)", finalShade);
     }
 
@@ -361,6 +365,48 @@ public class TracingContractsTests
         StringAssert.Contains("kernelSpatialGIResampling", giBody);
         StringAssert.Contains("SetInt(\"_RestirSpatialReservoirOffset\"", giBody);
         StringAssert.Contains("IndirectReservoirs[outIdx] = outR;", giSpatialSource);
+    }
+
+    [Test]
+    public void RestirGI_Reuse_Requires_Material_Compatibility_And_Temporal_Visibility()
+    {
+        string reservoirSource = RestirShader("reservoir.hlsl");
+        string giReservoirSource = RestirShader("gi_reservoir.hlsl");
+        string giTemporalSource = RestirShader("gi_temporal.hlsl");
+        string giSpatialSource = RestirShader("gi_spatial.hlsl");
+
+        StringAssert.Contains("bool AreRestirMaterialsSimilar(HitData a, HitData b)", reservoirSource);
+        StringAssert.Contains("!AreRestirMaterialsSimilar(hdCur, hdPrev)", giTemporalSource);
+        StringAssert.Contains("!AreRestirMaterialsSimilar(hdCur, hdNeighbor)", giSpatialSource);
+        StringAssert.Contains("bool IsIndirectSampleVisibleAtSurface", giReservoirSource);
+        StringAssert.Contains("!IsIndirectSampleVisibleAtSurface(combinedPrevSurface, selectedSample)", giTemporalSource);
+    }
+
+    [Test]
+    public void Restir_Reuse_Allows_Valid_History_Or_Neighbors_When_Current_Reservoir_Is_Empty()
+    {
+        string diInitial = RestirShader("generate_initial.hlsl");
+        string diTemporal = RestirShader("temporal_resampling.hlsl");
+        string giTemporal = RestirShader("gi_temporal.hlsl");
+        string giSpatial = RestirShader("gi_spatial.hlsl");
+
+        StringAssert.Contains("emptyReservoir.sampleCount = cCount;", diInitial,
+            "Zero-weight DI candidates must remain represented in M.");
+        StringAssert.Contains("bool currentReservoirValid = IsReservoirValid(cur);", diTemporal);
+        StringAssert.Contains("if (!currentReservoirValid || RNG_Next(rng) * combinedWS < prevW)", diTemporal,
+            "A valid history candidate must win when the current DI stream has zero weight.");
+        StringAssert.Contains("DirectLightReservoirData outR = (DirectLightReservoirData)0;", diTemporal);
+        StringAssert.DoesNotContain("currentReservoirValid ? cur : (DirectLightReservoirData)0", diTemporal,
+            "D3D11 does not support this structured-data conditional expression.");
+        StringAssert.Contains("bool currentReservoirValid = IsIndirectReservoirValid(cur);", giTemporal);
+        StringAssert.Contains("if (currentReservoirValid)", giTemporal);
+        StringAssert.Contains("bool currentReservoirValid = IsIndirectReservoirValid(cur);", giSpatial);
+        StringAssert.Contains("if (currentReservoirValid)", giSpatial);
+        StringAssert.DoesNotContain("if (!IsIndirectReservoirValid(cur))", giTemporal);
+        StringAssert.DoesNotContain("if (!IsIndirectReservoirValid(cur))", giSpatial);
+        StringAssert.DoesNotContain("if (!CombineIndirectReservoirs(outR, cur, 0.5, curTargetPdf))", giSpatial);
+        StringAssert.Contains("if (!currentReservoirValid && hdCur.roughness < 1e-4)", giTemporal);
+        StringAssert.Contains("if (!currentReservoirValid && hdCur.roughness < 1e-4)", giSpatial);
     }
 
     [Test]
@@ -478,12 +524,12 @@ public class TracingContractsTests
         StringAssert.Contains("int selected = -1;", giSpatialSource);
         StringAssert.Contains("cachedResult |= (1u << uint(neighborSampleIdx));", giSpatialSource);
         StringAssert.Contains("(cachedResult & (1u << uint(cachedSampleIdx))) == 0", giSpatialSource);
-        StringAssert.Contains("piSum += neighborP * max(neighborSampleCount, 0.0);", giSpatialSource);
+        StringAssert.Contains("piSum += neighborP * max(neighborSampleCount, 0.0) * spatialMCapScale;", giSpatialSource);
         StringAssert.Contains("float normalizationDenominator = selectedTargetPdf * piSum;", giSpatialSource);
         Assert.That(
             Regex.IsMatch(
                 giSpatialSource,
-                @"for\s*\(int cachedSampleIdx = 0;.*?\(cachedResult & \(1u << uint\(cachedSampleIdx\)\)\) == 0.*?ReevaluateIndirectReservoirAtSurface\(hdNeighbor,\s*outR,.*?neighborP\).*?pi = selected == cachedSampleIdx \? neighborP : pi;.*?piSum \+= neighborP \* max\(neighborSampleCount, 0\.0\);",
+                @"for\s*\(int cachedSampleIdx = 0;.*?\(cachedResult & \(1u << uint\(cachedSampleIdx\)\)\) == 0.*?ReevaluateIndirectReservoirAtSurface\(hdNeighbor,\s*outR,.*?neighborP\).*?pi = selected == cachedSampleIdx \? neighborP : pi;.*?piSum \+= neighborP \* max\(neighborSampleCount, 0\.0\) \* spatialMCapScale;",
                 RegexOptions.Singleline),
             Is.True,
             "GI spatial reuse must re-evaluate the selected reservoir in every cached neighbor domain and use the selected neighbor-domain target as pi.");
@@ -527,12 +573,13 @@ public class TracingContractsTests
         string giBody = ExtractMethodBody(tracingSource, "DispatchReSTIRGI");
 
         StringAssert.Contains("SetBuffer(kernelShadeGISamples, \"_RestirGbuffer\", _globalHits)", giBody);
-        StringAssert.Contains("SetInt(\"_RestirInitialReservoirOffset\"", giBody);
         StringAssert.Contains("HitData hd = _RestirGbuffer[id.x];", giShadeSource);
         StringAssert.Contains("IntersectTlasFast(shadowRay, tMax)", giShadeSource);
         StringAssert.Contains("GetDirectLightSurfaceNormal", giShadeSource);
-        StringAssert.Contains("IndirectReservoirsRead[_RestirInitialReservoirOffset + id.x]", giShadeSource);
         StringAssert.Contains("weightedReflectedRadiance = reflectedRadiance * res.weightSum;", giShadeSource);
+        StringAssert.DoesNotContain("initialRes", giShadeSource,
+            "Final GI shading must not conditionally fall back to the initial reservoir.");
+        StringAssert.Contains("bool finalVisible = EvaluateVisibleGISample", giShadeSource);
     }
 
     [Test]
@@ -584,13 +631,12 @@ public class TracingContractsTests
 
         string giReservoirSource = File.ReadAllText(giReservoirSourcePath);
 
-        StringAssert.Contains("RESTIR_GI_FINITE_LIMIT", giReservoirSource);
         StringAssert.Contains("bool IsFiniteIndirectScalar(float v)", giReservoirSource);
         StringAssert.Contains("bool IsFiniteIndirectFloat3(float3 v)", giReservoirSource);
+        StringAssert.Contains("return isfinite(v);", giReservoirSource);
+        StringAssert.Contains("return all(isfinite(v));", giReservoirSource);
         StringAssert.Contains("IsFiniteIndirectFloat3(r.secondaryPosition)", giReservoirSource);
         StringAssert.Contains("IsFiniteIndirectScalar(r.selectedWeight)", giReservoirSource);
-        StringAssert.DoesNotContain("all(isfinite(r.secondaryPosition))", giReservoirSource);
-        StringAssert.DoesNotContain("isfinite(r.selectedWeight)", giReservoirSource);
     }
 
     [Test]
@@ -606,7 +652,8 @@ public class TracingContractsTests
         StringAssert.Contains("if (!IsGISecondaryBypass(sampleFlags))", giInitialSource);
         StringAssert.Contains("data.throughput = 1.0;", giInitialSource);
         StringAssert.Contains("data.throughput = throughputSample;", giInitialSource);
-        StringAssert.Contains("EvaluateIndirectRadianceAtSurface(_RestirGbuffer[id.x], secondary.position, secondaryRadiance, brdfAtPrimary, contribution)", giInitialSource);
+        StringAssert.Contains("uint reservoirSampleFlags = isMissSample ? RESTIR_GI_RESERVOIR_FLAG_ENVIRONMENT : 0u;", giInitialSource);
+        StringAssert.Contains("EvaluateIndirectRadianceAtSurface(", giInitialSource);
     }
 
     [Test]
@@ -647,16 +694,32 @@ public class TracingContractsTests
     }
 
     [Test]
-    public void Tracing_Warns_When_ReSTIR_GI_Is_Enabled_Without_ReSTIR_DI()
+    public void Tracing_GI_Without_DI_Keeps_Regular_Primary_Direct_Lighting()
     {
-        string sourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "Assets", "Scripts", "Tracing.cs"));
-        Assert.That(File.Exists(sourcePath), Is.True, $"Tracing source not found: {sourcePath}");
+        string tracingCompute = File.ReadAllText(ProjectFile("Assets", "ComputeShader", "main", "Tracing.compute"));
+        string tracingSource = File.ReadAllText(ProjectFile("Assets", "Scripts", "Tracing.cs"));
 
-        string source = File.ReadAllText(sourcePath);
+        StringAssert.Contains("(!_UseReSTIRDI || CurBounce > 0)", tracingCompute);
+        StringAssert.Contains("GenerateShadowRays(hit, -rd.direction, throughput, rd.pixelIndex);", tracingCompute);
+        StringAssert.DoesNotContain("ReSTIR GI is enabled while ReSTIR DI is disabled", tracingSource,
+            "GI-only is a supported comparison mode and must not report that primary direct lighting is skipped.");
+    }
 
-        StringAssert.Contains("WarnIfReSTIRDirectLightingConfigurationIsRisky", source);
-        StringAssert.Contains("UseReSTIRGI && !UseReSTIRDI", source);
-        StringAssert.Contains("ReSTIR GI is enabled while ReSTIR DI is disabled", source);
+    [Test]
+    public void Tracing_ReSTIRGI_Preserves_Deeper_Path_Continuation_Without_Double_Shading_Bounce_One()
+    {
+        string tracingCompute = File.ReadAllText(ProjectFile("Assets", "ComputeShader", "main", "Tracing.compute"));
+        string tracingSource = File.ReadAllText(ProjectFile("Assets", "Scripts", "Tracing.cs"));
+
+        StringAssert.Contains("bool restirGIReplacesLocalShading = _UseReSTIRGI && CurBounce == 1;", tracingCompute);
+        StringAssert.Contains("if (!restirGIReplacesLocalShading)", tracingCompute);
+        StringAssert.Contains("if (!restirGIReplacesLocalShading && hit.material.emissionIntensity > 0.0f)", tracingCompute);
+        StringAssert.Contains("if (!restirGIReplacesLocalShading && (!_UseReSTIRDI || CurBounce > 0))", tracingCompute);
+        StringAssert.DoesNotContain("if (_UseReSTIRGI && CurBounce == 0)", tracingCompute,
+            "ReSTIR GI must not terminate the primary wavefront path before deeper bounces are generated.");
+        StringAssert.Contains("private bool IsReSTIRGIActive => UseReSTIRGI && TraceDepth > 1;", tracingSource);
+        StringAssert.Contains("if (IsReSTIRGIActive)", tracingSource);
+        StringAssert.Contains("SetBool(\"_UseReSTIRGI\", IsReSTIRGIActive)", tracingSource);
     }
 
     [Test]
@@ -666,6 +729,7 @@ public class TracingContractsTests
         string diInitial = RestirShader("generate_initial.hlsl");
         string diTemporal = RestirShader("temporal_resampling.hlsl");
         string diShade = RestirShader("shade_di.hlsl");
+        string diReservoir = RestirShader("reservoir.hlsl");
 
         StringAssert.Contains("restir_di_stats.jsonl", session);
         StringAssert.Contains("case ReSTIRTelemetryStage.DIInitial", session);
@@ -674,8 +738,9 @@ public class TracingContractsTests
         StringAssert.Contains("RESTIR_STAGE_DI_TEMPORAL", diTemporal);
         StringAssert.Contains("RESTIR_STAGE_DI_SHADE", diShade);
         StringAssert.Contains("RESTIR_COUNTER_DI_SHADE_POSITIVE_CONTRIBUTION", diShade);
-        StringAssert.Contains("float4(r.direction, r.targetLum)", diInitial);
-        StringAssert.Contains("float4(r.surfaceNormal, r.proposalPdf)", diInitial);
+        StringAssert.Contains("WriteDirectReservoirTelemetry(", diInitial);
+        StringAssert.Contains("float4(reservoir.direction, reservoir.targetLum)", diReservoir);
+        StringAssert.Contains("float4(reservoir.surfaceNormal, reservoir.proposalPdf)", diReservoir);
         StringAssert.Contains("r.selectedWeight", diInitial);
     }
 
@@ -687,10 +752,22 @@ public class TracingContractsTests
 
         string diTemporalSource = File.ReadAllText(diTemporalSourcePath);
 
-        StringAssert.Contains("float curW = cur.weightSum;", diTemporalSource);
-        StringAssert.Contains("float prevW = prev.selectedWeight * prevSample.targetLum * max((float)prev.sampleCount, 1.0);", diTemporalSource);
+        StringAssert.Contains("float curW = currentReservoirValid ? cur.weightSum : 0.0;", diTemporalSource);
+        StringAssert.Contains("float prevW = prev.selectedWeight * prevSample.targetLum * (float)previousM;", diTemporalSource);
         StringAssert.DoesNotContain("cur.weightSum * (float)max(cur.sampleCount, 1u)", diTemporalSource);
         StringAssert.DoesNotContain("prev.weightSum * (float)max(prev.sampleCount, 1u)", diTemporalSource);
+    }
+
+    [Test]
+    public void RestirDI_Initial_Uses_The_Regular_Path_Light_Candidate_Domain()
+    {
+        string diInitial = RestirShader("generate_initial.hlsl");
+
+        StringAssert.Contains("GetPointLightCandidateRange(pointLightCount, pointLightOffset, useCulledList)", diInitial);
+        StringAssert.Contains("SampleDirectLightCandidate(", diInitial);
+        StringAssert.Contains("float proposalPdf = rcp((float)candidatePoolCount);", diInitial);
+        StringAssert.DoesNotContain("float rnd = RNG_Next(rng) * totalCdf;", diInitial,
+            "ReSTIR DI initial sampling must not replace the regular tile candidate domain with a global power CDF.");
     }
 
     [Test]
@@ -703,13 +780,14 @@ public class TracingContractsTests
 
         // ComputeIndirectProposalInversePdf is the inverse-PDF helper still in use.
         StringAssert.Contains("float ComputeIndirectProposalInversePdf(float proposalPdf)", giReservoirSource);
+        StringAssert.Contains("return proposalPdf > 0.0 ? rcp(proposalPdf) : 0.0;", giReservoirSource);
+        StringAssert.DoesNotContain("rcp(max(proposalPdf", giReservoirSource);
         // Stage2 init now writes weightSum = 1/p (RTXDI_MakeGIReservoir parity).
         StringAssert.Contains("reservoir.weightSum = ComputeIndirectProposalInversePdf(reservoir.proposalPdf);", giReservoirSource);
         // selectedWeight is now a mirror of weightSum at init.
         StringAssert.Contains("reservoir.selectedWeight = reservoir.weightSum;", giReservoirSource);
-        // RIS streaming weight no longer multiplies by sampleCount (M-double-count fix).
-        StringAssert.Contains("return max(targetPdf, 0.0) * max(candidate.weightSum, 0.0);", giReservoirSource);
-        StringAssert.DoesNotContain("max(candidate.sampleCount, 0.0)", giReservoirSource);
+        // Reused reservoirs restore their represented candidate count when streamed again.
+        StringAssert.Contains("return max(targetPdf, 0.0) * max(candidate.weightSum, 0.0) * max(candidate.sampleCount, 0.0);", giReservoirSource);
         // Old stage2 form (targetLum * ...) must be gone.
         StringAssert.DoesNotContain("reservoir.weightSum = targetLum * ComputeIndirectProposalInversePdf", giReservoirSource);
     }
@@ -746,7 +824,7 @@ public class TracingContractsTests
         StringAssert.Contains("unbiased contribution weight `W` / UCW", formulaMap);
         StringAssert.Contains("final estimator multiplier for the selected sample", formulaMap);
         StringAssert.Contains("`weightSum = 1 / proposalPdf`", formulaMap);
-        StringAssert.Contains("`GetIndirectReservoirRISWeight(...)` must be `targetPdf * candidate.weightSum`", formulaMap);
+        StringAssert.Contains("`GetIndirectReservoirRISWeight(...)` must be `targetPdf * candidate.weightSum * candidate.sampleCount`", formulaMap);
         StringAssert.Contains("RIS unbiased contribution weight W", giReservoirSource);
         StringAssert.Contains("selected sample's final estimator multiplier", giReservoirSource);
         StringAssert.Contains("not targetLum/p", giReservoirSource);
@@ -775,13 +853,15 @@ public class TracingContractsTests
             "Formula map must point readers to the worked numeric example.");
         StringAssert.Contains("weightSum = 1 / proposalPdf = 1 / 0.25 = 4", workedExample,
             "Worked example must show fresh reservoir inverse-proposal initialization.");
-        StringAssert.Contains("risWeight = targetPdf * candidate.weightSum = 0.8 * 4 = 3.2", workedExample,
-            "Worked example must show RIS stream weight without folding M into the candidate weight.");
+        StringAssert.Contains("risWeight = targetPdf * candidate.weightSum * candidate.sampleCount", workedExample,
+            "Worked example must show the represented candidate domain restored in RIS stream weight.");
+        StringAssert.Contains("reuseWeightSum = candidate.weightSum * selectedPrevJacobian", workedExample,
+            "Worked example must show the finalized history estimator transformed by the reuse Jacobian.");
         StringAssert.Contains("final weightSum = sumWeights * pi / normalizationDenominator", workedExample,
             "Worked example must show Finalize converting stream weight to UCW.");
-        StringAssert.Contains("selectedPrevReuseProposalPdf = max(0.5 / 2.0, RESTIR_GI_MIN_PROPOSAL_PDF)", workedExample,
+        StringAssert.Contains("selectedPrevReuseProposalPdf = max(0.5 / 2.0, RESTIR_GI_MIN_REUSE_PROPOSAL_PDF)", workedExample,
             "Worked example must show temporal history proposal PDF transformed by the Jacobian.");
-        StringAssert.Contains("spatialSelectedNeighborReuseProposalPdf = max(0.4 / 0.5, RESTIR_GI_MIN_PROPOSAL_PDF)", workedExample,
+        StringAssert.Contains("spatialSelectedNeighborReuseProposalPdf = max(0.4 / 0.5, RESTIR_GI_MIN_REUSE_PROPOSAL_PDF)", workedExample,
             "Worked example must show spatial selected-neighbor proposal PDF transformed by the Jacobian.");
         StringAssert.Contains("weightedReflectedRadiance = raw reflectedRadiance * weightSum", workedExample,
             "Worked example must connect final shading to raw reflected radiance times finalized UCW.");
@@ -792,20 +872,85 @@ public class TracingContractsTests
     }
 
     [Test]
-    public void RestirGI_RIS_Stream_Weight_Has_No_Extra_M_Multiplier()
+    public void RestirGI_RIS_Stream_Weight_Includes_Candidate_Domain_Count()
     {
-        // GetIndirectReservoirRISWeight must NOT multiply by candidate.sampleCount;
-        // CombineIndirectReservoirs already adds candidate.M into reservoir.M.
         string giReservoirSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_reservoir.hlsl"));
         Assert.That(File.Exists(giReservoirSourcePath), Is.True, $"GI reservoir source not found: {giReservoirSourcePath}");
         string giReservoirSource = File.ReadAllText(giReservoirSourcePath);
 
-        StringAssert.DoesNotContain("max(candidate.sampleCount, 0.0)",
+        const double targetPdf = 2.0;
+        const double finalizedWeight = 0.25;
+        const double candidateSampleCount = 8.0;
+        Assert.That(targetPdf * finalizedWeight * candidateSampleCount, Is.EqualTo(4.0),
+            "A finalized reservoir represents M candidates, so its streamed RIS mass must restore that domain count.");
+
+        StringAssert.Contains("return max(targetPdf, 0.0) * max(candidate.weightSum, 0.0) * max(candidate.sampleCount, 0.0);",
             giReservoirSource,
-            "candidate.sampleCount must not be folded into RIS streaming weight (double-counts M).");
-        StringAssert.Contains("return max(targetPdf, 0.0) * max(candidate.weightSum, 0.0);",
-            giReservoirSource,
-            "RIS weight must be targetPdf * candidate.weightSum (RTXDI form).");
+            "RIS weight must be targetPdf * candidate.weightSum * candidate.M, matching RTXDI reservoir combination semantics.");
+    }
+
+    [Test]
+    public void RestirGI_Secondary_Direct_Lighting_Requires_Visibility()
+    {
+        string giInitialSource = RestirShader("gi_initial.hlsl");
+        string commonSource = RestirShader("restir_common.hlsl");
+
+        StringAssert.Contains("bool IsDirectLightSampleVisible(DirectLightSample sample)", commonSource);
+        StringAssert.Contains("return !IntersectTlasFast(shadowRay, tMax);", commonSource);
+        StringAssert.Contains("SampleDirectLightCandidate(", giInitialSource);
+        StringAssert.Contains("IsDirectLightSampleVisible(selectedSample)", giInitialSource);
+        StringAssert.Contains("RESTIR_GI_MAX_SECONDARY_LIGHT_CANDIDATES = 8u", giInitialSource);
+        StringAssert.Contains("uint sampleCount = min(candidateCount, RESTIR_GI_MAX_SECONDARY_LIGHT_CANDIDATES);", giInitialSource);
+        StringAssert.Contains("(candidateStart + candidate * candidateStride) % candidateCount", giInitialSource,
+            "Secondary RIS should avoid duplicate random candidates when a bounded systematic subset is available.");
+        StringAssert.Contains("selectedSample.contribution * selectedWeight", giInitialSource,
+            "Secondary RIS must reconstruct the selected light estimator after candidate resampling.");
+        StringAssert.Contains("RNG_SeedPixel(rng, pixel, _FrameCount + 1543u);", giInitialSource);
+        StringAssert.DoesNotContain("for (uint lightIdx = 0u; lightIdx < (uint)_PointLightsCount; lightIdx++)", giInitialSource,
+            "Secondary visibility must remain one bounded shadow traversal per pixel.");
+        Assert.That(Regex.Matches(giInitialSource, @"IsDirectLightSampleVisible\(").Count, Is.EqualTo(1),
+            "Secondary RIS must trace visibility only for the selected candidate.");
+    }
+
+    [Test]
+    public void RestirGI_Environment_Samples_Use_Explicit_Directions_Across_Reuse()
+    {
+        string globalSource = File.ReadAllText(ProjectFile("Assets", "ComputeShader", "main", "global.hlsl"));
+        string giInitialSource = RestirShader("gi_initial.hlsl");
+        string giReservoirSource = RestirShader("gi_reservoir.hlsl");
+        string giTemporalSource = RestirShader("gi_temporal.hlsl");
+        string giSpatialSource = RestirShader("gi_spatial.hlsl");
+        string giShadeSource = RestirShader("gi_shade.hlsl");
+
+        StringAssert.Contains("uint   sampleFlags;        float2 reserved;", globalSource);
+        StringAssert.Contains("float  sampleCount;", globalSource);
+        StringAssert.Contains("data.position = secondaryHit.distance >= 1e19 ? normalize(bounceRay.dir) : secondaryHit.position;", giInitialSource);
+        StringAssert.DoesNotContain("primaryHit.position + bounceRay.dir * 1e4", giInitialSource,
+            "Environment samples must not depend on an arbitrary scene-scale distance.");
+        StringAssert.Contains("RESTIR_GI_RESERVOIR_FLAG_ENVIRONMENT", giReservoirSource);
+        StringAssert.Contains("ResolveIndirectSampleDirection", giReservoirSource);
+        StringAssert.Contains("if (IsIndirectEnvironmentSample(sampleFlags))", giReservoirSource);
+        StringAssert.Contains("prev.sampleFlags", giTemporalSource);
+        StringAssert.Contains("neighbor.sampleFlags", giSpatialSource);
+        StringAssert.Contains("IsIndirectEnvironmentSample(res.sampleFlags)", giShadeSource);
+        StringAssert.Contains("((uint)flags & (uint)RESTIR_GI_STAGE1_FLAG_SKY)", giInitialSource,
+            "Sky detection must survive combined sky/specular/delta flags.");
+    }
+
+    [Test]
+    public void RestirGI_Reuse_Applies_Jacobian_To_Finalized_Reservoir_Weight()
+    {
+        string giTemporalSource = RestirShader("gi_temporal.hlsl");
+        string giSpatialSource = RestirShader("gi_spatial.hlsl");
+
+        StringAssert.Contains("prevCandidate.weightSum *= jacobian;", giTemporalSource,
+            "Temporal reuse must transform the finalized history weight into the current solid-angle domain.");
+        StringAssert.Contains("neighborCandidate.weightSum *= jacobian;", giSpatialSource,
+            "Spatial reuse must transform each finalized neighbor weight into the current solid-angle domain.");
+        StringAssert.DoesNotContain("prevCandidate.weightSum *= prevSampleCountClamped / prevCandidate.sampleCount;", giTemporalSource,
+            "Clamping temporal history M must not attenuate the already finalized reservoir weight.");
+        StringAssert.DoesNotContain("neighborCandidate.weightSum *= neighborSampleCountClamped / neighborCandidate.sampleCount;", giSpatialSource,
+            "Clamping a neighbor domain count must not attenuate the already finalized reservoir weight.");
     }
 
     [Test]
@@ -861,39 +1006,71 @@ public class TracingContractsTests
     }
 
     [Test]
-    public void RestirGI_Finite_Limit_Tightened_For_Firefly_Containment()
+    public void RestirGI_Validity_Does_Not_Clamp_Finite_Estimator_Weights()
     {
-        // Old 1e30 allowed 1e+27 reservoirs to spread across frames. 1e6 keeps a
-        // healthy headroom over typical 1/p_hat (1..1e3) but kills the runaway tail.
-        string giReservoirSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_reservoir.hlsl"));
-        Assert.That(File.Exists(giReservoirSourcePath), Is.True, $"GI reservoir source not found: {giReservoirSourcePath}");
-        string giReservoirSource = File.ReadAllText(giReservoirSourcePath);
+        string giReservoirSource = RestirShader("gi_reservoir.hlsl");
+        string giShadeSource = RestirShader("gi_shade.hlsl");
 
-        StringAssert.Contains("static const float RESTIR_GI_FINITE_LIMIT = 1e6;",
-            giReservoirSource,
-            "RESTIR_GI_FINITE_LIMIT must be 1e6 to contain firefly bubble propagation.");
+        StringAssert.DoesNotContain("RESTIR_GI_FINITE_LIMIT", giReservoirSource,
+            "A finite 1/pdf estimator must not be discarded by an arbitrary diagnostic ceiling.");
+        StringAssert.Contains("reservoirWeightFinite && abs(finalRes.weightSum) > 1e20", giShadeSource);
+        StringAssert.DoesNotContain("RESTIR_COUNTER_CRITICAL_OUT_OF_RANGE", giShadeSource,
+            "Large finite weights are diagnostic outliers; only non-finite math is a hard failure.");
     }
 
     [Test]
-    public void RestirGI_Spatial_MCap_Scales_WeightSum_Proportionally()
+    public void RestirGI_Spatial_PerNeighbor_MCap_Preserves_Finalized_Weight()
     {
-        // 2026-05-31 Sponza regression showed spatialNormalizationDenominator hitting
-        // 7.3e6 with 7/8 active neighbors. Cause: spatial RIS streaming weight had
-        // sampleCount clamped without proportional Wsum scaling, so streamed weight
-        // stayed at full magnitude while M was capped. Fence required at BOTH the
-        // per-neighbor candidate site AND the post-loop outR site, mirroring gi_temporal.hlsl.
         string giSpatialSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_spatial.hlsl"));
         Assert.That(File.Exists(giSpatialSourcePath), Is.True, $"GI spatial source not found: {giSpatialSourcePath}");
 
         string giSpatialSource = File.ReadAllText(giSpatialSourcePath);
 
-        StringAssert.Contains("neighborCandidate.weightSum *= neighborSampleCountClamped / neighborCandidate.sampleCount;",
+        StringAssert.DoesNotContain("neighborCandidate.weightSum *= neighborSampleCountClamped / neighborCandidate.sampleCount;",
             giSpatialSource,
-            "Spatial per-neighbor candidate must scale weightSum by clamped/sampleCount when M-capping (TrueTrace fence).");
+            "A finalized reservoir weight remains an estimator when its represented domain count is clamped.");
 
-        StringAssert.Contains("outR.weightSum *= outSampleCountClamped / outR.sampleCount;",
+        StringAssert.Contains("outR.weightSum *= spatialMCapScale;",
             giSpatialSource,
             "Spatial outR must scale weightSum by clamped/sampleCount before Finalize when M exceeds the cap.");
+    }
+
+    [Test]
+    public void RestirGI_Temporal_MCap_Is_Bounded_By_Construction()
+    {
+        string giTemporalSource = RestirShader("gi_temporal.hlsl");
+
+        StringAssert.Contains("RESTIR_GI_MAX_RESERVOIR_SAMPLES - 1.0", giTemporalSource,
+            "The single history candidate must leave room for the current sample.");
+        StringAssert.Contains("prevCandidate.sampleCount = prevSampleCountClamped;", giTemporalSource);
+        StringAssert.Contains("break;", giTemporalSource,
+            "Temporal reuse must combine at most one capped history candidate.");
+        StringAssert.DoesNotContain("outR.weightSum *= outSampleCountClamped / outR.sampleCount", giTemporalSource,
+            "A post-combine cap cannot scale stream weight without scaling bias-correction domain counts.");
+        StringAssert.DoesNotContain("float outSampleCountClamped", giTemporalSource,
+            "The current single-history construction cannot exceed the reservoir M cap.");
+    }
+
+    [Test]
+    public void RestirGI_Spatial_MCap_Scales_Bias_Correction_Domain_Counts_With_Stream_Weight()
+    {
+        string giSpatialSource = RestirShader("gi_spatial.hlsl");
+
+        const double sumWeights = 100.0;
+        const double totalSampleCount = 248.0;
+        const double cappedSampleCount = 32.0;
+        const double piSum = 248.0;
+        double scale = cappedSampleCount / totalSampleCount;
+        double uncappedUcw = sumWeights / piSum;
+        double correctedCappedUcw = (sumWeights * scale) / (piSum * scale);
+        Assert.That(correctedCappedUcw, Is.EqualTo(uncappedUcw).Within(1e-9),
+            "M capping must not attenuate the finalized UCW a second time through piSum.");
+
+        StringAssert.Contains("float spatialMCapScale = 1.0;", giSpatialSource);
+        StringAssert.Contains("spatialMCapScale = outSampleCountClamped / outSampleCountBeforeCap;", giSpatialSource);
+        StringAssert.Contains("curTargetPdf * max(cur.sampleCount, 1.0) * spatialMCapScale", giSpatialSource);
+        StringAssert.Contains("neighborP * max(neighborSampleCount, 0.0) * spatialMCapScale", giSpatialSource);
+        StringAssert.Contains("float4(spatialMCapScale, outSampleCountBeforeCap, piSum, normalizationDenominator)", giSpatialSource);
     }
 
     [Test]
@@ -1121,24 +1298,22 @@ public class TracingContractsTests
     [Test]
     public void RestirGI_Final_Diagnostics_Expose_Runtime_WeightSum_And_Weighted_Radiance()
     {
-        string tracingSource = File.ReadAllText(ProjectFile("Assets", "Scripts", "Tracing.cs"));
         string session = File.ReadAllText(ProjectFile("Assets", "Scripts", "ReSTIRDiagnosticsSession.cs"));
         string giShadeSource = RestirShader("gi_shade.hlsl");
-        string giDispatchBody = ExtractMethodBody(tracingSource, "DispatchReSTIRGI");
+        string giReservoirSource = RestirShader("gi_reservoir.hlsl");
 
         StringAssert.Contains("restir_gi_final_stats.jsonl", session);
-        StringAssert.Contains("float4(finalRes.radiance, finalRes.weightSum)", giShadeSource);
-        StringAssert.Contains("float4(finalRes.contribution, finalRes.selectedWeight)", giShadeSource);
+        StringAssert.Contains("float4(reservoir.radiance, reservoir.weightSum)", giReservoirSource);
+        StringAssert.Contains("float4(reservoir.contribution, reservoir.selectedWeight)", giReservoirSource);
         StringAssert.Contains("float4(gi, rawLum)", giShadeSource);
-        StringAssert.Contains("tracingShader.SetInt(\"_RestirInitialReservoirOffset\", initialIdx * pixelCount);",
-            giDispatchBody,
-            "Final shading must bind the initial reservoir slot that the shader uses for fallback evaluation.");
+        StringAssert.DoesNotContain("_RestirInitialReservoirOffset", giShadeSource,
+            "Final shading must not read an initial-reservoir fallback slot.");
         StringAssert.Contains("out float3 reflectedRadiance", giShadeSource,
             "GI final shader must expose raw reflected radiance before multiplying by UCW.");
     }
 
     [Test]
-    public void RestirGI_Secondary_Hit_Radiance_Uses_Direct_Light_Raw_Contribution_As_Incident_Radiance()
+    public void RestirGI_Secondary_Hit_Radiance_Uses_Bounded_Unbiased_RIS()
     {
         string giInitialSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_initial.hlsl"));
         Assert.That(File.Exists(giInitialSourcePath), Is.True, $"GI initial source not found: {giInitialSourcePath}");
@@ -1146,25 +1321,26 @@ public class TracingContractsTests
         string giInitialSource = File.ReadAllText(giInitialSourcePath);
         string secondaryHitBody = ExtractMethodBody(giInitialSource, "EvaluateSecondaryHitRadiance");
 
-        StringAssert.Contains("radiance += sunSample.contribution;", secondaryHitBody,
-            "GI secondary hit radiance must stay in incident-radiance units so later primary-surface reevaluation applies the BRDF/proposal normalization exactly once.");
-        StringAssert.Contains("radiance += pointSample.contribution;", secondaryHitBody,
-            "GI secondary hit radiance must accumulate raw direct-light contribution as the secondary incident radiance quantity.");
-        StringAssert.DoesNotContain("radiance += sunSample.illumination;", secondaryHitBody,
-            "Using illumination here bakes 1/proposalPdf into sample.radiance and makes the later GI reservoir/final shading chain divide by proposal density twice.");
-        StringAssert.DoesNotContain("radiance += pointSample.illumination;", secondaryHitBody,
-            "Using illumination here bakes 1/proposalPdf into sample.radiance and makes the later GI reservoir/final shading chain divide by proposal density twice.");
+        StringAssert.Contains("SampleDirectLightCandidate(", secondaryHitBody);
+        StringAssert.Contains("selectedSample.contribution * selectedWeight", secondaryHitBody,
+            "Secondary RIS must apply its finalized inverse target/proposal normalization.");
+        StringAssert.Contains("ComputeMISWeight(", secondaryHitBody);
+        StringAssert.Contains("uint sampleCount = min(candidateCount, RESTIR_GI_MAX_SECONDARY_LIGHT_CANDIDATES);", secondaryHitBody);
+        StringAssert.Contains("(candidateStart + candidate * candidateStride) % candidateCount", secondaryHitBody);
+        StringAssert.DoesNotContain("LimitGISecondaryRadiance", giInitialSource,
+            "A hidden radiance clamp would bias GI brightness and mask estimator failures.");
     }
 
     [Test]
     public void RestirGI_Secondary_Hit_Radiance_Filters_Direct_Light_By_Visibility()
     {
-        string giInitialSourcePath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "Assets", "ComputeShader", "main", "restir", "gi_initial.hlsl"));
-        Assert.That(File.Exists(giInitialSourcePath), Is.True, $"GI initial source not found: {giInitialSourcePath}");
+        string commonSource = RestirShader("restir_common.hlsl");
+        string giInitialSource = RestirShader("gi_initial.hlsl");
+        string diTemporalSource = RestirShader("temporal_resampling.hlsl");
 
-        string giInitialSource = File.ReadAllText(giInitialSourcePath);
-        StringAssert.DoesNotContain("IsDirectLightSampleVisible", giInitialSource,
-            "Telemetry installation must not add a new secondary-light visibility estimator branch.");
+        StringAssert.Contains("return !IntersectTlasFast(shadowRay, tMax);", commonSource);
+        StringAssert.Contains("IsDirectLightSampleVisible(selectedSample)", giInitialSource);
+        StringAssert.Contains("IsDirectLightSampleVisible(selectedAtPrevious)", diTemporalSource);
     }
 
     [Test]
@@ -1193,10 +1369,32 @@ public class TracingContractsTests
 
         string temporalSource = File.ReadAllText(temporalSourcePath);
 
-        StringAssert.Contains("float prevW = prev.selectedWeight * prevSample.targetLum * max((float)prev.sampleCount, 1.0);", temporalSource,
+        StringAssert.Contains("float prevW = prev.selectedWeight * prevSample.targetLum * (float)previousM;", temporalSource,
             "Temporal DI must rebuild the history candidate weight from the re-evaluated current-surface target, otherwise stale history dominates selection and freezes noise.");
         StringAssert.DoesNotContain("float prevW = prev.weightSum;", temporalSource,
             "Temporal DI must not reuse the previous surface's raw weightSum after re-evaluating the history sample on the current surface.");
+    }
+
+    [Test]
+    public void RestirDI_Temporal_Caps_History_And_Uses_Basic_Bias_Correction()
+    {
+        string reservoirSource = RestirShader("reservoir.hlsl");
+        string temporalSource = RestirShader("temporal_resampling.hlsl");
+        string telemetrySource = RestirShader("telemetry.hlsl");
+
+        const double sumWeights = 12.0;
+        const double selectedTarget = 2.0;
+        const double selectedDomainTarget = 1.5;
+        const double piSum = 9.0;
+        double correctedWeight = sumWeights * selectedDomainTarget / (selectedTarget * piSum);
+        Assert.That(correctedWeight, Is.EqualTo(1.0).Within(1e-9));
+
+        StringAssert.Contains("RESTIR_DI_MAX_RESERVOIR_SAMPLES = 32u", reservoirSource);
+        StringAssert.Contains("RESTIR_DI_MAX_RESERVOIR_SAMPLES - currentM", temporalSource);
+        StringAssert.Contains("float piSum = selectedTargetPdf * (float)currentM + temporalP * (float)previousM;", temporalSource);
+        StringAssert.Contains("ComputeDirectBiasCorrectedWeight(combinedWS, selectedTargetPdf, pi, piSum)", temporalSource);
+        StringAssert.Contains("!IsDirectLightSampleVisible(selectedAtPrevious)", temporalSource);
+        StringAssert.Contains("RESTIR_COUNTER_DI_TEMPORAL_M_CAPPED", telemetrySource);
     }
 
     [Test]
@@ -1321,12 +1519,12 @@ public class TracingContractsTests
 
         string script = File.ReadAllText(scriptPath);
 
-        StringAssert.Contains("$RestirGIMinProposalPdf = 1e-3", script,
-            "Terminal verification must mirror RESTIR_GI_MIN_PROPOSAL_PDF for fresh reservoir inverse-PDF checks.");
+        StringAssert.DoesNotContain("$RestirGIMinProposalPdf = 1e-3", script,
+            "Fresh GI reservoirs must not clamp the sampled proposal PDF to 1e-3.");
         StringAssert.Contains("$freshInitialRows", script,
             "Terminal verification must collect fresh initial reservoir rows from restir_gi_probe.jsonl.");
-        StringAssert.Contains("$expectedInitialWeight = 1.0 / [Math]::Max([double]$row.initialProposalPdf, $RestirGIMinProposalPdf)", script,
-            "Fresh initial reservoir weightSum must be checked against 1 / max(proposalPdf, minPdf).");
+        StringAssert.Contains("$expectedInitialWeight = 1.0 / [double]$row.initialProposalPdf", script,
+            "Fresh initial reservoir weightSum must be checked against the unbiased inverse proposal PDF.");
         StringAssert.Contains("Assert-Near ([double]$row.initialWeightSum) $expectedInitialWeight",
             script,
             "Terminal verification must compare initialWeightSum against the inverse proposal PDF.");
@@ -1474,6 +1672,49 @@ public class TracingContractsTests
         StringAssert.Contains("ScheduleResetCapture(reason, sampleCount)", tracingSource);
         StringAssert.Contains("modeFlags", session,
             "The next correlated packet must record current DI/GI/history mode flags after a reset.");
+    }
+
+    [Test]
+    public void RestirDiagnostics_Uses_One_Deterministic_Probe_Across_Stages_And_Mode_Toggles()
+    {
+        string tracingSource = File.ReadAllText(ProjectFile("Assets", "Scripts", "Tracing.cs"));
+        string tracingCompute = File.ReadAllText(ProjectFile("Assets", "ComputeShader", "main", "Tracing.compute"));
+        string telemetrySource = RestirShader("telemetry.hlsl");
+        string verifier = File.ReadAllText(ProjectFile("Tests", "Verify-LatestReSTIRGILogs.ps1"));
+
+        StringAssert.Contains("private int GetReSTIRDiagnosticPixelIndex()", tracingSource);
+        StringAssert.Contains("_RestirTelemetrySelectedPixelIndex", tracingSource);
+        StringAssert.Contains("_RestirTelemetrySelectedPixelIndex", tracingCompute);
+        StringAssert.Contains("RESTIR_HEADER_SELECTED_PIXEL", telemetrySource);
+        StringAssert.Contains("pixelIndex != RestirTelemetrySelectedPixel()", telemetrySource);
+        StringAssert.Contains("[switch]$RequireModeToggleCoverage", verifier);
+        StringAssert.Contains("Stage row does not use packet selectedPixel", verifier);
+        StringAssert.Contains("Mode toggle coverage requires DI-only, GI-only, and DI+GI", verifier);
+    }
+
+    [Test]
+    public void RestirDiagnostics_Captures_Final_Frame_Probe_After_Wavefront_Shading()
+    {
+        string tracingSource = File.ReadAllText(ProjectFile("Assets", "Scripts", "Tracing.cs"));
+        string tracingCompute = File.ReadAllText(ProjectFile("Assets", "ComputeShader", "main", "Tracing.compute"));
+        string session = File.ReadAllText(ProjectFile("Assets", "Scripts", "ReSTIRDiagnosticsSession.cs"));
+        string verifier = File.ReadAllText(ProjectFile("Tests", "Verify-LatestReSTIRGILogs.ps1"));
+
+        StringAssert.Contains("#pragma kernel kernel_capture_restir_frame", tracingCompute);
+        StringAssert.Contains("RESTIR_STAGE_FRAME_OUTPUT", tracingCompute);
+        StringAssert.Contains("static const uint gridSize = 4u;", tracingCompute);
+        StringAssert.Contains("gridLuminanceSum / gridSampleCount", tracingCompute);
+        StringAssert.Contains("(float)gridPositiveCount / gridSampleCount", tracingCompute);
+        StringAssert.Contains("float4(frameRadiance, frameLuminance)", tracingCompute);
+        StringAssert.Contains("CaptureReSTIRFrameTelemetry(pixelCount);", tracingSource);
+        Assert.That(
+            tracingSource.IndexOf("CaptureReSTIRFrameTelemetry(pixelCount);", StringComparison.Ordinal),
+            Is.GreaterThan(tracingSource.IndexOf("for (int bounce = 1; bounce < TraceDepth; bounce++)", StringComparison.Ordinal)),
+            "Frame telemetry must run after the wavefront bounce loop.");
+        StringAssert.Contains("restir_frame_stats.jsonl", session);
+        StringAssert.Contains("case ReSTIRTelemetryStage.FrameOutput", session);
+        StringAssert.Contains("Frame 4x4 grid luminance mode=", verifier);
+        StringAssert.Contains("Frame probe luminance mode=", verifier);
     }
 
     [Test]

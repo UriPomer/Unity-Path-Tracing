@@ -5,6 +5,7 @@ using System.Reflection;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
+using Stopwatch = System.Diagnostics.Stopwatch;
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
@@ -78,8 +79,6 @@ public class Tracing : MonoBehaviour
     private int kernelFinalize;
     private int kernelCopyPrimarySurfaceHistory;
     private int kernelTransfer;
-    private int kernelPrepareLights;
-    private int kernelBuildLightCdf;
     private int kernelGenerateInitial;
     private int kernelTemporalResampling;
     private int kernelShadeDISamples;
@@ -89,6 +88,7 @@ public class Tracing : MonoBehaviour
     private int kernelSpatialGIResampling;
     private int kernelShadeGISamples;
     private int kernelClearReSTIRTelemetry;
+    private int kernelCaptureReSTIRFrame;
 
     // Multi-pass buffers
     private ComputeBuffer _globalRaysA;
@@ -102,7 +102,6 @@ public class Tracing : MonoBehaviour
     private ComputeBuffer _secondarySurfaces;
     private ComputeBuffer _restirDebugData;
     private ComputeBuffer _restirTelemetry;
-    private ComputeBuffer _lightDataPacked;
     private int _lastDirectReservoirOutputIdx = 0;
     private int _lastIndirectReservoirOutputIdx = 0;
     private int _restirShadingReservoirIdx = 0;
@@ -117,7 +116,7 @@ public class Tracing : MonoBehaviour
     private const int HitDataStride = 76;          // 4×(float3+scalar) + 2×float + float = 4×16+8+4
     private const int ShadowRayDataStride = 48;    // 3×(float3+scalar)
     private const int DirectLightReservoirStride = 80; // matches DirectLightReservoirData (5 float4 rows)
-    private const int IndirectReservoirStride = 80; // matches IndirectReservoirData (5 float4 rows)
+    private const int IndirectReservoirStride = 80; // matches IndirectReservoirData (5 16-byte rows)
     private const int SecondarySurfaceStride = 96; // matches SecondarySurfaceData (6 float4 rows)
     private const int RestirDebugDataStride = 16; // float4
     private const int RestirDebugDataCount = 5;
@@ -154,11 +153,11 @@ public class Tracing : MonoBehaviour
     private int _previousVSyncCount = -1;
     private int _previousRenderFrameInterval = -1;
     private bool _hasCapturedFrameRateState = false;
-    private bool _warnedAboutReSTIRGIWithoutDI = false;
     private ReSTIRDiagnosticsSession _restirDiagnostics;
     private int[] _restirTelemetryKernels;
     private bool _captureReSTIRTelemetryThisFrame;
     private bool _runtimeStarted;
+    private bool IsReSTIRGIActive => UseReSTIRGI && TraceDepth > 1;
 #if UNITY_EDITOR
     private static Type _editorGameViewType;
     private static PropertyInfo _editorGameViewVSyncProperty;
@@ -196,8 +195,6 @@ public class Tracing : MonoBehaviour
         kernelFinalize = tracingShader.FindKernel("kernel_finalize");
         kernelCopyPrimarySurfaceHistory = tracingShader.FindKernel("kernel_copy_primary_surface_history");
         kernelTransfer = tracingShader.FindKernel("TransferKernel");
-        kernelPrepareLights = tracingShader.FindKernel("kernel_prepare_lights");
-        kernelBuildLightCdf = tracingShader.FindKernel("kernel_build_light_cdf");
         kernelGenerateInitial = tracingShader.FindKernel("kernel_generate_initial");
         kernelTemporalResampling = tracingShader.FindKernel("kernel_temporal_resampling");
         kernelShadeDISamples = tracingShader.FindKernel("kernel_shade_di_samples");
@@ -207,6 +204,7 @@ public class Tracing : MonoBehaviour
         kernelSpatialGIResampling = tracingShader.FindKernel("kernel_spatial_gi_resampling");
         kernelShadeGISamples = tracingShader.FindKernel("kernel_shade_gi_samples");
         kernelClearReSTIRTelemetry = tracingShader.FindKernel("kernel_clear_restir_telemetry");
+        kernelCaptureReSTIRFrame = tracingShader.FindKernel("kernel_capture_restir_frame");
 
         // Pre-allocate reusable arrays and names
         bvhKernels = new int[]
@@ -246,7 +244,8 @@ public class Tracing : MonoBehaviour
             kernelShadeGISecondarySurfaces,
             kernelTemporalGIResampling,
             kernelSpatialGIResampling,
-            kernelShadeGISamples
+            kernelShadeGISamples,
+            kernelCaptureReSTIRFrame
         };
         cmdBuffer = new CommandBuffer();
         CacheRuntimeSettings();
@@ -305,10 +304,6 @@ public class Tracing : MonoBehaviour
         _bufferSizes = new ComputeBuffer(TraceDepth + 1, BufferSizeDataStride);
         _indirectArgs = new ComputeBuffer(3, IndirectArgsStride, ComputeBufferType.IndirectArguments);
 
-        int maxLights = Mathf.Max(LightManager.Instance?.GetPointLightsCount() ?? 0, 1) + 1;
-        _lightDataPacked?.Release();
-        _lightDataPacked = new ComputeBuffer(maxLights * 2, sizeof(float) * 16);
-
         _hasDirectRestirHistory = false;
         _hasIndirectRestirHistory = false;
         _lastDirectReservoirOutputIdx = 0;
@@ -334,7 +329,6 @@ public class Tracing : MonoBehaviour
         _globalColors?.Release(); _globalColors = null;
         _bufferSizes?.Release(); _bufferSizes = null;
         _indirectArgs?.Release(); _indirectArgs = null;
-        _lightDataPacked?.Release(); _lightDataPacked = null;
         _hasDirectRestirHistory = false;
         _hasIndirectRestirHistory = false;
         _lastDirectReservoirOutputIdx = 0;
@@ -346,6 +340,7 @@ public class Tracing : MonoBehaviour
 
     private void Render(RenderTexture source, RenderTexture destination)
     {
+        long renderStartTimestamp = Stopwatch.GetTimestamp();
         EnsureMaterials();
 
         Vector2Int renderDimensions = GetRenderDimensions(source, destination);
@@ -431,8 +426,6 @@ public class Tracing : MonoBehaviour
 
         if (!debugMode)
         {
-            WarnIfReSTIRDirectLightingConfigurationIsRisky();
-
             tracingShader.SetInt("CurBounce", 0);
             tracingShader.SetBuffer(kernelTrace, "GlobalRays", _globalRaysA);
             tracingShader.SetBuffer(kernelTrace, "GlobalHits", _globalHits);
@@ -443,10 +436,8 @@ public class Tracing : MonoBehaviour
             if (UseReSTIRDI)
                 DispatchReSTIRDI(pixelCount);
 
-            if (UseReSTIRGI)
+            if (IsReSTIRGIActive)
                 DispatchReSTIRGI(pixelCount);
-
-            EndReSTIRTelemetryCapture();
 
             tracingShader.SetBuffer(kernelShade, "ShadeRays", _globalRaysA);
             tracingShader.SetBuffer(kernelShade, "GlobalRays2", _globalRaysB);
@@ -503,6 +494,8 @@ public class Tracing : MonoBehaviour
 
                 readA = !readA;
             }
+
+            CaptureReSTIRFrameTelemetry(pixelCount);
         }
 
         // 3. Finalize
@@ -524,6 +517,9 @@ public class Tracing : MonoBehaviour
         }
 
         _hasPrimarySurfaceHistory = true;
+        double renderMilliseconds =
+            (Stopwatch.GetTimestamp() - renderStartTimestamp) * 1000.0 / Stopwatch.Frequency;
+        EndReSTIRTelemetryCapture(renderMilliseconds);
     }
 
     private void StartReSTIRDiagnostics()
@@ -549,7 +545,7 @@ public class Tracing : MonoBehaviour
             enableGpuTelemetry,
             Mathf.Max(ReSTIRGIDiagnosticFrameInterval, 1),
             UseReSTIRDI,
-            UseReSTIRGI,
+            IsReSTIRGIActive,
             Denoise);
 
         try
@@ -589,7 +585,7 @@ public class Tracing : MonoBehaviour
     {
         _captureReSTIRTelemetryThisFrame = false;
         tracingShader.SetInt("_RestirTelemetryEnabled", 0);
-        if ((!UseReSTIRDI && !UseReSTIRGI) || _restirDiagnostics == null || _restirTelemetry == null)
+        if ((!UseReSTIRDI && !IsReSTIRGIActive) || _restirDiagnostics == null || _restirTelemetry == null)
             return;
 
         BindReSTIRTelemetryBuffers();
@@ -598,8 +594,8 @@ public class Tracing : MonoBehaviour
         int directFinalSlot = UseReSTIRDI
             ? (_hasDirectRestirHistory ? (_lastDirectReservoirOutputIdx + 2) % 3 : directInitialSlot)
             : -1;
-        int indirectInitialSlot = UseReSTIRGI ? (_lastIndirectReservoirOutputIdx + 1) % 3 : -1;
-        int indirectFinalSlot = UseReSTIRGI ? _lastIndirectReservoirOutputIdx : -1;
+        int indirectInitialSlot = IsReSTIRGIActive ? (_lastIndirectReservoirOutputIdx + 1) % 3 : -1;
+        int indirectFinalSlot = IsReSTIRGIActive ? _lastIndirectReservoirOutputIdx : -1;
 
         _captureReSTIRTelemetryThisFrame = _restirDiagnostics.BeginCapture(
             (int)frameId,
@@ -607,7 +603,7 @@ public class Tracing : MonoBehaviour
             _currentRenderWidth,
             _currentRenderHeight,
             UseReSTIRDI,
-            UseReSTIRGI,
+            IsReSTIRGIActive,
             directInitialSlot,
             directFinalSlot,
             indirectInitialSlot,
@@ -616,14 +612,16 @@ public class Tracing : MonoBehaviour
             return;
 
         int modeFlags = (UseReSTIRDI ? 1 : 0) |
-            (UseReSTIRGI ? 2 : 0) |
+            (IsReSTIRGIActive ? 2 : 0) |
             (_hasDirectRestirHistory ? 4 : 0) |
             (_hasIndirectRestirHistory ? 8 : 0) |
             (Denoise ? 16 : 0);
         int telemetrySampleStride = WriteReSTIRGIDiagnosticDetails ? 16 : ReSTIRTelemetrySampleStride;
+        int diagnosticPixelIndex = GetReSTIRDiagnosticPixelIndex();
         tracingShader.SetInt("_RestirTelemetryEnabled", 1);
         tracingShader.SetInt("_RestirTelemetrySampleStride", telemetrySampleStride);
         tracingShader.SetInt("_RestirTelemetrySamplePhase", sampleCount % telemetrySampleStride);
+        tracingShader.SetInt("_RestirTelemetrySelectedPixelIndex", diagnosticPixelIndex);
         tracingShader.SetInt("_RestirTelemetryGeneration", _restirDiagnostics.Generation);
         tracingShader.SetInt("_RestirTelemetrySampleCount", sampleCount);
         tracingShader.SetInt("_RestirTelemetryModeFlags", modeFlags);
@@ -639,14 +637,24 @@ public class Tracing : MonoBehaviour
             1);
     }
 
-    private void EndReSTIRTelemetryCapture()
+    private void EndReSTIRTelemetryCapture(double frameMilliseconds)
     {
         if (!_captureReSTIRTelemetryThisFrame)
             return;
 
-        _restirDiagnostics.RequestCapture(_restirTelemetry);
+        _restirDiagnostics.RequestCapture(_restirTelemetry, frameMilliseconds);
         _captureReSTIRTelemetryThisFrame = false;
         tracingShader.SetInt("_RestirTelemetryEnabled", 0);
+    }
+
+    private void CaptureReSTIRFrameTelemetry(int pixelCount)
+    {
+        if (!_captureReSTIRTelemetryThisFrame)
+            return;
+
+        BindRestirCommonParams(kernelCaptureReSTIRFrame);
+        tracingShader.SetBuffer(kernelCaptureReSTIRFrame, "GlobalColors", _globalColors);
+        tracingShader.Dispatch(kernelCaptureReSTIRFrame, (pixelCount + 63) / 64, 1, 1);
     }
 
     private void StopReSTIRDiagnostics()
@@ -667,30 +675,15 @@ public class Tracing : MonoBehaviour
     {
         if (!UseReSTIRDI) return;
 
+        int diagnosticPixelIndex = GetReSTIRDiagnosticPixelIndex();
         int initialIdx = (_lastDirectReservoirOutputIdx + 1) % 3;
         int temporalIdx = (_lastDirectReservoirOutputIdx + 2) % 3;
         int prevIdx = _lastDirectReservoirOutputIdx;
-
-        int lightCount = 1 + LightManager.Instance.GetPointLightsCount();
-        int maxLightSlots = _lightDataPacked != null ? _lightDataPacked.count : 0;
-        lightCount = Mathf.Min(lightCount, maxLightSlots);
-
-        BindRestirCommonParams(kernelPrepareLights);
-        BindSceneBuffersToKernel(kernelPrepareLights);
-        tracingShader.SetBuffer(kernelPrepareLights, "_LightDataPacked", _lightDataPacked);
-        tracingShader.SetInt("_LightDataPackedCount", lightCount);
-        tracingShader.Dispatch(kernelPrepareLights, (lightCount + 63) / 64, 1, 1);
-
-        tracingShader.SetBuffer(kernelBuildLightCdf, "_LightDataPacked", _lightDataPacked);
-        tracingShader.SetInt("_LightDataPackedCount", lightCount);
-        tracingShader.Dispatch(kernelBuildLightCdf, 1, 1, 1);
 
         BindRestirCommonParams(kernelGenerateInitial);
         BindSceneBuffersToKernel(kernelGenerateInitial);
         tracingShader.SetBuffer(kernelGenerateInitial, "DirectLightReservoirs", _directLightReservoirs);
         tracingShader.SetBuffer(kernelGenerateInitial, "_RestirGbuffer", _globalHits);
-        tracingShader.SetBuffer(kernelGenerateInitial, "_RestirLightData", _lightDataPacked);
-        tracingShader.SetInt("_RestirLightCount", lightCount);
         tracingShader.SetInt("_RestirInitialReservoirOffset", initialIdx * pixelCount);
         tracingShader.SetInt("_RestirCandidateCount", DirectLightRISCandidateCount);
         tracingShader.Dispatch(kernelGenerateInitial, (pixelCount + 63) / 64, 1, 1);
@@ -707,7 +700,7 @@ public class Tracing : MonoBehaviour
             tracingShader.SetInt("_RestirPrevReservoirOffset", prevIdx * pixelCount);
             tracingShader.SetBuffer(kernelTemporalResampling, "_RestirGbuffer", _globalHits);
             tracingShader.SetBuffer(kernelTemporalResampling, "_RestirGbufferPrevious", _primarySurfaceHistoryPrev);
-            tracingShader.SetInt("_RestirDebugPixelIndex", 0);
+            tracingShader.SetInt("_RestirDebugPixelIndex", diagnosticPixelIndex);
             tracingShader.Dispatch(kernelTemporalResampling, (pixelCount + 63) / 64, 1, 1);
         }
 
@@ -727,6 +720,7 @@ public class Tracing : MonoBehaviour
 
     private void DispatchReSTIRGI(int pixelCount)
     {
+        int diagnosticPixelIndex = GetReSTIRDiagnosticPixelIndex();
         int initialIdx = (_lastIndirectReservoirOutputIdx + 1) % 3;
         int temporalIdx = (_lastIndirectReservoirOutputIdx + 2) % 3;
         int prevIdx = _lastIndirectReservoirOutputIdx;
@@ -749,7 +743,7 @@ public class Tracing : MonoBehaviour
         tracingShader.SetBuffer(kernelShadeGISecondarySurfaces, "ReSTIRDebugData", _restirDebugData);
         tracingShader.SetBuffer(kernelShadeGISecondarySurfaces, "_RestirGbuffer", _globalHits);
         tracingShader.SetInt("_RestirInitialReservoirOffset", initialIdx * pixelCount);
-        tracingShader.SetInt("_RestirDebugPixelIndex", 0);
+        tracingShader.SetInt("_RestirDebugPixelIndex", diagnosticPixelIndex);
         tracingShader.Dispatch(kernelShadeGISecondarySurfaces, (pixelCount + 63) / 64, 1, 1);
 
         bool useTemporal = _hasIndirectRestirHistory;
@@ -765,7 +759,7 @@ public class Tracing : MonoBehaviour
             tracingShader.SetInt("_RestirInitialReservoirOffset", initialIdx * pixelCount);
             tracingShader.SetInt("_RestirTemporalReservoirOffset", temporalIdx * pixelCount);
             tracingShader.SetInt("_RestirPrevReservoirOffset", prevIdx * pixelCount);
-            tracingShader.SetInt("_RestirDebugPixelIndex", 0);
+            tracingShader.SetInt("_RestirDebugPixelIndex", diagnosticPixelIndex);
             tracingShader.Dispatch(kernelTemporalGIResampling, (pixelCount + 63) / 64, 1, 1);
         }
 
@@ -778,7 +772,7 @@ public class Tracing : MonoBehaviour
         tracingShader.SetBuffer(kernelSpatialGIResampling, "_RestirGbuffer", _globalHits);
         tracingShader.SetInt("_RestirShadingReservoirOffset", shadingReservoirIdx * pixelCount);
         tracingShader.SetInt("_RestirSpatialReservoirOffset", spatialIdx * pixelCount);
-        tracingShader.SetInt("_RestirDebugPixelIndex", 0);
+        tracingShader.SetInt("_RestirDebugPixelIndex", diagnosticPixelIndex);
         tracingShader.Dispatch(kernelSpatialGIResampling, (pixelCount + 63) / 64, 1, 1);
 
         shadingReservoirIdx = spatialIdx;
@@ -790,13 +784,19 @@ public class Tracing : MonoBehaviour
         tracingShader.SetBuffer(kernelShadeGISamples, "GlobalColors", _globalColors);
         tracingShader.SetBuffer(kernelShadeGISamples, "ReSTIRDebugData", _restirDebugData);
         tracingShader.SetBuffer(kernelShadeGISamples, "_RestirGbuffer", _globalHits);
-        tracingShader.SetInt("_RestirInitialReservoirOffset", initialIdx * pixelCount);
         tracingShader.SetInt("_RestirShadingReservoirOffset", shadingReservoirIdx * pixelCount);
-        tracingShader.SetInt("_RestirDebugPixelIndex", 0);
+        tracingShader.SetInt("_RestirDebugPixelIndex", diagnosticPixelIndex);
         tracingShader.Dispatch(kernelShadeGISamples, (pixelCount + 63) / 64, 1, 1);
 
         _lastIndirectReservoirOutputIdx = shadingReservoirIdx;
         _hasIndirectRestirHistory = true;
+    }
+
+    private int GetReSTIRDiagnosticPixelIndex()
+    {
+        int width = Mathf.Max(_currentRenderWidth, 1);
+        int height = Mathf.Max(_currentRenderHeight, 1);
+        return (height / 2) * width + width / 2;
     }
 
     private void BindRestirCommonParams(int kernel)
@@ -833,29 +833,6 @@ public class Tracing : MonoBehaviour
         if (BVHBuilder.NormalTextures != null) tracingShader.SetTexture(kernel, "_NormalTextures", BVHBuilder.NormalTextures);
         if (BVHBuilder.RoughnessTextures != null) tracingShader.SetTexture(kernel, "_RoughnessTextures", BVHBuilder.RoughnessTextures);
     }
-
-
-
-    private void WarnIfReSTIRDirectLightingConfigurationIsRisky()
-    {
-        if (UseReSTIRGI && !UseReSTIRDI)
-        {
-            if (!_warnedAboutReSTIRGIWithoutDI)
-            {
-                Debug.LogWarning("ReSTIR GI is enabled while ReSTIR DI is disabled. Primary-bounce direct lighting now depends on the non-ReSTIR path being skipped, so dark or flickering direct-light frames are expected in this configuration.");
-                _warnedAboutReSTIRGIWithoutDI = true;
-            }
-        }
-        else
-        {
-            _warnedAboutReSTIRGIWithoutDI = false;
-        }
-    }
-
-
-
-
-
 
 
 
@@ -938,7 +915,7 @@ public class Tracing : MonoBehaviour
 
     private void SetShaderParameters()
     {
-        tracingShader.SetInt("_FrameCount", (int)frameId++);
+        tracingShader.SetInt("_FrameCount", (int)++frameId);
 
         // Per-pixel jitter for temporal AA (used by GenRayByID)
         float jx = UnityEngine.Random.value - 0.5f;
@@ -1034,7 +1011,7 @@ public class Tracing : MonoBehaviour
         tracingShader.SetBool("_HasPrimarySurfaceHistory", _hasPrimarySurfaceHistory);
         tracingShader.SetInt("_DirectLightRISCandidateCount", DirectLightRISCandidateCount);
         tracingShader.SetBool("_UseReSTIRDI", UseReSTIRDI);
-        tracingShader.SetBool("_UseReSTIRGI", UseReSTIRGI);
+        tracingShader.SetBool("_UseReSTIRGI", IsReSTIRGIActive);
         tracingShader.SetFloat("_CameraFar", cam.farClipPlane);
 
         // 设置光源缓冲区（绑定到所有需要的kernel）

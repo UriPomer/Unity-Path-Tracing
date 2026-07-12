@@ -197,11 +197,13 @@ struct DirectLightReservoirData
 
 struct IndirectReservoirData
 {
+    // World position for surface samples; world direction when the environment flag is set.
     float3 secondaryPosition;  float proposalPdf;
     float3 secondaryNormal;    float targetLum;
     float3 radiance;           float weightSum;
     float3 contribution;       float selectedWeight;
-    float3 primaryNormal;      float sampleCount;
+    uint   sampleFlags;        float2 reserved;
+    float  sampleCount;
 };
 
 struct SecondarySurfaceData

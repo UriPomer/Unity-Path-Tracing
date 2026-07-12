@@ -65,6 +65,9 @@ public static class SelfTest
     private const string SessionKeyTargetFrames = "SelfTest.TargetFrames";
     private const string SessionKeyWarmupFrames = "SelfTest.WarmupFrames";
     private const string SessionKeyEnableReSTIRGI = "SelfTest.EnableReSTIRGI";
+    private const string SessionKeyToggleReSTIRModes = "SelfTest.ToggleReSTIRModes";
+    private const string SessionKeyModePhase = "SelfTest.ModePhase";
+    private const string SessionKeyWaitingForModeReset = "SelfTest.WaitingForModeReset";
     private const string SessionKeyGiProbePath = "SelfTest.GIProbePath";
     private const string SessionKeyGiTemporalStatsPath = "SelfTest.GITemporalStatsPath";
     private const string SessionKeyGiFinalStatsPath = "SelfTest.GIFinalStatsPath";
@@ -84,6 +87,9 @@ public static class SelfTest
     private static string s_giFinalStatsPath;
     private static string s_giSpatialStatsPath;
     private static bool s_enableReSTIRGI;
+    private static bool s_toggleReSTIRModes;
+    private static int s_modePhase;
+    private static bool s_waitingForModeReset;
     private static long s_startTicks;
     private static int s_lastSampleCount;
     private static string s_logPath;
@@ -106,6 +112,9 @@ public static class SelfTest
         s_sceneName = GetArg("-sceneName") ?? "CornellBox";
         s_targetFrames = int.TryParse(GetArg("-frameCount"), out int f) ? f : 60;
         s_enableReSTIRGI = GetBoolArg("-useRestirGI", true);
+        s_toggleReSTIRModes = s_enableReSTIRGI && GetBoolArg("-toggleRestirModes", false);
+        s_modePhase = 0;
+        s_waitingForModeReset = false;
         s_exitCode = 0;
         s_giProbePath = Path.GetFullPath(Path.Combine("Tools", "Output", "restir_gi_probe.jsonl"));
         s_giTemporalStatsPath = Path.GetFullPath(Path.Combine("Tools", "Output", "restir_gi_temporal_stats.jsonl"));
@@ -116,7 +125,7 @@ public static class SelfTest
         s_lastSampleCount = -1;
         PersistState();
 
-        Debug.Log($"[SelfTest] 开始: scene={s_sceneName} frames={s_targetFrames} useReSTIRGI={s_enableReSTIRGI}");
+        Debug.Log($"[SelfTest] 开始: scene={s_sceneName} frames={s_targetFrames} useReSTIRGI={s_enableReSTIRGI} toggleModes={s_toggleReSTIRModes}");
 
         // 加载场景
         string scenePath = $"Assets/Scenes/{s_sceneName}.unity";
@@ -181,15 +190,38 @@ public static class SelfTest
             Debug.Log($"[SelfTest] sampleCount={currentFrame}");
         }
 
-        if (GetElapsedSeconds() > 60.0)
+        double timeoutSeconds = s_toggleReSTIRModes ? 120.0 : 60.0;
+        if (GetElapsedSeconds() > timeoutSeconds)
         {
             Fail($"Timed out waiting for sampleCount to reach {s_targetFrames + s_warmupFrames}, current={currentFrame}");
             EditorApplication.isPlaying = false;
             return;
         }
 
+        if (s_waitingForModeReset)
+        {
+            if (currentFrame >= s_targetFrames + s_warmupFrames)
+                return;
+
+            s_waitingForModeReset = false;
+            SessionState.SetBool(SessionKeyWaitingForModeReset, false);
+            Debug.Log($"[SelfTest] ReSTIR mode reset observed at sampleCount={currentFrame}");
+        }
+
         if (currentFrame >= s_targetFrames + s_warmupFrames)
         {
+            if (s_toggleReSTIRModes && s_modePhase < 2)
+            {
+                s_modePhase++;
+                SessionState.SetInt(SessionKeyModePhase, s_modePhase);
+                ApplyReSTIRModePhase(s_tracing, s_modePhase);
+                s_waitingForModeReset = true;
+                SessionState.SetBool(SessionKeyWaitingForModeReset, true);
+                s_lastSampleCount = -1;
+                SessionState.SetInt(SessionKeyLastSampleCount, s_lastSampleCount);
+                return;
+            }
+
             EditorApplication.isPlaying = false;
         }
     }
@@ -215,6 +247,9 @@ public static class SelfTest
         SessionState.EraseInt(SessionKeyTargetFrames);
         SessionState.EraseInt(SessionKeyWarmupFrames);
         SessionState.EraseBool(SessionKeyEnableReSTIRGI);
+        SessionState.EraseBool(SessionKeyToggleReSTIRModes);
+        SessionState.EraseInt(SessionKeyModePhase);
+        SessionState.EraseBool(SessionKeyWaitingForModeReset);
         SessionState.EraseString(SessionKeyGiProbePath);
         SessionState.EraseString(SessionKeyGiTemporalStatsPath);
         SessionState.EraseString(SessionKeyGiFinalStatsPath);
@@ -239,9 +274,18 @@ public static class SelfTest
         SetPrivateField(tracing, "UseReSTIRGI", true);
         SetPrivateField(tracing, "WriteReSTIRGIDiagnostics", true);
         SetPrivateField(tracing, "WriteReSTIRGIDiagnosticDetails", false);
-        SetPrivateField(tracing, "ReSTIRGIDiagnosticFrameInterval", 1);
+        SetPrivateField(tracing, "ReSTIRGIDiagnosticFrameInterval", s_toggleReSTIRModes ? 4 : 1);
         SetPrivateField(tracing, "Denoise", false);
         SetPrivateField(tracing, "FrameLimit", s_targetFrames + s_warmupFrames);
+    }
+
+    private static void ApplyReSTIRModePhase(Tracing tracing, int phase)
+    {
+        bool useDI = phase != 1;
+        bool useGI = phase != 2;
+        SetPrivateField(tracing, "UseReSTIRDI", useDI);
+        SetPrivateField(tracing, "UseReSTIRGI", useGI);
+        Debug.Log($"[SelfTest] ReSTIR mode phase={phase} DI={useDI} GI={useGI}");
     }
 
     private static void ValidateReSTIRGIProbe()
@@ -414,7 +458,7 @@ public static class SelfTest
             ExtractFloat(line, "selectedWeight") > MaxValidGIRISWeight);
         if (runawayTemporalLine != null)
         {
-            Fail($"GI temporal weightSum/selectedWeight exceeded firefly bound (>1e6): {runawayTemporalLine}");
+            Fail($"GI temporal weightSum/selectedWeight exceeded diagnostic bound (>1e20): {runawayTemporalLine}");
             return;
         }
 
@@ -426,7 +470,7 @@ public static class SelfTest
             IsFinitePositive(ExtractFloat(line, "sampleCountM")));
         if (!sawValidTemporalSummary)
         {
-            Fail("GI temporal diagnostics never reported a valid temporal reservoir summary (with weightSum<=1e6, selectedWeight<=1e6 bound)");
+            Fail("GI temporal diagnostics never reported a finite positive temporal reservoir summary");
             return;
         }
 
@@ -587,13 +631,13 @@ public static class SelfTest
 
         if (!IsFinitePositiveBounded(weightSum, MaxValidGIRISWeight))
         {
-            Fail($"GI weightSum out of bound (must be 0<x<=1e6): {weightSum.ToString("R", CultureInfo.InvariantCulture)}");
+            Fail($"GI weightSum out of diagnostic bound (must be 0<x<=1e20): {weightSum.ToString("R", CultureInfo.InvariantCulture)}");
             return;
         }
 
         if (!IsFinitePositiveBounded(selectedWeight, MaxValidGIRISWeight))
         {
-            Fail($"GI selectedWeight out of bound (must be 0<x<=1e6): {selectedWeight.ToString("R", CultureInfo.InvariantCulture)}");
+            Fail($"GI selectedWeight out of diagnostic bound (must be 0<x<=1e20): {selectedWeight.ToString("R", CultureInfo.InvariantCulture)}");
             return;
         }
 
@@ -720,16 +764,13 @@ public static class SelfTest
             File.Delete(path);
     }
 
-    // Mirrors RESTIR_GI_FINITE_LIMIT (gi_reservoir.hlsl). HLSL only enforces this on
-    // selectedWeight via IsIndirectReservoirValid; the C# test extends the bound to
-    // weightSum as well for stricter regression detection. Both reservoir scalars share
-    // the same bound because in the post-fix RTXDI semantics selectedWeight mirrors
-    // weightSum (Task 3).
-    private const float MaxValidGIRISWeight = 1e6f;
+    // Legacy logs retain an outlier threshold for diagnostics only. Production reservoir
+    // validity rejects non-finite values, not large finite estimators.
+    private const float MaxValidGIRISWeight = 1e20f;
     private const float MaxValidGIFinalContributionLum = 1e4f;
     // Spatial denom = selectedTargetPdf * piSum (piSum aggregates targetPdf*M over 8 neighbors).
     // With M-capped to RESTIR_GI_MAX_RESERVOIR_SAMPLES, the product is naturally one
-    // order of magnitude looser than per-reservoir weightSum/selectedWeight (1e6).
+    // order of magnitude looser than ordinary per-reservoir weights.
     private const float MaxValidGISpatialDenom = 1e8f;
 
     private static bool IsFinitePositiveBounded(float v, float upperBound)
@@ -770,6 +811,9 @@ public static class SelfTest
         SessionState.SetInt(SessionKeyTargetFrames, s_targetFrames);
         SessionState.SetInt(SessionKeyWarmupFrames, s_warmupFrames);
         SessionState.SetBool(SessionKeyEnableReSTIRGI, s_enableReSTIRGI);
+        SessionState.SetBool(SessionKeyToggleReSTIRModes, s_toggleReSTIRModes);
+        SessionState.SetInt(SessionKeyModePhase, s_modePhase);
+        SessionState.SetBool(SessionKeyWaitingForModeReset, s_waitingForModeReset);
         SessionState.SetString(SessionKeyGiProbePath, s_giProbePath ?? string.Empty);
         SessionState.SetString(SessionKeyGiTemporalStatsPath, s_giTemporalStatsPath ?? string.Empty);
         SessionState.SetString(SessionKeyGiFinalStatsPath, s_giFinalStatsPath ?? string.Empty);
@@ -786,6 +830,9 @@ public static class SelfTest
         s_targetFrames = SessionState.GetInt(SessionKeyTargetFrames, s_targetFrames);
         s_warmupFrames = SessionState.GetInt(SessionKeyWarmupFrames, s_warmupFrames);
         s_enableReSTIRGI = SessionState.GetBool(SessionKeyEnableReSTIRGI, s_enableReSTIRGI);
+        s_toggleReSTIRModes = SessionState.GetBool(SessionKeyToggleReSTIRModes, s_toggleReSTIRModes);
+        s_modePhase = SessionState.GetInt(SessionKeyModePhase, s_modePhase);
+        s_waitingForModeReset = SessionState.GetBool(SessionKeyWaitingForModeReset, s_waitingForModeReset);
         s_giProbePath = SessionState.GetString(SessionKeyGiProbePath, s_giProbePath ?? string.Empty);
         s_giTemporalStatsPath = SessionState.GetString(SessionKeyGiTemporalStatsPath, s_giTemporalStatsPath ?? string.Empty);
         s_giFinalStatsPath = SessionState.GetString(SessionKeyGiFinalStatsPath, s_giFinalStatsPath ?? string.Empty);
@@ -839,10 +886,20 @@ public static class SelfTest
         if (stats.Length == 0 || stats.Any(row =>
                 row.sessionId != start.sessionId || row.frameIndex < 0 || row.sampleCount < 0 ||
                 row.generation <= 0 || row.renderWidth <= 0 || row.renderHeight <= 0 ||
-                (row.modeFlags & 3) != 3 || (row.modeFlags & 16) != 0))
+                (row.modeFlags & 3) == 0 || (row.modeFlags & 16) != 0))
         {
             Fail("Telemetry stats are missing or contain invalid correlation fields");
             return;
+        }
+
+        if (s_toggleReSTIRModes)
+        {
+            int[] observedModes = stats.Select(row => row.modeFlags & 3).Distinct().ToArray();
+            if (!observedModes.Contains(1) || !observedModes.Contains(2) || !observedModes.Contains(3))
+            {
+                Fail("Toggle-mode runtime proof requires DI-only, GI-only, and DI+GI telemetry packets");
+                return;
+            }
         }
 
         TelemetryStatsRow critical = stats.FirstOrDefault(row =>
@@ -937,6 +994,7 @@ public static class SelfTest
         s_failMode = FailMode.LogOnFail;
         s_exitCode = 0;
         s_lastFailReason = null;
+        s_toggleReSTIRModes = false;
 
         if (!TryUseLatestReSTIRGILogPaths(out string latestDir))
         {

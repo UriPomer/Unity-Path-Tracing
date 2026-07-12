@@ -4,15 +4,16 @@ static const float RESTIR_GI_STAGE1_FLAG_SKY = 1.0;
 static const float RESTIR_GI_STAGE1_FLAG_SPECULAR = 2.0;
 static const float RESTIR_GI_STAGE1_FLAG_DELTA = 4.0;
 static const float RESTIR_GI_STAGE1_FLAG_BYPASS = 8.0;
+static const uint RESTIR_GI_MAX_SECONDARY_LIGHT_CANDIDATES = 8u;
 
 bool IsGISecondaryMiss(float flags)
 {
-    return (flags >= 1.0 && flags < 2.0);
+    return flags >= 0.0 && (((uint)flags & (uint)RESTIR_GI_STAGE1_FLAG_SKY) != 0u);
 }
 
 bool IsGISecondaryBypass(float flags)
 {
-    return flags >= RESTIR_GI_STAGE1_FLAG_BYPASS;
+    return flags >= 0.0 && (((uint)flags & (uint)RESTIR_GI_STAGE1_FLAG_BYPASS) != 0u);
 }
 
 float3 EvaluateSecondaryMissRadiance(float3 secondaryNormal)
@@ -32,21 +33,54 @@ float3 EvaluateSecondaryHitRadiance(RayHit secondaryHit, float3 viewDir)
     secondaryHit.normal = secondaryNormal;
 
     bool hasSun = _DirectionalLightColor.a > 0.0;
-    if (hasSun)
+    uint pointLightCount = (uint)max(_PointLightsCount, 0);
+    uint candidateCount = (hasSun ? 1u : 0u) + pointLightCount;
+    if (candidateCount == 0u)
+        return max(radiance, 0.0);
+
+    uint sampleCount = min(candidateCount, RESTIR_GI_MAX_SECONDARY_LIGHT_CANDIDATES);
+    uint candidateStart = min(uint(RNG_Next(rng) * candidateCount), candidateCount - 1u);
+    uint candidateStride = max(candidateCount / sampleCount, 1u);
+    float proposalPdf = rcp((float)candidateCount);
+    DirectLightSample selectedSample = (DirectLightSample)0;
+    float weightSum = 0.0;
+    bool hasSelectedSample = false;
+    [loop]
+    for (uint candidate = 0u; candidate < sampleCount; candidate++)
     {
-        DirectLightSample sunSample = (DirectLightSample)0;
-        if (BuildSunDirectLightSample(secondaryHit, V2, float3(1,1,1), 1.0, sunSample))
-            radiance += sunSample.contribution;
+        uint candidateIndex = (candidateStart + candidate * candidateStride) % candidateCount;
+        DirectLightSample sample = (DirectLightSample)0;
+        if (!SampleDirectLightCandidate(
+                secondaryHit,
+                V2,
+                float3(1, 1, 1),
+                hasSun,
+                0u,
+                false,
+                candidateIndex,
+                proposalPdf,
+                sample) ||
+            !IsValidDirectLightSample(sample))
+        {
+            continue;
+        }
+
+        float candidateWeight = sample.targetLum / max(sample.proposalPdf, 1e-6);
+        weightSum += candidateWeight;
+        if (!hasSelectedSample || RNG_Next(rng) * weightSum < candidateWeight)
+        {
+            selectedSample = sample;
+            hasSelectedSample = true;
+        }
     }
 
-    if (_PointLightsCount > 0)
+    if (hasSelectedSample && IsDirectLightSampleVisible(selectedSample))
     {
-        for (uint lightIdx = 0u; lightIdx < (uint)_PointLightsCount; lightIdx++)
-        {
-            DirectLightSample pointSample = (DirectLightSample)0;
-            if (BuildPointLightDirectSample(secondaryHit, V2, float3(1,1,1), lightIdx, 1.0, pointSample))
-                radiance += pointSample.contribution;
-        }
+        float selectedWeight = ComputeMISWeight(
+            weightSum,
+            selectedSample.targetLum,
+            sampleCount);
+        radiance += selectedSample.contribution * selectedWeight;
     }
 
     return max(radiance, 0.0);
@@ -133,7 +167,6 @@ void kernel_generate_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    proposalPdf = max(proposalPdf, 1e-4);
     data.proposalPdf = proposalPdf;
 
     bounceRay.origin = primaryHit.position + primaryNormal * 1e-5;
@@ -142,7 +175,7 @@ void kernel_generate_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     RayHit secondaryHit = (RayHit)0;
     secondaryHit = Trace(bounceRay);
 
-    data.position = secondaryHit.distance >= 1e19 ? primaryHit.position + bounceRay.dir * 1e4 : secondaryHit.position;
+    data.position = secondaryHit.distance >= 1e19 ? normalize(bounceRay.dir) : secondaryHit.position;
     data.proposalPdf = proposalPdf;
     data.normal = secondaryHit.distance >= 1e19 ? -bounceRay.dir : secondaryHit.normal;
     data.primaryDistance = primaryHit.distance;
@@ -185,6 +218,13 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     if (secondary.proposalPdf <= 0.0 || all(secondary.throughput <= 0.0))
     {
         RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_INVALID_SECONDARY, id.x);
+        WriteIndirectReservoirTelemetry(
+            0u,
+            RESTIR_STAGE_GI_INITIAL,
+            secondary.proposalPdf <= 0.0 ? RESTIR_REASON_INVALID_PROPOSAL_PDF : RESTIR_REASON_ZERO_THROUGHPUT,
+            id.x,
+            reservoir,
+            float4(secondary.throughput, secondary.flags));
         if (id.x == _RestirDebugPixelIndex)
         {
             ReSTIRDebugData[0] = float4(10.0, secondary.proposalPdf, secondary.throughput.x, secondary.flags);
@@ -214,11 +254,16 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     secondaryHit.material.ior = secondary.ior;
     secondaryHit.should_break = false;
 
-    float3 viewDir = normalize(_RestirGbuffer[id.x].position - secondary.position);
-    float3 secondaryRadiance = secondary.emissionRadiance;
+    uint2 pixel = uint2(id.x % _ScreenWidth, id.x / _ScreenWidth);
+    RNG_SeedPixel(rng, pixel, _FrameCount + 1543u);
+
+    float3 viewDir = isMissSample
+        ? -normalize(secondary.position)
+        : normalize(_RestirGbuffer[id.x].position - secondary.position);
+    float3 secondaryRadiance = max(secondary.emissionRadiance, 0.0);
     if (!isMissSample)
     {
-        secondaryRadiance = max(EvaluateSecondaryHitRadiance(secondaryHit, viewDir), secondary.emissionRadiance);
+        secondaryRadiance = EvaluateSecondaryHitRadiance(secondaryHit, viewDir);
     }
 
     if (id.x == _RestirDebugPixelIndex)
@@ -237,6 +282,9 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
         float3 contribution = max(secondary.throughput * secondaryRadiance, 0.0);
         float targetLum = max(contribution.x, max(contribution.y, contribution.z));
         GlobalColors[id.x].L += contribution;
+        WriteIndirectReservoirTelemetry(
+            0u, RESTIR_STAGE_GI_INITIAL, RESTIR_REASON_NONE, id.x,
+            reservoir, float4(secondary.throughput, secondary.flags));
         if (id.x == _RestirDebugPixelIndex)
         {
             ReSTIRDebugData[0] = float4(15.0, secondary.proposalPdf, targetLum, secondary.flags);
@@ -248,9 +296,19 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
 
     float3 brdfAtPrimary;
     float3 contribution;
-    if (!EvaluateIndirectRadianceAtSurface(_RestirGbuffer[id.x], secondary.position, secondaryRadiance, brdfAtPrimary, contribution))
+    uint reservoirSampleFlags = isMissSample ? RESTIR_GI_RESERVOIR_FLAG_ENVIRONMENT : 0u;
+    if (!EvaluateIndirectRadianceAtSurface(
+            _RestirGbuffer[id.x],
+            secondary.position,
+            reservoirSampleFlags,
+            secondaryRadiance,
+            brdfAtPrimary,
+            contribution))
     {
         RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_INVALID_SECONDARY, id.x);
+        WriteIndirectReservoirTelemetry(
+            0u, RESTIR_STAGE_GI_INITIAL, RESTIR_REASON_REEVALUATION_REJECTED, id.x,
+            reservoir, float4(secondary.throughput, secondary.flags));
         if (id.x == _RestirDebugPixelIndex)
         {
             ReSTIRDebugData[0] = float4(12.0, secondary.proposalPdf, secondary.flags, secondary.primaryDistance);
@@ -264,6 +322,9 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     if (targetLum <= 0.0)
     {
         RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_ZERO_TARGET, id.x);
+        WriteIndirectReservoirTelemetry(
+            0u, RESTIR_STAGE_GI_INITIAL, RESTIR_REASON_ZERO_TARGET, id.x,
+            reservoir, float4(secondary.throughput, secondary.flags));
         if (id.x == _RestirDebugPixelIndex)
         {
             ReSTIRDebugData[0] = float4(13.0, secondary.proposalPdf, secondary.flags, secondary.primaryDistance);
@@ -288,13 +349,13 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
         targetLum,
         secondaryRadiance,
         contribution,
-        _RestirGbuffer[id.x].normal);
+        reservoirSampleFlags);
     IndirectReservoirs[_RestirInitialReservoirOffset + id.x] = reservoir;
     RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_ACCEPTED, id.x);
 
     bool reservoirFinite = all(isfinite(reservoir.secondaryPosition)) &&
         all(isfinite(reservoir.secondaryNormal)) && all(isfinite(reservoir.radiance)) &&
-        all(isfinite(reservoir.contribution)) && all(isfinite(reservoir.primaryNormal)) &&
+        all(isfinite(reservoir.contribution)) &&
         isfinite(reservoir.proposalPdf) && isfinite(reservoir.targetLum) &&
         isfinite(reservoir.weightSum) && isfinite(reservoir.selectedWeight) &&
         isfinite(reservoir.sampleCount);
@@ -304,18 +365,11 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
         RestirTelemetryCountCritical(RESTIR_COUNTER_CRITICAL_NONFINITE);
     }
 
-    if (RestirTelemetryClaimSelectedPixel(id.x))
-    {
-        RestirTelemetryWriteRecord(
-            0u,
-            RESTIR_STAGE_GI_INITIAL,
-            reservoirFinite ? RESTIR_REASON_NONE : RESTIR_REASON_NONFINITE_RESERVOIR,
-            id.x,
-            float4(reservoir.secondaryPosition, reservoir.proposalPdf),
-            float4(reservoir.secondaryNormal, reservoir.targetLum),
-            float4(reservoir.radiance, reservoir.weightSum),
-            float4(reservoir.contribution, reservoir.selectedWeight),
-            float4(reservoir.primaryNormal, reservoir.sampleCount),
-            float4(secondary.throughput, secondary.flags));
-    }
+    WriteIndirectReservoirTelemetry(
+        0u,
+        RESTIR_STAGE_GI_INITIAL,
+        reservoirFinite ? RESTIR_REASON_NONE : RESTIR_REASON_NONFINITE_RESERVOIR,
+        id.x,
+        reservoir,
+        float4(secondary.throughput, secondary.flags));
 }

@@ -41,6 +41,7 @@
 #define RESTIR_COUNTER_DI_SHADE_INVALID_RESERVOIR 13u
 #define RESTIR_COUNTER_DI_SHADE_VISIBILITY_REJECTED 14u
 #define RESTIR_COUNTER_DI_SHADE_POSITIVE_CONTRIBUTION 15u
+#define RESTIR_COUNTER_DI_TEMPORAL_M_CAPPED 23u
 
 #define RESTIR_COUNTER_GI_INITIAL_PRIMARY_MISS 16u
 #define RESTIR_COUNTER_GI_INITIAL_INVALID_SECONDARY 17u
@@ -96,6 +97,7 @@
 #define RESTIR_STAGE_GI_TEMPORAL 5u
 #define RESTIR_STAGE_GI_SPATIAL 6u
 #define RESTIR_STAGE_GI_FINAL 7u
+#define RESTIR_STAGE_FRAME_OUTPUT 8u
 
 #define RESTIR_REASON_NONE 0u
 #define RESTIR_REASON_PRIMARY_MISS 1u
@@ -122,6 +124,7 @@ RWByteAddressBuffer ReSTIRTelemetry;
 uint _RestirTelemetryEnabled;
 uint _RestirTelemetrySampleStride;
 uint _RestirTelemetrySamplePhase;
+uint _RestirTelemetrySelectedPixelIndex;
 uint _RestirTelemetryGeneration;
 uint _RestirTelemetrySampleCount;
 uint _RestirTelemetryModeFlags;
@@ -165,20 +168,6 @@ void RestirTelemetryCountCritical(uint counterIndex)
         originalValue);
 }
 
-bool RestirTelemetryClaimSelectedPixel(uint pixelIndex)
-{
-    if (!RestirTelemetryShouldSample(pixelIndex))
-        return false;
-
-    uint originalValue;
-    ReSTIRTelemetry.InterlockedCompareExchange(
-        RestirTelemetryByteOffset(RESTIR_HEADER_SELECTED_PIXEL),
-        0xffffffffu,
-        pixelIndex,
-        originalValue);
-    return originalValue == 0xffffffffu || originalValue == pixelIndex;
-}
-
 uint RestirTelemetrySelectedPixel()
 {
     return ReSTIRTelemetry.Load(RestirTelemetryByteOffset(RESTIR_HEADER_SELECTED_PIXEL));
@@ -201,7 +190,9 @@ void RestirTelemetryWriteRecord(
     float4 data4,
     float4 data5)
 {
-    if (!RestirTelemetryShouldSample(pixelIndex) || recordIndex >= RESTIR_TELEMETRY_RECORD_COUNT)
+    if (_RestirTelemetryEnabled == 0u ||
+        pixelIndex != RestirTelemetrySelectedPixel() ||
+        recordIndex >= RESTIR_TELEMETRY_RECORD_COUNT)
         return;
 
     uint baseWord = RESTIR_TELEMETRY_RECORD_BASE + recordIndex * RESTIR_TELEMETRY_RECORD_WORDS;
@@ -231,7 +222,6 @@ void RestirTelemetryWriteRecord(
 
 void RestirTelemetryCount(uint counterIndex, uint pixelIndex) {}
 void RestirTelemetryCountCritical(uint counterIndex) {}
-bool RestirTelemetryClaimSelectedPixel(uint pixelIndex) { return false; }
 uint RestirTelemetrySelectedPixel() { return 0xffffffffu; }
 void RestirTelemetryWriteRecord(
     uint recordIndex,

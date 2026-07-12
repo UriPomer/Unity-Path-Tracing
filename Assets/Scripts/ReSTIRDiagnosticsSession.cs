@@ -66,6 +66,7 @@ public enum ReSTIRTelemetryCounter
     DIShadeInvalidReservoir = 13,
     DIShadeVisibilityRejected = 14,
     DIShadePositiveContribution = 15,
+    DITemporalMCapped = 23,
 
     GIInitialPrimaryMiss = 16,
     GIInitialInvalidSecondary = 17,
@@ -123,7 +124,8 @@ public enum ReSTIRTelemetryStage
     GIInitial = 4,
     GITemporal = 5,
     GISpatial = 6,
-    GIFinal = 7
+    GIFinal = 7,
+    FrameOutput = 8
 }
 
 public enum ReSTIRTelemetryReason
@@ -160,6 +162,7 @@ public readonly struct ReSTIRTelemetryRecord
     }
 
     public ReSTIRTelemetryStage Stage => (ReSTIRTelemetryStage)_words[_baseWord + 1];
+    public int RecordIndex => (_baseWord - ReSTIRTelemetryLayout.RecordBase) / ReSTIRTelemetryLayout.RecordWordCount;
     public ReSTIRTelemetryReason Reason => (ReSTIRTelemetryReason)_words[_baseWord + 2];
     public int PixelIndex => unchecked((int)_words[_baseWord + 3]);
     public int Generation => unchecked((int)_words[_baseWord + ReSTIRTelemetryLayout.RecordGeneration]);
@@ -414,12 +417,14 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
         public readonly int Frame;
         public readonly int Sample;
         public readonly int Generation;
+        public readonly double FrameMilliseconds;
 
-        public CaptureContext(int frame, int sample, int generation)
+        public CaptureContext(int frame, int sample, int generation, double frameMilliseconds)
         {
             Frame = frame;
             Sample = sample;
             Generation = generation;
+            FrameMilliseconds = frameMilliseconds;
         }
     }
 
@@ -441,6 +446,7 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
         new CounterField(ReSTIRTelemetryCounter.DIShadeInvalidReservoir, "diShadeInvalidReservoir"),
         new CounterField(ReSTIRTelemetryCounter.DIShadeVisibilityRejected, "diShadeVisibilityRejected"),
         new CounterField(ReSTIRTelemetryCounter.DIShadePositiveContribution, "diShadePositiveContribution"),
+        new CounterField(ReSTIRTelemetryCounter.DITemporalMCapped, "diTemporalMCapped"),
         new CounterField(ReSTIRTelemetryCounter.GIInitialPrimaryMiss, "giInitialPrimaryMiss"),
         new CounterField(ReSTIRTelemetryCounter.GIInitialInvalidSecondary, "giInitialInvalidSecondary"),
         new CounterField(ReSTIRTelemetryCounter.GIInitialInvalidProposal, "giInitialInvalidProposal"),
@@ -494,6 +500,7 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
     private readonly JsonlSink _giTemporalWriter;
     private readonly JsonlSink _giSpatialWriter;
     private readonly JsonlSink _giFinalWriter;
+    private readonly JsonlSink _frameStatsWriter;
     private readonly uint[] _packetWords = new uint[ReSTIRTelemetryLayout.PacketWordCount];
     private readonly Action<AsyncGPUReadbackRequest> _readbackCallback;
     private bool _readbackPending;
@@ -531,6 +538,7 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
         _giTemporalWriter = OpenWriter("restir_gi_temporal_stats.jsonl");
         _giSpatialWriter = OpenWriter("restir_gi_spatial_stats.jsonl");
         _giFinalWriter = OpenWriter("restir_gi_final_stats.jsonl");
+        _frameStatsWriter = OpenWriter("restir_frame_stats.jsonl");
 
         WriteSessionRecord("session_start");
         FlushWriters();
@@ -590,17 +598,22 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
 
         _forceNextCapture = false;
         _captureArmed = true;
-        _captureContext = new CaptureContext(frame, sample, Generation);
+        _captureContext = new CaptureContext(frame, sample, Generation, 0.0);
         return true;
     }
 
-    public void RequestCapture(ComputeBuffer packetBuffer)
+    public void RequestCapture(ComputeBuffer packetBuffer, double frameMilliseconds)
     {
         if (_disposed || !_captureArmed || _readbackPending || packetBuffer == null)
             return;
 
         _captureArmed = false;
         _readbackPending = true;
+        _captureContext = new CaptureContext(
+            _captureContext.Frame,
+            _captureContext.Sample,
+            _captureContext.Generation,
+            frameMilliseconds);
         try
         {
             AsyncGPUReadback.Request(packetBuffer, _readbackCallback);
@@ -665,7 +678,7 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
                 return;
             }
 
-            if (!ProcessPacketWords(_packetWords, Generation, out string error))
+            if (!ProcessPacketWords(_packetWords, context.Generation, out string error))
             {
                 if (error == "packet generation is stale")
                     WriteWarning("packet_stale", context, error);
@@ -747,7 +760,7 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
                 continue;
 
             int stage = (int)record.Stage;
-            if (stage < (int)ReSTIRTelemetryStage.DIInitial || stage > (int)ReSTIRTelemetryStage.GIFinal)
+            if (stage < (int)ReSTIRTelemetryStage.DIInitial || stage > (int)ReSTIRTelemetryStage.FrameOutput)
             {
                 error = "record stage is invalid";
                 return false;
@@ -836,7 +849,9 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
         WriteCorrelationPrefix(writer, packet);
         writer.Write(",\"stage\":\"");
         writer.Write(StageName(record.Stage));
-        writer.Write("\",\"reason\":\"");
+        writer.Write("\",\"recordIndex\":");
+        writer.Write(record.RecordIndex.ToString(CultureInfo.InvariantCulture));
+        writer.Write(",\"reason\":\"");
         writer.Write(ReasonName(record.Reason));
         writer.Write("\",\"reasonCode\":");
         writer.Write(((int)record.Reason).ToString(CultureInfo.InvariantCulture));
@@ -937,6 +952,8 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
                 return _giSpatialWriter;
             case ReSTIRTelemetryStage.GIFinal:
                 return _giFinalWriter;
+            case ReSTIRTelemetryStage.FrameOutput:
+                return _frameStatsWriter;
             default:
                 throw new ArgumentOutOfRangeException(nameof(stage), stage, "Unsupported telemetry stage");
         }
@@ -960,6 +977,7 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
             case ReSTIRTelemetryStage.GITemporal: return "gi_temporal";
             case ReSTIRTelemetryStage.GISpatial: return "gi_spatial";
             case ReSTIRTelemetryStage.GIFinal: return "gi_final";
+            case ReSTIRTelemetryStage.FrameOutput: return "frame_output";
             default: return "none";
         }
     }
@@ -1066,6 +1084,8 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
         _performanceWriter.Write(context.Generation.ToString(CultureInfo.InvariantCulture));
         _performanceWriter.Write(",\"callbackMilliseconds\":");
         _performanceWriter.Write(callbackMilliseconds.ToString("R", CultureInfo.InvariantCulture));
+        _performanceWriter.Write(",\"frameMilliseconds\":");
+        _performanceWriter.Write(context.FrameMilliseconds.ToString("R", CultureInfo.InvariantCulture));
         _performanceWriter.WriteLine("}");
         FlushIfNeeded();
     }
@@ -1133,6 +1153,7 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
         _giTemporalWriter.Flush();
         _giSpatialWriter.Flush();
         _giFinalWriter.Flush();
+        _frameStatsWriter.Flush();
     }
 
     private static string EscapeJson(string value)
@@ -1165,6 +1186,7 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
         _giTemporalWriter.Dispose();
         _giSpatialWriter.Dispose();
         _giFinalWriter.Dispose();
+        _frameStatsWriter.Dispose();
         Debug.Log($"[ReSTIR][Session] end id={SessionId} output={OutputDirectory}");
     }
 }

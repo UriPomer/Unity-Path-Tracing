@@ -34,17 +34,23 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
     uint outIdx = _RestirSpatialReservoirOffset + id.x;
 
     IndirectReservoirData cur = IndirectReservoirs[curIdx];
+    bool currentReservoirValid = IsIndirectReservoirValid(cur);
     IndirectReservoirs[outIdx] = cur;
-    if (!IsIndirectReservoirValid(cur))
-    {
-        RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INVALID_CURRENT, id.x);
-        return;
-    }
 
     HitData hdCur = _RestirGbuffer[id.x];
     if (hdCur.distance >= 1e19)
     {
         RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INVALID_CURRENT, id.x);
+        WriteIndirectReservoirTelemetry(
+            2u, RESTIR_STAGE_GI_SPATIAL, RESTIR_REASON_INVALID_SURFACE, id.x,
+            cur, 0.0);
+        return;
+    }
+    if (!currentReservoirValid && hdCur.roughness < 1e-4)
+    {
+        WriteIndirectReservoirTelemetry(
+            2u, RESTIR_STAGE_GI_SPATIAL, RESTIR_REASON_NONE, id.x,
+            cur, 0.0);
         return;
     }
 
@@ -52,14 +58,17 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
     RNG_SeedPixel(rng, pixel, _FrameCount + 7919u);
 
     IndirectReservoirData outR = EmptyIndirectReservoir();
-    float curTargetPdf = ComputeIndirectTargetPdf(cur);
+    float curTargetPdf = currentReservoirValid ? ComputeIndirectTargetPdf(cur) : 0.0;
     float selectedTargetPdf = 0.0;
-    if (!CombineIndirectReservoirs(outR, cur, 0.5, curTargetPdf))
+    if (currentReservoirValid)
+    {
+        CombineIndirectReservoirs(outR, cur, 0.5, curTargetPdf);
+        selectedTargetPdf = curTargetPdf;
+    }
+    else
     {
         RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INVALID_CURRENT, id.x);
-        return;
     }
-    selectedTargetPdf = curTargetPdf;
 
     uint cachedResult = 0u;
     int selected = -1;
@@ -104,6 +113,11 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
             RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INCOMPATIBLE_NEIGHBOR, id.x);
             continue;
         }
+        if (!AreRestirMaterialsSimilar(hdCur, hdNeighbor))
+        {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INCOMPATIBLE_NEIGHBOR, id.x);
+            continue;
+        }
         compatibleCount++;
 
         if (dot(hdCur.normal, hdNeighbor.normal) < 0.95)
@@ -143,7 +157,12 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
         }
         reevaluateCount++;
 
-        float jacobian = CalculateIndirectJacobian(hdCur.position, hdNeighbor.position, neighbor.secondaryPosition, neighbor.secondaryNormal);
+        float jacobian = CalculateIndirectJacobian(
+            hdCur.position,
+            hdNeighbor.position,
+            neighbor.secondaryPosition,
+            neighbor.secondaryNormal,
+            neighbor.sampleFlags);
         if (!ValidateIndirectJacobian(jacobian))
         {
             RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_JACOBIAN_REJECTED, id.x);
@@ -155,21 +174,17 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
         neighborCandidate.radiance = neighborRadianceCur;
         neighborCandidate.contribution = neighborContributionCur;
         neighborCandidate.targetLum = neighborTargetLumCur;
-        neighborCandidate.primaryNormal = hdCur.normal;
+        // Transform the finalized neighbor estimator into the current receiver's
+        // solid-angle domain before combining it (RTXDI spatial parity).
+        neighborCandidate.weightSum *= jacobian;
         neighborCandidate.proposalPdf = neighborCandidate.proposalPdf > 0.0
-            ? max(neighborCandidate.proposalPdf / jacobian, RESTIR_GI_MIN_PROPOSAL_PDF)
+            ? max(neighborCandidate.proposalPdf / jacobian, RESTIR_GI_MIN_REUSE_PROPOSAL_PDF)
             : 0.0;
-        // M-cap with proportional Wsum scaling, mirroring gi_temporal.hlsl. Without this
-        // the spatial RIS streaming weight can drift unbounded across multi-neighbor reuse:
-        // the 2026-05-31 Sponza regression showed spatialNormalizationDenominator hitting
-        // 7.3e6 with 7/8 active neighbors. Scaling weightSum by clamped/sampleCount keeps
-        // the streamed-weight to streamed-count ratio invariant when history is dropped.
+        // Clamp only the represented domain count. weightSum is already a finalized
+        // estimator and must not be attenuated when history M is shortened.
         float neighborSampleCountClamped = min(max(neighborCandidate.sampleCount, 1.0), RESTIR_GI_MAX_RESERVOIR_SAMPLES - 1.0);
         if (neighborCandidate.sampleCount > neighborSampleCountClamped)
-        {
             RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_M_CAPPED, id.x);
-            neighborCandidate.weightSum *= neighborSampleCountClamped / neighborCandidate.sampleCount;
-        }
         neighborCandidate.sampleCount = neighborSampleCountClamped;
 
         cachedResult |= (1u << uint(neighborSampleIdx));
@@ -192,16 +207,21 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
     // (normalization) pass. With up to 8 neighbors combined, outR.sampleCount can reach
     // 1 (cur) + 8 * (MAX-1) which exceeds MAX; without scaling weightSum the per-neighbor
     // RIS contributions would still be summed at full magnitude.
-    float outSampleCountClamped = min(outR.sampleCount, RESTIR_GI_MAX_RESERVOIR_SAMPLES);
-    if (outR.sampleCount > outSampleCountClamped)
+    float outSampleCountBeforeCap = outR.sampleCount;
+    float outSampleCountClamped = min(outSampleCountBeforeCap, RESTIR_GI_MAX_RESERVOIR_SAMPLES);
+    float spatialMCapScale = 1.0;
+    if (outSampleCountBeforeCap > outSampleCountClamped)
     {
         RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_M_CAPPED, id.x);
-        outR.weightSum *= outSampleCountClamped / outR.sampleCount;
+        spatialMCapScale = outSampleCountClamped / outSampleCountBeforeCap;
+        outR.weightSum *= spatialMCapScale;
     }
     outR.sampleCount = outSampleCountClamped;
 
     float pi = selectedTargetPdf;
-    float piSum = curTargetPdf * max(cur.sampleCount, 1.0);
+    // The global cap scales the streamed weight and its effective domain counts together.
+    // Otherwise Finalize applies the cap once through weightSum and again through piSum.
+    float piSum = curTargetPdf * max(cur.sampleCount, 1.0) * spatialMCapScale;
     [unroll]
     for (int cachedSampleIdx = 0; cachedSampleIdx < 8; cachedSampleIdx++)
     {
@@ -233,7 +253,7 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
         {
             pi = selected == cachedSampleIdx ? neighborP : pi;
             float neighborSampleCount = min(max(neighbor.sampleCount, 1.0), RESTIR_GI_MAX_RESERVOIR_SAMPLES - 1.0);
-            piSum += neighborP * max(neighborSampleCount, 0.0);
+            piSum += neighborP * max(neighborSampleCount, 0.0) * spatialMCapScale;
         }
     }
 
@@ -244,7 +264,7 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
     FinalizeIndirectReservoir(outR, normalizationNumerator, normalizationDenominator);
     bool outputFinite = all(isfinite(outR.secondaryPosition)) &&
         all(isfinite(outR.secondaryNormal)) && all(isfinite(outR.radiance)) &&
-        all(isfinite(outR.contribution)) && all(isfinite(outR.primaryNormal)) &&
+        all(isfinite(outR.contribution)) &&
         isfinite(outR.proposalPdf) && isfinite(outR.targetLum) &&
         isfinite(outR.weightSum) && isfinite(outR.selectedWeight) && isfinite(outR.sampleCount);
     if (!outputFinite)
@@ -254,17 +274,24 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
     }
     if (id.x == RestirTelemetrySelectedPixel())
     {
-        RestirTelemetryWriteRecord(
+        WriteIndirectReservoirTelemetry(
             2u,
             RESTIR_STAGE_GI_SPATIAL,
             outputFinite ? RESTIR_REASON_NONE : RESTIR_REASON_NONFINITE_RESERVOIR,
             id.x,
-            float4(outR.secondaryPosition, outR.proposalPdf),
-            float4(outR.secondaryNormal, outR.targetLum),
-            float4(outR.radiance, outR.weightSum),
-            float4(outR.contribution, outR.selectedWeight),
-            float4(outR.primaryNormal, outR.sampleCount),
+            outR,
             float4((float)compatibleCount, (float)reevaluateCount, (float)combinedCount, normalizationDenominator));
+        RestirTelemetryWriteRecord(
+            7u,
+            RESTIR_STAGE_GI_SPATIAL,
+            RESTIR_REASON_NONE,
+            id.x,
+            float4(spatialMCapScale, outSampleCountBeforeCap, piSum, normalizationDenominator),
+            float4(0.0, 0.0, 0.0, 0.0),
+            float4(0.0, 0.0, 0.0, 0.0),
+            float4(0.0, 0.0, 0.0, 0.0),
+            float4(0.0, 0.0, 0.0, 0.0),
+            float4(0.0, 0.0, 0.0, 0.0));
     }
     if (id.x == _RestirDebugPixelIndex)
     {

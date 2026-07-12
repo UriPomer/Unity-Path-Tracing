@@ -5,8 +5,6 @@
 #pragma kernel kernel_finalize
 #pragma kernel kernel_copy_primary_surface_history
 #pragma kernel TransferKernel
-#pragma kernel kernel_prepare_lights
-#pragma kernel kernel_build_light_cdf
 #pragma kernel kernel_generate_initial
 #pragma kernel kernel_temporal_resampling
 #pragma kernel kernel_shade_di_samples
@@ -16,6 +14,7 @@
 #pragma kernel kernel_spatial_gi_resampling
 #pragma kernel kernel_shade_gi_samples
 #pragma kernel kernel_clear_restir_telemetry
+#pragma kernel kernel_capture_restir_frame
 #pragma multi_compile _ RESTIR_TELEMETRY_ENABLED
 
 #include "function.hlsl"
@@ -26,7 +25,6 @@
 #include "restir/restir_common.hlsl"
 #include "restir/telemetry.hlsl"
 #include "restir/reservoir.hlsl"
-#include "restir/prepare_lights.hlsl"
 #include "restir/generate_initial.hlsl"
 #include "restir/temporal_resampling.hlsl"
 #include "restir/shade_di.hlsl"
@@ -61,7 +59,60 @@ void kernel_clear_restir_telemetry(uint3 id : SV_DispatchThreadID)
     ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_DIRECT_FINAL_SLOT), _RestirTelemetryDirectFinalSlot);
     ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_INDIRECT_INITIAL_SLOT), _RestirTelemetryIndirectInitialSlot);
     ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_INDIRECT_FINAL_SLOT), _RestirTelemetryIndirectFinalSlot);
-    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_SELECTED_PIXEL), 0xffffffffu);
+    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_SELECTED_PIXEL), _RestirTelemetrySelectedPixelIndex);
+#endif
+}
+
+[numthreads(64, 1, 1)]
+void kernel_capture_restir_frame(uint3 id : SV_DispatchThreadID)
+{
+#if defined(RESTIR_TELEMETRY_ENABLED)
+    uint pixelCount = _ScreenWidth * _ScreenHeight;
+    if (id.x >= pixelCount || id.x != RestirTelemetrySelectedPixel())
+        return;
+
+    float3 frameRadiance = GlobalColors[id.x].L;
+    float frameLuminance = dot(max(frameRadiance, 0.0), float3(0.2126, 0.7152, 0.0722));
+    static const uint gridSize = 4u;
+    float gridLuminanceSum = 0.0;
+    float gridLuminanceMax = 0.0;
+    uint gridPositiveCount = 0u;
+    bool gridFinite = true;
+    [unroll]
+    for (uint gridY = 0u; gridY < gridSize; gridY++)
+    {
+        [unroll]
+        for (uint gridX = 0u; gridX < gridSize; gridX++)
+        {
+            uint sampleX = min(((2u * gridX + 1u) * _ScreenWidth) / (2u * gridSize), _ScreenWidth - 1u);
+            uint sampleY = min(((2u * gridY + 1u) * _ScreenHeight) / (2u * gridSize), _ScreenHeight - 1u);
+            float3 sampleRadiance = GlobalColors[sampleY * _ScreenWidth + sampleX].L;
+            bool sampleFinite = all(isfinite(sampleRadiance));
+            gridFinite = gridFinite && sampleFinite;
+            float sampleLuminance = sampleFinite
+                ? dot(max(sampleRadiance, 0.0), float3(0.2126, 0.7152, 0.0722))
+                : 0.0;
+            gridLuminanceSum += sampleLuminance;
+            gridLuminanceMax = max(gridLuminanceMax, sampleLuminance);
+            gridPositiveCount += sampleLuminance > 0.0 ? 1u : 0u;
+        }
+    }
+    float gridSampleCount = (float)(gridSize * gridSize);
+    RestirTelemetryWriteRecord(
+        8u,
+        RESTIR_STAGE_FRAME_OUTPUT,
+        all(isfinite(frameRadiance)) && gridFinite ? RESTIR_REASON_NONE : RESTIR_REASON_NONFINITE_CONTRIBUTION,
+        id.x,
+        float4(frameRadiance, frameLuminance),
+        float4(
+            (float)_RestirTelemetryModeFlags,
+            gridLuminanceSum / gridSampleCount,
+            gridLuminanceMax,
+            (float)gridPositiveCount / gridSampleCount),
+        0.0,
+        0.0,
+        0.0,
+        0.0);
 #endif
 }
 
@@ -169,15 +220,22 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
     HitData hd = ShadeHits[id.x];
     float3 throughput = rd.throughput;
     float3 L = GlobalColors[rd.pixelIndex].L;
+    // ReSTIR GI estimates the local radiance reached by the primary BSDF sample.
+    // The wavefront path still crosses that vertex so it can continue at bounce 2+,
+    // but must not add the same sky/emission/direct-light terms a second time.
+    bool restirGIReplacesLocalShading = _UseReSTIRGI && CurBounce == 1;
 
     // Miss → skybox
     if (hd.distance >= 1.#INF)
     {
-        Ray ray;
-        ray.origin = rd.origin;
-        ray.dir = rd.direction;
-        ray.invDir = 1.0 / ray.dir;
-        L += throughput * SampleSkybox(ray);
+        if (!restirGIReplacesLocalShading)
+        {
+            Ray ray;
+            ray.origin = rd.origin;
+            ray.dir = rd.direction;
+            ray.invDir = 1.0 / ray.dir;
+            L += throughput * SampleSkybox(ray);
+        }
         GlobalColors[rd.pixelIndex].L = L;
         return;
     }
@@ -201,21 +259,13 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
         PrimarySurfaceHistory[rd.pixelIndex] = hd;
 
     // Emission
-    if (hit.material.emissionIntensity > 0.0f)
+    if (!restirGIReplacesLocalShading && hit.material.emissionIntensity > 0.0f)
         L += throughput * (hit.material.emission * hit.material.emissionIntensity);
 
     // Wavefront direct lighting: shade samples a light candidate and queues a shadow ray.
     // The shadow kernel is the only stage that resolves visibility and commits the contribution.
-    if (!_UseReSTIRDI || CurBounce > 0)
+    if (!restirGIReplacesLocalShading && (!_UseReSTIRDI || CurBounce > 0))
         GenerateShadowRays(hit, -rd.direction, throughput, rd.pixelIndex);
-
-    // ReSTIR GI replaces the primary indirect continuation path. Later bounces still
-    // use the regular path tracing loop.
-    if (_UseReSTIRGI && CurBounce == 0)
-    {
-        GlobalColors[rd.pixelIndex].L = L;
-        return;
-    }
 
     // BXDF sampling
     Ray ray;

@@ -2,6 +2,8 @@ param(
     [string]$OutputRoot = "E:\WorkDoing\Unity\RayTracing\Unity-Path-Tracing\Tools\Output",
     [switch]$RequireFreshReSTIRGI,
     [switch]$RequireReuseFormulaCoverage,
+    [switch]$RequireModeToggleCoverage,
+    [double]$MaxFrameMilliseconds = 0.0,
     [double]$MaxFinalContributionLum = 0.0
 )
 
@@ -58,22 +60,34 @@ function Verify-TelemetrySession([System.IO.DirectoryInfo]$directory) {
     }
 
     $sessionId = [string]$start[0].sessionId
-    if ($start[0].useReSTIRDI -ne $true -or $start[0].useReSTIRGI -ne $true -or $start[0].denoise -ne $false) {
-        Fail "Runtime proof requires useReSTIRDI=true, useReSTIRGI=true, denoise=false"
+    if ($start[0].denoise -ne $false) {
+        Fail "Runtime proof requires denoise=false"
     }
     if ([int]$end[0].acceptedCaptures -le 0 -or [int]$end[0].readbackErrors -ne 0) {
         Fail "Telemetry session ended with acceptedCaptures=$($end[0].acceptedCaptures), readbackErrors=$($end[0].readbackErrors)"
     }
 
     $stats = @(Parse-JsonLines (Join-Path $directory.FullName 'restir_telemetry_stats.jsonl'))
+    $statsByCorrelation = @{}
+    $observedModes = @{}
     foreach ($row in $stats) {
         if ($row.sessionId -ne $sessionId -or [int]$row.generation -le 0 -or
             [int]$row.renderWidth -le 0 -or [int]$row.renderHeight -le 0) {
             Fail "Invalid telemetry stats correlation"
         }
-        if (([int]$row.modeFlags -band 3) -ne 3 -or ([int]$row.modeFlags -band 16) -ne 0) {
-            Fail "Telemetry packet does not match DI+GI enabled, denoise disabled baseline at frame=$($row.frameIndex)"
+        $mode = [int]$row.modeFlags -band 3
+        if ($mode -eq 0 -or ([int]$row.modeFlags -band 16) -ne 0) {
+            Fail "Telemetry packet must have DI or GI enabled with denoise disabled at frame=$($row.frameIndex)"
         }
+        $centerX = [int][Math]::Floor([int]$row.renderWidth / 2.0)
+        $centerY = [int][Math]::Floor([int]$row.renderHeight / 2.0)
+        $expectedSelectedPixel = $centerY * [int]$row.renderWidth + $centerX
+        if ([int]$row.selectedPixel -ne $expectedSelectedPixel) {
+            Fail "Telemetry selectedPixel is not the deterministic center probe at frame=$($row.frameIndex)"
+        }
+        $correlationKey = "$($row.frameIndex):$($row.sampleCount):$($row.generation)"
+        $statsByCorrelation[$correlationKey] = $row
+        $observedModes[[string]$mode] = $true
         if ([int]$row.criticalNonFinite -ne 0 -or [int]$row.criticalOutOfRange -ne 0 -or
             [int]$row.criticalBufferContract -ne 0) {
             Fail "Critical telemetry counter failed at frame=$($row.frameIndex)"
@@ -96,6 +110,7 @@ function Verify-TelemetrySession([System.IO.DirectoryInfo]$directory) {
 
     $probePath = Join-Path $directory.FullName 'restir_gi_probe.jsonl'
     $finalPath = Join-Path $directory.FullName 'restir_gi_final_stats.jsonl'
+    $framePath = Join-Path $directory.FullName 'restir_frame_stats.jsonl'
     $diPath = Join-Path $directory.FullName 'restir_di_stats.jsonl'
     $di = @(Parse-JsonLines $diPath)
     $diInitial = @($di | Where-Object { $_.stage -eq 'di_initial' })
@@ -106,8 +121,10 @@ function Verify-TelemetrySession([System.IO.DirectoryInfo]$directory) {
     Assert-TelemetryStageRows $diShade $sessionId 'di_shade' $diPath
     $probe = @(Parse-JsonLines $probePath)
     $final = @(Parse-JsonLines $finalPath)
+    $frameOutput = @(Parse-JsonLines $framePath)
     Assert-TelemetryStageRows $probe $sessionId 'gi_initial' $probePath
     Assert-TelemetryStageRows $final $sessionId 'gi_final' $finalPath
+    Assert-TelemetryStageRows $frameOutput $sessionId 'frame_output' $framePath
 
     $temporal = @(Parse-OptionalJsonLines (Join-Path $directory.FullName 'restir_gi_temporal_stats.jsonl'))
     $spatial = @(Parse-OptionalJsonLines (Join-Path $directory.FullName 'restir_gi_spatial_stats.jsonl'))
@@ -116,8 +133,65 @@ function Verify-TelemetrySession([System.IO.DirectoryInfo]$directory) {
         Assert-TelemetryStageRows $spatial $sessionId 'gi_spatial' 'restir_gi_spatial_stats.jsonl'
     }
 
+    $allStageRows = @($diInitial) + @($diTemporal) + @($diShade) + @($probe) + @($temporal) + @($spatial) + @($final) + @($frameOutput)
+    $frameOutputByMode = @{}
+    $frameGridOutputByMode = @{}
+    foreach ($row in $allStageRows) {
+        $correlationKey = "$($row.frameIndex):$($row.sampleCount):$($row.generation)"
+        if (-not $statsByCorrelation.ContainsKey($correlationKey)) {
+            Fail "Stage row has no matching telemetry packet: stage=$($row.stage) key=$correlationKey"
+        }
+        $packet = $statsByCorrelation[$correlationKey]
+        if ([int]$row.pixelIndex -ne [int]$packet.selectedPixel) {
+            Fail "Stage row does not use packet selectedPixel: stage=$($row.stage) key=$correlationKey"
+        }
+        $mode = [int]$packet.modeFlags -band 3
+        if ($row.stage -like 'di_*' -and ($mode -band 1) -eq 0) {
+            Fail "DI stage row was emitted while DI was disabled: stage=$($row.stage) key=$correlationKey"
+        }
+        if ($row.stage -like 'gi_*' -and ($mode -band 2) -eq 0) {
+            Fail "GI stage row was emitted while GI was disabled: stage=$($row.stage) key=$correlationKey"
+        }
+        if ($row.stage -eq 'frame_output') {
+            $luminance = [double]$row.payload[3]
+            if ([double]::IsNaN($luminance) -or [double]::IsInfinity($luminance) -or $luminance -lt 0.0) {
+                Fail "Frame output luminance is invalid: key=$correlationKey"
+            }
+            $modeKey = [string]$mode
+            if (-not $frameOutputByMode.ContainsKey($modeKey)) {
+                $frameOutputByMode[$modeKey] = [System.Collections.Generic.List[double]]::new()
+            }
+            $frameOutputByMode[$modeKey].Add($luminance)
+            $gridMeanLuminance = [double]$row.payload[5]
+            $gridMaxLuminance = [double]$row.payload[6]
+            $gridPositiveFraction = [double]$row.payload[7]
+            if ([double]::IsNaN($gridMeanLuminance) -or [double]::IsInfinity($gridMeanLuminance) -or
+                [double]::IsNaN($gridMaxLuminance) -or [double]::IsInfinity($gridMaxLuminance) -or
+                $gridMeanLuminance -lt 0.0 -or $gridMaxLuminance -lt $gridMeanLuminance -or
+                $gridPositiveFraction -lt 0.0 -or $gridPositiveFraction -gt 1.0) {
+                Fail "Frame output grid statistics are invalid: key=$correlationKey"
+            }
+            if (-not $frameGridOutputByMode.ContainsKey($modeKey)) {
+                $frameGridOutputByMode[$modeKey] = [System.Collections.Generic.List[double]]::new()
+            }
+            $frameGridOutputByMode[$modeKey].Add($gridMeanLuminance)
+        }
+    }
+
+    if ($RequireModeToggleCoverage -and
+        (-not $observedModes.ContainsKey('1') -or
+         -not $observedModes.ContainsKey('2') -or
+         -not $observedModes.ContainsKey('3'))) {
+        Fail "Mode toggle coverage requires DI-only, GI-only, and DI+GI telemetry packets"
+    }
+
     $averageCallback = ($performance | Measure-Object -Property callbackMilliseconds -Average).Average
     $maximumCallback = ($performance | Measure-Object -Property callbackMilliseconds -Maximum).Maximum
+    $averageFrame = ($performance | Measure-Object -Property frameMilliseconds -Average).Average
+    $maximumFrame = ($performance | Measure-Object -Property frameMilliseconds -Maximum).Maximum
+    if ($MaxFrameMilliseconds -gt 0.0 -and $maximumFrame -gt $MaxFrameMilliseconds) {
+        Fail "Max frameMilliseconds exceeded threshold: actual=$maximumFrame threshold=$MaxFrameMilliseconds"
+    }
     Write-Output 'PASS'
     Write-Output ''
     Write-Output "Logs verified: $($directory.FullName)"
@@ -126,7 +200,16 @@ function Verify-TelemetrySession([System.IO.DirectoryInfo]$directory) {
     Write-Output "DI initial/temporal/shade rows: $($diInitial.Count)/$($diTemporal.Count)/$($diShade.Count)"
     Write-Output "GI initial/final rows: $($probe.Count)/$($final.Count)"
     Write-Output "GI temporal/spatial rows: $($temporal.Count)/$($spatial.Count)"
+    Write-Output "Frame output rows: $($frameOutput.Count)"
+    Write-Output "Observed ReSTIR modes: $((@($observedModes.Keys) | Sort-Object) -join ',')"
+    foreach ($modeKey in @($frameOutputByMode.Keys) | Sort-Object) {
+        $modeAverage = ($frameOutputByMode[$modeKey] | Measure-Object -Average).Average
+        Write-Output ("Frame probe luminance mode={0} avg={1:R}" -f $modeKey, $modeAverage)
+        $gridModeAverage = ($frameGridOutputByMode[$modeKey] | Measure-Object -Average).Average
+        Write-Output ("Frame 4x4 grid luminance mode={0} avg={1:R}" -f $modeKey, $gridModeAverage)
+    }
     Write-Output ("Callback milliseconds avg/max: {0:N3}/{1:N3}" -f $averageCallback, $maximumCallback)
+    Write-Output ("Frame milliseconds avg/max: {0:N3}/{1:N3}" -f $averageFrame, $maximumFrame)
 }
 
 function Get-VectorComponent($row, [string]$name, [int]$index) {
@@ -326,7 +409,6 @@ if ($primaryHitRows.Count -eq 0) {
     Fail "No primary-hit probe rows found in $($latestDir.FullName)"
 }
 
-$RestirGIMinProposalPdf = 1e-3
 $freshInitialRows = @($primaryHitRows | Where-Object {
     $_.initialValid -eq $true -and
     [double]$_.initialProposalPdf -gt 0 -and
@@ -338,7 +420,7 @@ if ($freshInitialRows.Count -eq 0) {
 }
 
 foreach ($row in $freshInitialRows) {
-    $expectedInitialWeight = 1.0 / [Math]::Max([double]$row.initialProposalPdf, $RestirGIMinProposalPdf)
+    $expectedInitialWeight = 1.0 / [double]$row.initialProposalPdf
     Assert-Near ([double]$row.initialWeightSum) $expectedInitialWeight "initialWeightSum=1/proposalPdf frame=$($row.frameIndex) probe=$($row.probeId)"
     Assert-Near ([double]$row.initialSelectedWeight) ([double]$row.initialWeightSum) "initialSelectedWeight mirrors weightSum frame=$($row.frameIndex) probe=$($row.probeId)"
     Assert-Near ([double]$row.initialProposalPdf) ([double]$row.secondaryProposalPdf) "initialProposalPdf propagates secondary proposalPdf frame=$($row.frameIndex) probe=$($row.probeId)"
@@ -371,7 +453,7 @@ if ($temporalCurrentOnlyRows.Count -eq 0) {
 
 foreach ($row in $temporalCurrentOnlyRows) {
     $targetLum = [double]$row.targetLum
-    $expectedWeight = 1.0 / [Math]::Max([double]$row.proposalPdf, $RestirGIMinProposalPdf)
+    $expectedWeight = 1.0 / [double]$row.proposalPdf
     $expectedPiSum = $targetLum * [Math]::Max([double]$row.sampleCountM, 1.0)
     $expectedDenominator = [double]$row.selectedTargetPdf * [double]$row.temporalPiSum
 
@@ -394,7 +476,7 @@ $temporalSelectedHistoryRows = @($validTemporal | Where-Object {
 foreach ($row in $temporalSelectedHistoryRows) {
     $expectedReuseProposalPdf = [Math]::Max(
         [double]$row.selectedPrevOriginalProposalPdf / [double]$row.selectedPrevJacobian,
-        $RestirGIMinProposalPdf)
+        1e-8)
     $currentM = [Math]::Max([double]$row.sampleCountM - [double]$row.combinedPrevSampleCountM, 0.0)
     $expectedPiSum = [double]$row.currentTargetPdf * $currentM + [double]$row.combinedPrevPi * [double]$row.combinedPrevSampleCountM
     $expectedDenominator = [double]$row.selectedTargetPdf * [double]$row.temporalPiSum
@@ -417,7 +499,7 @@ $temporalCurrentSelectedHistoryRows = @($validTemporal | Where-Object {
 foreach ($row in $temporalCurrentSelectedHistoryRows) {
     $expectedReuseProposalPdf = [Math]::Max(
         [double]$row.combinedPrevOriginalProposalPdf / [double]$row.combinedPrevJacobian,
-        $RestirGIMinProposalPdf)
+        1e-8)
     $currentM = [Math]::Max([double]$row.sampleCountM - [double]$row.combinedPrevSampleCountM, 0.0)
     $expectedPiSum = [double]$row.currentTargetPdf * $currentM + [double]$row.combinedPrevPi * [double]$row.combinedPrevSampleCountM
     $expectedDenominator = [double]$row.selectedTargetPdf * [double]$row.temporalPiSum
@@ -453,7 +535,7 @@ $spatialSelectedNeighborRows = @($spatialRows | Where-Object {
 foreach ($row in $spatialSelectedNeighborRows) {
     $expectedReuseProposalPdf = [Math]::Max(
         [double]$row.spatialSelectedNeighborOriginalProposalPdf / [double]$row.spatialSelectedNeighborJacobian,
-        $RestirGIMinProposalPdf)
+        1e-8)
     $expectedDenominator = [double]$row.spatialSelectedTargetPdf * [double]$row.spatialPiSum
 
     Assert-Near ([double]$row.spatialSelectedNeighborReuseProposalPdf) $expectedReuseProposalPdf "spatial selected-neighbor proposalPdf/jacobian frame=$($row.frameIndex) probe=$($row.selectedProbeId)"

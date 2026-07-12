@@ -13,6 +13,9 @@ void kernel_generate_initial(uint3 id : SV_DispatchThreadID)
     if (hd.distance >= 1e19)
     {
         RestirTelemetryCount(RESTIR_COUNTER_DI_INITIAL_INVALID_SURFACE, id.x);
+        WriteDirectReservoirTelemetry(
+            4u, RESTIR_STAGE_DI_INITIAL, RESTIR_REASON_INVALID_SURFACE, id.x,
+            (DirectLightReservoirData)0, 0.0, 0.0);
         return;
     }
 
@@ -38,48 +41,43 @@ void kernel_generate_initial(uint3 id : SV_DispatchThreadID)
     float weightSum = 0.0;
     bool hasSelected = false;
     uint cCount = max(_RestirCandidateCount, 1u);
+    DirectLightReservoirData emptyReservoir = (DirectLightReservoirData)0;
+    emptyReservoir.surfaceNormal = surfaceNormal;
+    emptyReservoir.sampleCount = cCount;
+    DirectLightReservoirs[_RestirInitialReservoirOffset + id.x] = emptyReservoir;
 
-    // Find total CDF for light selection
-    float totalCdf = 0.0;
-    for (uint li = 0u; li < _RestirLightCount; li++)
-    {
-        float c = _RestirLightData[li].cdf;
-        if (c > totalCdf) totalCdf = c;
-    }
-
-    if (totalCdf <= 0.0)
+    // Use the same candidate domain as the regular wavefront direct-light path.
+    // ReSTIR changes how candidates are retained, not which lights are eligible.
+    bool hasSun = _DirectionalLightColor.a > 0.0;
+    uint pointLightCount;
+    uint pointLightOffset;
+    bool useCulledList;
+    bool hasPointLights = GetPointLightCandidateRange(pointLightCount, pointLightOffset, useCulledList);
+    uint candidatePoolCount = (hasSun ? 1u : 0u) + (hasPointLights ? pointLightCount : 0u);
+    if (candidatePoolCount == 0u)
     {
         RestirTelemetryCount(RESTIR_COUNTER_DI_INITIAL_INVALID_PROPOSAL, id.x);
+        WriteDirectReservoirTelemetry(
+            4u, RESTIR_STAGE_DI_INITIAL, RESTIR_REASON_INVALID_PROPOSAL_PDF, id.x,
+            emptyReservoir, 0.0, float4(0.0, (float)cCount, 0.0, 0.0));
         return;
     }
+    float proposalPdf = rcp((float)candidatePoolCount);
 
     for (uint i = 0u; i < cCount; i++)
     {
-        // Weighted light selection via CDF binary search (linear scan for small N)
-        float rnd = RNG_Next(rng) * totalCdf;
-        uint lightIdx = 0u;
-        for (uint si = 0u; si < _RestirLightCount; si++)
-        {
-            if (_RestirLightData[si].cdf >= rnd && _RestirLightData[si].power > 0.0)
-            {
-                lightIdx = si;
-                break;
-            }
-            lightIdx = si;
-        }
-
-        LightDataPacked light = _RestirLightData[lightIdx];
-        if (light.power <= 0.0) continue;
-
-        float lightPickPdf = light.power / max(totalCdf, 1e-6);
-        float proposalPdf = lightPickPdf;
-
+        uint candidateIndex = min(uint(RNG_Next(rng) * candidatePoolCount), candidatePoolCount - 1u);
         DirectLightSample s = (DirectLightSample)0;
-        bool ok = false;
-        if (light.lightType == 1u)
-            ok = BuildSunDirectLightSample(hit, V, float3(1,1,1), proposalPdf, s);
-        else if (light.lightType == 2u)
-            ok = BuildPointLightDirectSample(hit, V, float3(1,1,1), light.originalIndex, proposalPdf, s);
+        bool ok = SampleDirectLightCandidate(
+            hit,
+            V,
+            float3(1, 1, 1),
+            hasSun,
+            pointLightOffset,
+            useCulledList,
+            candidateIndex,
+            proposalPdf,
+            s);
         if (!ok || !IsValidDirectLightSample(s)) continue;
 
         float w = s.targetLum / max(s.proposalPdf, 1e-6);
@@ -94,6 +92,9 @@ void kernel_generate_initial(uint3 id : SV_DispatchThreadID)
     if (!hasSelected)
     {
         RestirTelemetryCount(RESTIR_COUNTER_DI_INITIAL_INVALID_PROPOSAL, id.x);
+        WriteDirectReservoirTelemetry(
+            4u, RESTIR_STAGE_DI_INITIAL, RESTIR_REASON_ZERO_TARGET, id.x,
+            emptyReservoir, 0.0, float4((float)candidatePoolCount, (float)cCount, 0.0, 0.0));
         return;
     }
 
@@ -112,15 +113,8 @@ void kernel_generate_initial(uint3 id : SV_DispatchThreadID)
     r.selectedWeight = ComputeMISWeight(weightSum, selected.targetLum, cCount);
     DirectLightReservoirs[_RestirInitialReservoirOffset + id.x] = r;
     RestirTelemetryCount(RESTIR_COUNTER_DI_INITIAL_ACCEPTED, id.x);
-    RestirTelemetryWriteRecord(
-        4u,
-        RESTIR_STAGE_DI_INITIAL,
-        RESTIR_REASON_NONE,
-        id.x,
-        float4(r.origin, r.maxDist),
-        float4(r.direction, r.targetLum),
-        float4(r.contribution, r.weightSum),
-        float4(r.surfaceNormal, r.proposalPdf),
+    WriteDirectReservoirTelemetry(
+        4u, RESTIR_STAGE_DI_INITIAL, RESTIR_REASON_NONE, id.x, r,
         float4((float)r.lightType, (float)r.lightIndex, (float)r.sampleCount, r.selectedWeight),
-        float4(totalCdf, (float)cCount, 0.0, 0.0));
+        float4((float)candidatePoolCount, (float)cCount, 0.0, 0.0));
 }
