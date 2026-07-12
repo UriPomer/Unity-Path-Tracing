@@ -4,8 +4,9 @@ static const float RESTIR_GI_MAX_RESERVOIR_SAMPLES = 32.0;
 static const float RESTIR_GI_MAX_JACOBIAN = 3.0;
 static const float RESTIR_GI_MIN_JACOBIAN = 1.0 / 3.0;
 static const float RESTIR_GI_DISCARD_JACOBIAN = 10.0;
-// Reservoir validity ceiling. weightSum encodes W = 1/p_hat (after Finalize, M cancels in
-// the denominator), so legitimate values sit in roughly [0, 1e3] for our scenes. 1e6 leaves
+// Reservoir validity ceiling. weightSum encodes the RIS unbiased contribution weight
+// (UCW), i.e. the selected sample's final estimator multiplier. In our scenes it usually
+// sits in roughly [0, 1e3]. 1e6 leaves
 // generous headroom but cuts off the runaway tail: pre-fix, weightSum=1e+27..1e+29 firefly
 // reservoirs survived IsIndirectReservoirValid and propagated into next-frame / spatial-neighbor
 // reuse, producing bubble-noise white-out. Also gates positions/normals/radiance/contribution
@@ -24,11 +25,12 @@ bool IsFiniteIndirectFloat3(float3 v)
 }
 
 // In RTXDI semantics, weightSum AFTER FinalizeIndirectReservoir already encodes
-// the unbiased contribution weight W = 1/p_hat(Y). selectedWeight is kept as a
-// mirror so existing readback/diagnostic code paths keep working without any
-// CPU-side struct reshuffle. We deliberately do NOT divide by (targetLum*M)
-// here -- that division is what produced the runaway 1e+29 selectedWeight
-// in pre-fix logs.
+// the RIS unbiased contribution weight W. It is the selected sample's final
+// multiplier, not another targetLum/M-normalized value. selectedWeight is kept
+// as a mirror so existing readback/diagnostic code paths keep working without
+// any CPU-side struct reshuffle. We deliberately do NOT divide by (targetLum*M)
+// here -- that division is what produced the runaway 1e+29 selectedWeight in
+// pre-fix logs.
 float ComputeIndirectMISWeight(float weightSum, float targetLum, float sampleCount)
 {
     return max(weightSum, 0.0);
@@ -282,7 +284,7 @@ void InitializeIndirectReservoirSample(
 {
     // RTXDI_MakeGIReservoir parity (Reservoir.hlsl:188-202):
     //   weightSum = 1 / samplePdf
-    // i.e. weightSum encodes W (inverse PDF) directly, not targetLum/p.
+    // i.e. the no-resampling reservoir starts with the path inverse PDF, not targetLum/p.
     // This makes stage2 reservoirs already in the "after Finalize" form so
     // CombineIndirectReservoirs can use risWeight = targetPdf * candidate.weightSum
     // without an extra Finalize() pass.
@@ -298,10 +300,8 @@ void InitializeIndirectReservoirSample(
     reservoir.sampleCount = 1.0;
 }
 
-// risWeight = targetPdf * W ; W is the unbiased contribution weight stored in candidate.weightSum.
-// W = 1/proposalPdf at stage2 init (InitializeIndirectReservoirSample);
-// W = renormalized RIS sum after FinalizeIndirectReservoir.
-// Either way candidate.weightSum encodes W directly.
+// risWeight = targetPdf * W. candidate.weightSum is the selected sample multiplier:
+// 1/proposalPdf for a fresh stage2 reservoir, or the finalized UCW after reuse.
 // candidate.sampleCount is added to reservoir.M separately by CombineIndirectReservoirs and MUST NOT
 // be folded into the streamed RIS weight (otherwise M is double-counted).
 float GetIndirectReservoirRISWeight(IndirectReservoirData candidate, float targetPdf)
@@ -342,8 +342,9 @@ void FinalizeIndirectReservoir(
     float normalizationNumerator,
     float normalizationDenominator)
 {
-    // RTXDI form: weightSum becomes the unbiased contribution weight W = 1/p_hat.
-    // denom == 0 short-circuits to 0 (mirrors RTXDI_FinalizeGIResampling).
+    // RTXDI form: accumulated RIS stream weight becomes the selected sample's
+    // unbiased contribution weight W. denom == 0 short-circuits to 0
+    // (mirrors RTXDI_FinalizeGIResampling).
     reservoir.weightSum = normalizationDenominator <= 0.0
         ? 0.0
         : (reservoir.weightSum * normalizationNumerator) / normalizationDenominator;

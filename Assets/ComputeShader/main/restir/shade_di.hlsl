@@ -9,7 +9,11 @@ void kernel_shade_di_samples(uint3 id : SV_DispatchThreadID)
     if (id.x >= pixelCount) return;
 
     DirectLightReservoirData res = DirectLightReservoirs[_RestirShadingReservoirOffset + id.x];
-    if (!IsReservoirValid(res)) return;
+    if (!IsReservoirValid(res))
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_DI_SHADE_INVALID_RESERVOIR, id.x);
+        return;
+    }
 
     // Inline shadow ray (any-hit)
     Ray shadowRay;
@@ -17,10 +21,30 @@ void kernel_shade_di_samples(uint3 id : SV_DispatchThreadID)
     shadowRay.dir = res.direction;
     shadowRay.invDir = 1.0 / res.direction;
     float tMax = res.maxDist > 0.0 ? res.maxDist * 0.999 : 1e20;
-    if (IntersectTlasFast(shadowRay, tMax)) return;
+    if (IntersectTlasFast(shadowRay, tMax))
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_DI_SHADE_VISIBILITY_REJECTED, id.x);
+        return;
+    }
 
     // Visible: accumulate weighted contribution
     float3 di = res.contribution * res.selectedWeight;
-    if (!all(isfinite(di))) return;
+    if (!all(isfinite(di)))
+    {
+        RestirTelemetryCountCritical(RESTIR_COUNTER_CRITICAL_NONFINITE);
+        return;
+    }
+    RestirTelemetryCount(RESTIR_COUNTER_DI_SHADE_POSITIVE_CONTRIBUTION, id.x);
+    RestirTelemetryWriteRecord(
+        6u,
+        RESTIR_STAGE_DI_SHADE,
+        RESTIR_REASON_NONE,
+        id.x,
+        float4(res.origin, res.maxDist),
+        float4(res.direction, res.targetLum),
+        float4(res.contribution, res.weightSum),
+        float4(res.surfaceNormal, res.proposalPdf),
+        float4((float)res.lightType, (float)res.lightIndex, (float)res.sampleCount, res.selectedWeight),
+        float4(di, tMax));
     GlobalColors[id.x].L += max(di, float3(0, 0, 0));
 }

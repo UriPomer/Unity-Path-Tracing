@@ -8,12 +8,58 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 
 /// <summary>
-/// Batchmode 自测试入口。
-/// 使用方式：Unity.exe -batchmode -projectPath ... -executeMethod SelfTest.Run -sceneName CornellBox -frameCount 60
-/// 渲染 N 帧后读取 DiagnosticsWriter 的 JSON 日志，做简单断言，输出通过/失败摘要。
+/// ReSTIR GI 日志校验与历史自测试入口。
+/// 当前推荐流程是 Editor 里手动 Play，结束后由工具读取最新的 Tools/Output/<timestamp>/ 日志目录执行断言。
 /// </summary>
 public static class SelfTest
 {
+    [Serializable]
+    private sealed class TelemetrySessionRow
+    {
+        public string sessionId;
+        public string @event;
+        public int acceptedCaptures;
+        public int readbackErrors;
+        public bool useReSTIRDI;
+        public bool useReSTIRGI;
+        public bool denoise;
+    }
+
+    [Serializable]
+    private sealed class TelemetryStatsRow
+    {
+        public string sessionId;
+        public int frameIndex;
+        public int sampleCount;
+        public int generation;
+        public int renderWidth;
+        public int renderHeight;
+        public int modeFlags;
+        public int criticalNonFinite;
+        public int criticalOutOfRange;
+        public int criticalBufferContract;
+    }
+
+    [Serializable]
+    private sealed class TelemetryStageRow
+    {
+        public string sessionId;
+        public int frameIndex;
+        public int sampleCount;
+        public int generation;
+        public string stage;
+        public string severity;
+        public int pixelIndex;
+        public float[] payload;
+    }
+
+    [Serializable]
+    private sealed class TelemetryEventRow
+    {
+        public string sessionId;
+        public string severity;
+    }
+
     private const string SessionKeyActive = "SelfTest.Active";
     private const string SessionKeySceneName = "SelfTest.SceneName";
     private const string SessionKeyTargetFrames = "SelfTest.TargetFrames";
@@ -151,7 +197,17 @@ public static class SelfTest
     private static void FinalizeTest()
     {
         if (s_exitCode == 0 && s_enableReSTIRGI)
-            ValidateReSTIRGIProbe();
+        {
+            if (TryUseLatestReSTIRGILogPaths(out string latestDir))
+            {
+                Debug.Log($"[SelfTest] Validating GI logs in {latestDir}");
+                ValidateLatestReSTIRLogs();
+            }
+            else
+            {
+                Fail("No Tools/Output/<timestamp>/ subdirectory found after batchmode run");
+            }
+        }
 
         Debug.Log($"[SelfTest] 完成: scene={s_sceneName} frames={s_targetFrames}");
         SessionState.EraseBool(SessionKeyActive);
@@ -179,6 +235,7 @@ public static class SelfTest
         DeleteIfExists(s_giTemporalStatsPath);
         DeleteIfExists(s_giFinalStatsPath);
         DeleteIfExists(s_giSpatialStatsPath);
+        SetPrivateField(tracing, "UseReSTIRDI", true);
         SetPrivateField(tracing, "UseReSTIRGI", true);
         SetPrivateField(tracing, "WriteReSTIRGIDiagnostics", true);
         SetPrivateField(tracing, "WriteReSTIRGIDiagnosticDetails", false);
@@ -739,6 +796,129 @@ public static class SelfTest
         s_logPath = SessionState.GetString(SessionKeyLogPath, s_logPath ?? string.Empty);
     }
 
+    private static void ValidateLatestReSTIRLogs()
+    {
+        string outputDirectory = Path.GetDirectoryName(s_giProbePath);
+        string sessionPath = outputDirectory == null
+            ? null
+            : Path.Combine(outputDirectory, "restir_session.jsonl");
+        if (!string.IsNullOrEmpty(sessionPath) && File.Exists(sessionPath))
+        {
+            ValidateTelemetrySession(outputDirectory, sessionPath);
+            return;
+        }
+
+        ValidateReSTIRGIProbe();
+    }
+
+    private static void ValidateTelemetrySession(string outputDirectory, string sessionPath)
+    {
+        TelemetrySessionRow[] sessionRows = ReadJsonLines<TelemetrySessionRow>(sessionPath);
+        TelemetrySessionRow start = sessionRows.FirstOrDefault(row => row.@event == "session_start");
+        TelemetrySessionRow end = sessionRows.LastOrDefault(row => row.@event == "session_end");
+        if (start == null || end == null || string.IsNullOrEmpty(start.sessionId) || start.sessionId != end.sessionId)
+        {
+            Fail("Telemetry session is missing correlated session_start/session_end rows");
+            return;
+        }
+
+        if (!start.useReSTIRDI || !start.useReSTIRGI || start.denoise)
+        {
+            Fail("Runtime proof requires useReSTIRDI=true, useReSTIRGI=true, denoise=false");
+            return;
+        }
+
+        if (end.acceptedCaptures <= 0 || end.readbackErrors != 0)
+        {
+            Fail($"Telemetry session ended with acceptedCaptures={end.acceptedCaptures}, readbackErrors={end.readbackErrors}");
+            return;
+        }
+
+        TelemetryStatsRow[] stats = ReadJsonLines<TelemetryStatsRow>(
+            Path.Combine(outputDirectory, "restir_telemetry_stats.jsonl"));
+        if (stats.Length == 0 || stats.Any(row =>
+                row.sessionId != start.sessionId || row.frameIndex < 0 || row.sampleCount < 0 ||
+                row.generation <= 0 || row.renderWidth <= 0 || row.renderHeight <= 0 ||
+                (row.modeFlags & 3) != 3 || (row.modeFlags & 16) != 0))
+        {
+            Fail("Telemetry stats are missing or contain invalid correlation fields");
+            return;
+        }
+
+        TelemetryStatsRow critical = stats.FirstOrDefault(row =>
+            row.criticalNonFinite != 0 || row.criticalOutOfRange != 0 || row.criticalBufferContract != 0);
+        if (critical != null)
+        {
+            Fail($"Telemetry critical counter failed at frame {critical.frameIndex}");
+            return;
+        }
+
+        TelemetryEventRow[] events = ReadJsonLines<TelemetryEventRow>(
+            Path.Combine(outputDirectory, "restir_events.jsonl"));
+        if (events.Any(row => row.sessionId != start.sessionId || row.severity == "error"))
+        {
+            Fail("Telemetry events contain an error or mismatched session ID");
+            return;
+        }
+
+        if (!stats.Any(row => (row.modeFlags & 2) != 0))
+            return;
+
+        ValidateTelemetryDIFile(outputDirectory, start.sessionId);
+        ValidateTelemetryStageFile(outputDirectory, "restir_gi_probe.jsonl", start.sessionId, "gi_initial");
+        ValidateTelemetryStageFile(outputDirectory, "restir_gi_final_stats.jsonl", start.sessionId, "gi_final");
+    }
+
+    private static void ValidateTelemetryDIFile(string outputDirectory, string sessionId)
+    {
+        string path = Path.Combine(outputDirectory, "restir_di_stats.jsonl");
+        TelemetryStageRow[] rows = ReadJsonLines<TelemetryStageRow>(path);
+        bool hasInitial = rows.Any(row => row.stage == "di_initial");
+        bool hasTemporal = rows.Any(row => row.stage == "di_temporal");
+        bool hasShade = rows.Any(row => row.stage == "di_shade");
+        bool invalid = rows.Any(row =>
+            row.sessionId != sessionId ||
+            (row.stage != "di_initial" && row.stage != "di_temporal" && row.stage != "di_shade") ||
+            row.frameIndex < 0 || row.sampleCount < 0 || row.generation <= 0 || row.pixelIndex < 0 ||
+            row.payload == null || row.payload.Length != ReSTIRTelemetryLayout.RecordPayloadWordCount ||
+            row.payload.Any(value => float.IsNaN(value) || float.IsInfinity(value)) ||
+            row.severity == "error");
+        if (!hasInitial || !hasTemporal || !hasShade || invalid)
+            Fail("DI telemetry stage file is missing initial/temporal/shade rows or contains invalid data");
+    }
+
+    private static void ValidateTelemetryStageFile(
+        string outputDirectory,
+        string fileName,
+        string sessionId,
+        string expectedStage)
+    {
+        if (s_exitCode != 0)
+            return;
+
+        TelemetryStageRow[] rows = ReadJsonLines<TelemetryStageRow>(Path.Combine(outputDirectory, fileName));
+        bool invalid = rows.Length == 0 || rows.Any(row =>
+            row.sessionId != sessionId || row.stage != expectedStage || row.frameIndex < 0 ||
+            row.sampleCount < 0 || row.generation <= 0 || row.pixelIndex < 0 ||
+            row.payload == null || row.payload.Length != ReSTIRTelemetryLayout.RecordPayloadWordCount ||
+            row.payload.Any(value => float.IsNaN(value) || float.IsInfinity(value)) ||
+            row.severity == "error");
+        if (invalid)
+            Fail($"Telemetry stage file is missing or invalid: {fileName}");
+    }
+
+    private static T[] ReadJsonLines<T>(string path) where T : class
+    {
+        if (!File.Exists(path))
+            return Array.Empty<T>();
+
+        return File.ReadLines(path)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(JsonUtility.FromJson<T>)
+            .Where(row => row != null)
+            .ToArray();
+    }
+
     private static void Fail(string reason)
     {
         s_exitCode = 1;
@@ -752,53 +932,64 @@ public static class SelfTest
         Debug.LogError($"[SelfTest] FAIL: {reason}");
     }
 
-    // Editor-only entrypoint that runs the same upper-bound assertions Run()
-    // performs, but against the most-recent Tools/Output/<timestamp>/ subdirectory
-    // produced by Tracing.GetDiagnosticOutputPath during a regular Play session.
-    // This means the Editor user gets the same regression coverage as batchmode
-    // without ever invoking -batchmode -executeMethod.
-    [MenuItem("Tools/Verify GI Logs")]
-    public static void VerifyGILogsFromEditor()
+    public static bool VerifyLatestGILogs(out string report)
     {
         s_failMode = FailMode.LogOnFail;
         s_exitCode = 0;
         s_lastFailReason = null;
 
-        string latestDir = FindLatestDiagnosticOutputDir();
-        if (latestDir == null)
+        if (!TryUseLatestReSTIRGILogPaths(out string latestDir))
         {
-            string msg = "No Tools/Output/<timestamp>/ subdirectory found. Play the scene with WriteReSTIRGIDiagnostics enabled, then re-run this menu.";
+            string msg = "No Tools/Output/<timestamp>/ subdirectory found. Play the scene with WriteReSTIRGIDiagnostics enabled, then verify the latest logs.";
+            report = $"FAIL: {msg}";
             Debug.LogError($"[SelfTest] {msg}");
-            EditorUtility.DisplayDialog("Verify GI Logs", $"FAIL: {msg}", "OK");
             s_failMode = FailMode.ExitOnFail;
-            return;
+            return false;
         }
+
+        s_sceneName = "(editor-play)";
+        s_enableReSTIRGI = true;
+
+        Debug.Log($"[SelfTest] Verifying GI logs in {latestDir}");
+        ValidateLatestReSTIRLogs();
+
+        report = s_exitCode == 0 ? $"PASS\n\nLogs verified: {latestDir}" : $"FAIL: {s_lastFailReason}\n\nLogs: {latestDir}";
+        if (s_exitCode == 0)
+            Debug.Log($"[SelfTest] PASS — {latestDir}");
+        else
+            Debug.LogError($"[SelfTest] {report}");
+
+        // Restore default so any subsequent batchmode Run() in the same editor
+        // session still exits on failure as designed.
+        s_failMode = FailMode.ExitOnFail;
+        return s_exitCode == 0;
+    }
+
+    public static bool VerifyLatestGILogsNonInteractive(out string report)
+    {
+        return VerifyLatestGILogs(out report);
+    }
+
+    private static bool TryUseLatestReSTIRGILogPaths(out string latestDir)
+    {
+        latestDir = FindLatestDiagnosticOutputDir();
+        if (latestDir == null)
+            return false;
 
         s_giProbePath = Path.Combine(latestDir, "restir_gi_probe.jsonl");
         s_giTemporalStatsPath = Path.Combine(latestDir, "restir_gi_temporal_stats.jsonl");
         s_giFinalStatsPath = Path.Combine(latestDir, "restir_gi_final_stats.jsonl");
         s_giSpatialStatsPath = Path.Combine(latestDir, "restir_gi_spatial_stats.jsonl");
-        s_sceneName = "(editor-play)";
-        s_enableReSTIRGI = true;
+        return true;
+    }
 
-        Debug.Log($"[SelfTest] Verifying GI logs in {latestDir}");
-        ValidateReSTIRGIProbe();
-
-        if (s_exitCode == 0)
-        {
-            string okMsg = $"PASS\n\nLogs verified: {latestDir}";
-            Debug.Log($"[SelfTest] PASS — {latestDir}");
-            EditorUtility.DisplayDialog("Verify GI Logs", okMsg, "OK");
-        }
-        else
-        {
-            string failMsg = $"FAIL: {s_lastFailReason}\n\nLogs: {latestDir}";
-            EditorUtility.DisplayDialog("Verify GI Logs", failMsg, "OK");
-        }
-
-        // Restore default so any subsequent batchmode Run() in the same editor
-        // session still exits on failure as designed.
-        s_failMode = FailMode.ExitOnFail;
+    // Editor-only convenience entrypoint that surfaces the same latest-log
+    // verification result in a modal dialog for manual use.
+    [MenuItem("Tools/Verify GI Logs")]
+    public static void VerifyGILogsFromEditor()
+    {
+        VerifyLatestGILogs(out string report);
+        EditorUtility.DisplayDialog("Verify GI Logs", report, "OK");
     }
 
     private static string FindLatestDiagnosticOutputDir()

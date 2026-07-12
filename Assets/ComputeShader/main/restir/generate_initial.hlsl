@@ -10,7 +10,11 @@ void kernel_generate_initial(uint3 id : SV_DispatchThreadID)
     DirectLightReservoirs[_RestirInitialReservoirOffset + id.x] = (DirectLightReservoirData)0;
 
     HitData hd = _RestirGbuffer[id.x];
-    if (hd.distance >= 1e19) return;
+    if (hd.distance >= 1e19)
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_DI_INITIAL_INVALID_SURFACE, id.x);
+        return;
+    }
 
     uint2 pixel = uint2(id.x % _ScreenWidth, id.x / _ScreenWidth);
     RNG_SeedPixel(rng, pixel, _FrameCount);
@@ -43,7 +47,11 @@ void kernel_generate_initial(uint3 id : SV_DispatchThreadID)
         if (c > totalCdf) totalCdf = c;
     }
 
-    if (totalCdf <= 0.0) return;
+    if (totalCdf <= 0.0)
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_DI_INITIAL_INVALID_PROPOSAL, id.x);
+        return;
+    }
 
     for (uint i = 0u; i < cCount; i++)
     {
@@ -83,7 +91,11 @@ void kernel_generate_initial(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    if (!hasSelected) return;
+    if (!hasSelected)
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_DI_INITIAL_INVALID_PROPOSAL, id.x);
+        return;
+    }
 
     DirectLightReservoirData r;
     r.origin = selected.origin;
@@ -99,4 +111,16 @@ void kernel_generate_initial(uint3 id : SV_DispatchThreadID)
     r.sampleCount = cCount;
     r.selectedWeight = ComputeMISWeight(weightSum, selected.targetLum, cCount);
     DirectLightReservoirs[_RestirInitialReservoirOffset + id.x] = r;
+    RestirTelemetryCount(RESTIR_COUNTER_DI_INITIAL_ACCEPTED, id.x);
+    RestirTelemetryWriteRecord(
+        4u,
+        RESTIR_STAGE_DI_INITIAL,
+        RESTIR_REASON_NONE,
+        id.x,
+        float4(r.origin, r.maxDist),
+        float4(r.direction, r.targetLum),
+        float4(r.contribution, r.weightSum),
+        float4(r.surfaceNormal, r.proposalPdf),
+        float4((float)r.lightType, (float)r.lightIndex, (float)r.sampleCount, r.selectedWeight),
+        float4(totalCdf, (float)cCount, 0.0, 0.0));
 }

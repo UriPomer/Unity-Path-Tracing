@@ -46,3 +46,16 @@ void kernel_prepare_lights(uint3 id : SV_DispatchThreadID)
     }
     _LightDataPacked[id.x] = p;
 }
+
+[numthreads(1, 1, 1)]
+void kernel_build_light_cdf(uint3 id : SV_DispatchThreadID)
+{
+    float runningCdf = 0.0;
+    for (uint lightIdx = 0u; lightIdx < _LightDataPackedCount; lightIdx++)
+    {
+        LightDataPacked light = _LightDataPacked[lightIdx];
+        runningCdf += max(light.power, 0.0);
+        light.cdf = runningCdf;
+        _LightDataPacked[lightIdx] = light;
+    }
+}

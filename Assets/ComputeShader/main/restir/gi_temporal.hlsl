@@ -20,20 +20,41 @@ void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
     uint pixelCount = _ScreenWidth * _ScreenHeight;
     if (id.x >= pixelCount) return;
 
+    if (id.x == _RestirDebugPixelIndex)
+    {
+        [unroll]
+        for (int debugSlot = 0; debugSlot < 5; debugSlot++)
+            ReSTIRDebugData[debugSlot] = 0.0;
+    }
+
     uint curIdx = _RestirInitialReservoirOffset + id.x;
     uint outIdx = _RestirTemporalReservoirOffset + id.x;
 
     IndirectReservoirData cur = IndirectReservoirs[curIdx];
     IndirectReservoirs[outIdx] = cur;
-    if (!IsIndirectReservoirValid(cur)) return;
+    if (!IsIndirectReservoirValid(cur))
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_INVALID_CURRENT, id.x);
+        return;
+    }
 
     HitData hdCur = _RestirGbuffer[id.x];
-    if (hdCur.distance >= 1e19) return;
+    if (hdCur.distance >= 1e19)
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_INVALID_CURRENT, id.x);
+        return;
+    }
 
     float4 prevClip = mul(_RestirPreviousViewProjection, float4(hdCur.position, 1.0));
-    if (prevClip.w <= 1e-6) return;
+    if (prevClip.w <= 1e-6)
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_REPROJECTION_OOB, id.x);
+        return;
+    }
     float2 prevUV = prevClip.xy / prevClip.w;
     bool reprojectedInBounds = !any(prevUV < -1.0) && !any(prevUV > 1.0);
+    if (!reprojectedInBounds)
+        RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_REPROJECTION_OOB, id.x);
 
     float2 prevScreen = prevUV * 0.5 + 0.5;
     int2 prevBasePx = reprojectedInBounds
@@ -50,7 +71,10 @@ void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
     float curTargetPdf = ComputeIndirectTargetPdf(cur);
     float selectedTargetPdf = 0.0;
     if (!CombineIndirectReservoirs(outR, cur, 0.5, curTargetPdf))
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_INVALID_CURRENT, id.x);
         return;
+    }
     selectedTargetPdf = curTargetPdf;
 
     bool selectedPrevious = false;
@@ -61,6 +85,12 @@ void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
     float selectedPrevJacobian = 0.0;
     int selectedTemporalOffsetIdx = -1;
     bool selectedFallbackSample = false;
+    bool combinedPrevious = false;
+    HitData combinedPrevSurface = (HitData)0;
+    IndirectReservoirData combinedPrevCandidate = (IndirectReservoirData)0;
+    float combinedPrevTargetPdf = 0.0;
+    float combinedPrevOriginalProposalPdf = 0.0;
+    float combinedPrevJacobian = 0.0;
 
     int temporalSampleStartIdx = min((int)(RNG_Next(rng) * 5.0), 4);
     [unroll]
@@ -79,15 +109,22 @@ void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
         uint prevPxIdx = (uint)(candidatePx.y * (int)_ScreenWidth + candidatePx.x);
         IndirectReservoirData prev = IndirectReservoirs[_RestirPrevReservoirOffset + prevPxIdx];
         if (!IsIndirectReservoirValid(prev))
+        {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_INVALID_HISTORY, id.x);
             continue;
+        }
 
         HitData hdPrev = _RestirGbufferPrevious[prevPxIdx];
         if (hdPrev.distance >= 1e19)
+        {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_INVALID_HISTORY, id.x);
             continue;
+        }
 
         if (!isFallbackSample &&
             !IsTemporalCompatible(hdCur.position, hdCur.normal, hdCur.mode, hdPrev.position, hdPrev.normal, hdPrev.mode))
         {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_INCOMPATIBLE, id.x);
             continue;
         }
 
@@ -95,11 +132,17 @@ void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
         float3 prevContributionCur;
         float prevTargetLumCur;
         if (!ReevaluateIndirectReservoirAtSurface(hdCur, prev, prevRadianceCur, prevContributionCur, prevTargetLumCur))
+        {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_REEVALUATION_REJECTED, id.x);
             continue;
+        }
 
         float jacobian = CalculateIndirectJacobian(hdCur.position, hdPrev.position, prev.secondaryPosition, prev.secondaryNormal);
         if (!ValidateIndirectJacobian(jacobian))
+        {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_JACOBIAN_REJECTED, id.x);
             continue;
+        }
 
         IndirectReservoirData prevCandidate = prev;
         prevCandidate.radiance = prevRadianceCur;
@@ -116,13 +159,26 @@ void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
         float prevSampleCountClamped = min(max(prevCandidate.sampleCount, 1.0), RESTIR_GI_MAX_RESERVOIR_SAMPLES - 1.0);
         if (prevCandidate.sampleCount > prevSampleCountClamped)
         {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_M_CAPPED, id.x);
             prevCandidate.weightSum *= prevSampleCountClamped / prevCandidate.sampleCount;
         }
         prevCandidate.sampleCount = prevSampleCountClamped;
 
+        float prevRISWeight = GetIndirectReservoirRISWeight(prevCandidate, prevTargetLumCur);
+        if (prevRISWeight <= 0.0)
+            continue;
+
         bool candidateSelected = CombineIndirectReservoirs(outR, prevCandidate, RNG_Next(rng), prevTargetLumCur);
+        RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_HISTORY_COMBINED, id.x);
+        combinedPrevious = true;
+        combinedPrevSurface = hdPrev;
+        combinedPrevCandidate = prevCandidate;
+        combinedPrevTargetPdf = prevTargetLumCur;
+        combinedPrevOriginalProposalPdf = prev.proposalPdf;
+        combinedPrevJacobian = jacobian;
         if (candidateSelected)
         {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_HISTORY_SELECTED, id.x);
             selectedPrevious = true;
             selectedTargetPdf = prevTargetLumCur;
             selectedPrevSurface = hdPrev;
@@ -132,8 +188,9 @@ void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
             selectedPrevJacobian = jacobian;
             selectedTemporalOffsetIdx = temporalOffsetIdx;
             selectedFallbackSample = isFallbackSample;
-            break;
         }
+
+        break;
     }
 
     // Same proportional-scale M cap, applied to the streamed reservoir before Finalize.
@@ -144,28 +201,53 @@ void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
     float outSampleCountClamped = min(outR.sampleCount, RESTIR_GI_MAX_RESERVOIR_SAMPLES);
     if (outR.sampleCount > outSampleCountClamped)
     {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_M_CAPPED, id.x);
         outR.weightSum *= outSampleCountClamped / outR.sampleCount;
     }
     outR.sampleCount = outSampleCountClamped;
     float pi = selectedTargetPdf;
     float piSum = curTargetPdf * max(cur.sampleCount, 1.0);
     float temporalP = 0.0;
-    if (selectedTargetPdf > 0.0 && selectedPrevious)
+    if (selectedTargetPdf > 0.0 && combinedPrevious)
     {
         IndirectReservoirData selectedSample = outR;
         float3 selectedRadiancePrev;
         float3 selectedContributionPrev;
         float selectedTargetLumPrev;
-        temporalP = ReevaluateIndirectReservoirAtSurface(selectedPrevSurface, selectedSample, selectedRadiancePrev, selectedContributionPrev, selectedTargetLumPrev)
+        temporalP = ReevaluateIndirectReservoirAtSurface(combinedPrevSurface, selectedSample, selectedRadiancePrev, selectedContributionPrev, selectedTargetLumPrev)
             ? selectedTargetLumPrev
             : 0.0;
     }
     pi = selectedPrevious ? temporalP : selectedTargetPdf;
-    piSum += temporalP * max(selectedPrevCandidate.sampleCount, 0.0);
+    piSum += temporalP * max(combinedPrevCandidate.sampleCount, 0.0);
 
     float normalizationNumerator = pi;
     float normalizationDenominator = selectedTargetPdf * piSum;
     FinalizeIndirectReservoir(outR, normalizationNumerator, normalizationDenominator);
+    bool outputFinite = all(isfinite(outR.secondaryPosition)) &&
+        all(isfinite(outR.secondaryNormal)) && all(isfinite(outR.radiance)) &&
+        all(isfinite(outR.contribution)) && all(isfinite(outR.primaryNormal)) &&
+        isfinite(outR.proposalPdf) && isfinite(outR.targetLum) &&
+        isfinite(outR.weightSum) && isfinite(outR.selectedWeight) && isfinite(outR.sampleCount);
+    if (!outputFinite)
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_TEMPORAL_NONFINITE_OUTPUT, id.x);
+        RestirTelemetryCountCritical(RESTIR_COUNTER_CRITICAL_NONFINITE);
+    }
+    if (id.x == RestirTelemetrySelectedPixel())
+    {
+        RestirTelemetryWriteRecord(
+            1u,
+            RESTIR_STAGE_GI_TEMPORAL,
+            outputFinite ? RESTIR_REASON_NONE : RESTIR_REASON_NONFINITE_RESERVOIR,
+            id.x,
+            float4(outR.secondaryPosition, outR.proposalPdf),
+            float4(outR.secondaryNormal, outR.targetLum),
+            float4(outR.radiance, outR.weightSum),
+            float4(outR.contribution, outR.selectedWeight),
+            float4(outR.primaryNormal, outR.sampleCount),
+            float4(selectedPrevious ? 1.0 : 0.0, selectedTargetPdf, piSum, normalizationDenominator));
+    }
     if (id.x == _RestirDebugPixelIndex)
     {
         ReSTIRDebugData[0] = float4(
@@ -183,6 +265,16 @@ void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
             pi,
             piSum,
             normalizationDenominator);
+        ReSTIRDebugData[3] = float4(
+            combinedPrevious ? 1.0 : 0.0,
+            combinedPrevTargetPdf,
+            combinedPrevOriginalProposalPdf,
+            combinedPrevCandidate.proposalPdf);
+        ReSTIRDebugData[4] = float4(
+            combinedPrevJacobian,
+            temporalP,
+            combinedPrevCandidate.sampleCount,
+            0.0);
     }
     IndirectReservoirs[outIdx] = outR;
 }

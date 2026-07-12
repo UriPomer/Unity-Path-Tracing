@@ -3,11 +3,11 @@
 bool EvaluateVisibleGISample(
     HitData hd,
     IndirectReservoirData res,
-    out float3 weightedReflectedRadiance)
+    out float3 weightedReflectedRadiance,
+    out float3 reflectedRadiance)
 {
     weightedReflectedRadiance = 0.0;
-
-    float3 reflectedRadiance;
+    reflectedRadiance = 0.0;
     if (!EvaluateIndirectSampleAtSurface(hd, res, reflectedRadiance))
         return false;
 
@@ -33,7 +33,7 @@ bool EvaluateVisibleGISample(
         return false;
 
     // RTXDI parity: FinalShading.hlsl:66 -> radiance * reservoir.weightSum.
-    // After Finalize, weightSum encodes the unbiased contribution weight W = 1/p_hat.
+    // After Finalize, weightSum encodes the RIS unbiased contribution weight W/UCW.
     weightedReflectedRadiance = reflectedRadiance * res.weightSum;
     return all(isfinite(weightedReflectedRadiance));
 }
@@ -45,37 +45,123 @@ void kernel_shade_gi_samples(uint3 id : SV_DispatchThreadID)
     if (id.x >= pixelCount) return;
 
     HitData hd = _RestirGbuffer[id.x];
-    if (hd.distance >= 1e19) return;
+    if (hd.distance >= 1e19)
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_FINAL_INVALID_PRIMARY, id.x);
+        return;
+    }
 
     IndirectReservoirData finalRes = IndirectReservoirsRead[_RestirShadingReservoirOffset + id.x];
     IndirectReservoirData initialRes = IndirectReservoirsRead[_RestirInitialReservoirOffset + id.x];
+    bool finalReservoirValid = IsIndirectReservoirValid(finalRes);
+    bool initialReservoirValid = IsIndirectReservoirValid(initialRes);
+    if (!finalReservoirValid && !initialReservoirValid)
+        RestirTelemetryCount(RESTIR_COUNTER_GI_FINAL_INVALID_RESERVOIR, id.x);
+
+    bool reservoirWeightFinite = isfinite(finalRes.weightSum) && isfinite(initialRes.weightSum);
+    if (!reservoirWeightFinite)
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_FINAL_NONFINITE_WEIGHT, id.x);
+        RestirTelemetryCountCritical(RESTIR_COUNTER_CRITICAL_NONFINITE);
+    }
+    if (abs(finalRes.weightSum) > 1e6 || abs(initialRes.weightSum) > 1e6)
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_FINAL_EXCESSIVE_WEIGHT, id.x);
+        RestirTelemetryCountCritical(RESTIR_COUNTER_CRITICAL_OUT_OF_RANGE);
+    }
 
     float3 finalWeightedReflectedRadiance;
-    bool hasFinal = EvaluateVisibleGISample(hd, finalRes, finalWeightedReflectedRadiance);
+    float3 finalReflectedRadiance;
+    bool hasFinal = EvaluateVisibleGISample(hd, finalRes, finalWeightedReflectedRadiance, finalReflectedRadiance);
 
     float3 initialWeightedReflectedRadiance;
-    bool hasInitial = EvaluateVisibleGISample(hd, initialRes, initialWeightedReflectedRadiance);
+    float3 initialReflectedRadiance;
+    bool hasInitial = EvaluateVisibleGISample(hd, initialRes, initialWeightedReflectedRadiance, initialReflectedRadiance);
 
     if (!hasFinal && !hasInitial)
+    {
+        if (finalReservoirValid || initialReservoirValid)
+            RestirTelemetryCount(RESTIR_COUNTER_GI_FINAL_VISIBILITY_REJECTED, id.x);
+        if (id.x == RestirTelemetrySelectedPixel())
+        {
+            RestirTelemetryWriteRecord(
+                3u,
+                RESTIR_STAGE_GI_FINAL,
+                finalReservoirValid || initialReservoirValid
+                    ? RESTIR_REASON_VISIBILITY_REJECTED
+                    : RESTIR_REASON_INVALID_SURFACE,
+                id.x,
+                float4(finalRes.secondaryPosition, finalRes.proposalPdf),
+                float4(finalRes.secondaryNormal, finalRes.targetLum),
+                float4(finalRes.radiance, finalRes.weightSum),
+                float4(finalRes.contribution, finalRes.selectedWeight),
+                float4(finalRes.primaryNormal, finalRes.sampleCount),
+                float4(0.0, 0.0, 0.0, 0.0));
+        }
         return;
+    }
 
     float finalWeight = hasFinal ? 1.0 : 0.0;
     float initialWeight = hasFinal ? 0.0 : (hasInitial ? 1.0 : 0.0);
     float3 gi = hasFinal
         ? max(finalWeightedReflectedRadiance, 0.0)
         : max(initialWeightedReflectedRadiance, 0.0);
+    float giLum = max(gi.x, max(gi.y, gi.z));
+    if (giLum <= 0.0)
+        RestirTelemetryCount(RESTIR_COUNTER_GI_FINAL_ZERO_RADIANCE, id.x);
+
+    float3 rawWeightedRadiance = hasFinal
+        ? finalReflectedRadiance * finalRes.weightSum
+        : initialReflectedRadiance * initialRes.weightSum;
+    float rawLum = max(rawWeightedRadiance.x, max(rawWeightedRadiance.y, rawWeightedRadiance.z));
+    if (rawLum > 1e4)
+        RestirTelemetryCount(RESTIR_COUNTER_GI_FINAL_EXCESSIVE_CONTRIBUTION, id.x);
 
     if (id.x == _RestirDebugPixelIndex)
     {
         ReSTIRDebugData[0] = float4(hasFinal ? 1.0 : 0.0, hasInitial ? 1.0 : 0.0, finalWeight, initialWeight);
         ReSTIRDebugData[1] = float4(gi, 0.0);
         ReSTIRDebugData[2] = float4(
-            hasFinal ? finalRes.targetLum : 0.0,
-            hasInitial ? initialRes.targetLum : 0.0,
-            hasFinal ? finalRes.selectedWeight : 0.0,
-            hasInitial ? initialRes.selectedWeight : 0.0);
+            hasFinal ? finalReflectedRadiance.x : 0.0,
+            hasFinal ? finalReflectedRadiance.y : 0.0,
+            hasFinal ? finalReflectedRadiance.z : 0.0,
+            hasInitial ? initialReflectedRadiance.x : 0.0);
+        ReSTIRDebugData[3] = float4(
+            hasInitial ? initialReflectedRadiance.y : 0.0,
+            hasInitial ? initialReflectedRadiance.z : 0.0,
+            hasFinal ? finalWeightedReflectedRadiance.x : 0.0,
+            hasFinal ? finalWeightedReflectedRadiance.y : 0.0);
+        ReSTIRDebugData[4] = float4(
+            hasFinal ? finalWeightedReflectedRadiance.z : 0.0,
+            hasInitial ? initialWeightedReflectedRadiance.x : 0.0,
+            hasInitial ? initialWeightedReflectedRadiance.y : 0.0,
+            hasInitial ? initialWeightedReflectedRadiance.z : 0.0);
     }
 
-    if (!all(isfinite(gi))) return;
+    if (!all(isfinite(gi)))
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_FINAL_NONFINITE_CONTRIBUTION, id.x);
+        RestirTelemetryCountCritical(RESTIR_COUNTER_CRITICAL_NONFINITE);
+        return;
+    }
+    if (giLum > 0.0)
+        RestirTelemetryCount(RESTIR_COUNTER_GI_FINAL_POSITIVE_CONTRIBUTION, id.x);
+    if (id.x == RestirTelemetrySelectedPixel())
+    {
+        IndirectReservoirData selectedRes = initialRes;
+        if (hasFinal)
+            selectedRes = finalRes;
+        RestirTelemetryWriteRecord(
+            3u,
+            RESTIR_STAGE_GI_FINAL,
+            RESTIR_REASON_NONE,
+            id.x,
+            float4(selectedRes.secondaryPosition, selectedRes.proposalPdf),
+            float4(selectedRes.secondaryNormal, selectedRes.targetLum),
+            float4(selectedRes.radiance, selectedRes.weightSum),
+            float4(selectedRes.contribution, selectedRes.selectedWeight),
+            float4(selectedRes.primaryNormal, selectedRes.sampleCount),
+            float4(gi, rawLum));
+    }
     GlobalColors[id.x].L += max(gi, 0.0);
 }

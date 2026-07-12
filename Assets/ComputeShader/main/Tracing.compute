@@ -6,6 +6,7 @@
 #pragma kernel kernel_copy_primary_surface_history
 #pragma kernel TransferKernel
 #pragma kernel kernel_prepare_lights
+#pragma kernel kernel_build_light_cdf
 #pragma kernel kernel_generate_initial
 #pragma kernel kernel_temporal_resampling
 #pragma kernel kernel_shade_di_samples
@@ -14,6 +15,8 @@
 #pragma kernel kernel_temporal_gi_resampling
 #pragma kernel kernel_spatial_gi_resampling
 #pragma kernel kernel_shade_gi_samples
+#pragma kernel kernel_clear_restir_telemetry
+#pragma multi_compile _ RESTIR_TELEMETRY_ENABLED
 
 #include "function.hlsl"
 #include "bxdf.hlsl"
@@ -21,6 +24,7 @@
 #include "test.hlsl"
 #include "trace.hlsl"
 #include "restir/restir_common.hlsl"
+#include "restir/telemetry.hlsl"
 #include "restir/reservoir.hlsl"
 #include "restir/prepare_lights.hlsl"
 #include "restir/generate_initial.hlsl"
@@ -33,6 +37,33 @@
 #include "restir/gi_shade.hlsl"
 
 RWStructuredBuffer<HitData> PrimarySurfaceHistoryPrevRW;
+
+[numthreads(64, 1, 1)]
+void kernel_clear_restir_telemetry(uint3 id : SV_DispatchThreadID)
+{
+#if defined(RESTIR_TELEMETRY_ENABLED)
+    if (id.x < RESTIR_TELEMETRY_PACKET_WORDS)
+        ReSTIRTelemetry.Store(RestirTelemetryByteOffset(id.x), 0u);
+
+    GroupMemoryBarrierWithGroupSync();
+    if (id.x != 0u)
+        return;
+
+    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_MAGIC), RESTIR_TELEMETRY_MAGIC);
+    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_SCHEMA), RESTIR_TELEMETRY_SCHEMA);
+    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_FRAME), _FrameCount);
+    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_SAMPLE), _RestirTelemetrySampleCount);
+    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_GENERATION), _RestirTelemetryGeneration);
+    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_WIDTH), _ScreenWidth);
+    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_HEIGHT), _ScreenHeight);
+    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_MODE_FLAGS), _RestirTelemetryModeFlags);
+    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_DIRECT_INITIAL_SLOT), _RestirTelemetryDirectInitialSlot);
+    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_DIRECT_FINAL_SLOT), _RestirTelemetryDirectFinalSlot);
+    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_INDIRECT_INITIAL_SLOT), _RestirTelemetryIndirectInitialSlot);
+    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_INDIRECT_FINAL_SLOT), _RestirTelemetryIndirectFinalSlot);
+    ReSTIRTelemetry.Store(RestirTelemetryByteOffset(RESTIR_HEADER_SELECTED_PIXEL), 0xffffffffu);
+#endif
+}
 
 // ==================== Kernel 0: Generate Primary Rays ====================
 

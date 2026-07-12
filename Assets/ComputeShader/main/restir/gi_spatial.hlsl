@@ -23,15 +23,30 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
     uint pixelCount = _ScreenWidth * _ScreenHeight;
     if (id.x >= pixelCount) return;
 
+    if (id.x == _RestirDebugPixelIndex)
+    {
+        [unroll]
+        for (int debugSlot = 0; debugSlot < 5; debugSlot++)
+            ReSTIRDebugData[debugSlot] = 0.0;
+    }
+
     uint curIdx = _RestirShadingReservoirOffset + id.x;
     uint outIdx = _RestirSpatialReservoirOffset + id.x;
 
     IndirectReservoirData cur = IndirectReservoirs[curIdx];
     IndirectReservoirs[outIdx] = cur;
-    if (!IsIndirectReservoirValid(cur)) return;
+    if (!IsIndirectReservoirValid(cur))
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INVALID_CURRENT, id.x);
+        return;
+    }
 
     HitData hdCur = _RestirGbuffer[id.x];
-    if (hdCur.distance >= 1e19) return;
+    if (hdCur.distance >= 1e19)
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INVALID_CURRENT, id.x);
+        return;
+    }
 
     uint2 pixel = uint2(id.x % _ScreenWidth, id.x / _ScreenWidth);
     RNG_SeedPixel(rng, pixel, _FrameCount + 7919u);
@@ -40,7 +55,10 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
     float curTargetPdf = ComputeIndirectTargetPdf(cur);
     float selectedTargetPdf = 0.0;
     if (!CombineIndirectReservoirs(outR, cur, 0.5, curTargetPdf))
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INVALID_CURRENT, id.x);
         return;
+    }
     selectedTargetPdf = curTargetPdf;
 
     uint cachedResult = 0u;
@@ -75,22 +93,32 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
         uint neighborIdx = (uint)(neighborPixel.y * (int)_ScreenWidth + neighborPixel.x);
         HitData hdNeighbor = _RestirGbuffer[neighborIdx];
         if (hdNeighbor.distance >= 1e19)
+        {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INVALID_NEIGHBOR, id.x);
             continue;
+        }
 
         if (!IsTemporalCompatible(hdCur.position, hdCur.normal, hdCur.mode,
                                   hdNeighbor.position, hdNeighbor.normal, hdNeighbor.mode))
         {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INCOMPATIBLE_NEIGHBOR, id.x);
             continue;
         }
         compatibleCount++;
 
         if (dot(hdCur.normal, hdNeighbor.normal) < 0.95)
+        {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INCOMPATIBLE_NEIGHBOR, id.x);
             continue;
+        }
 
         uint neighborReservoirIdx = _RestirShadingReservoirOffset + neighborIdx;
         IndirectReservoirData neighbor = IndirectReservoirs[neighborReservoirIdx];
         if (!IsIndirectReservoirValid(neighbor))
+        {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INVALID_NEIGHBOR, id.x);
             continue;
+        }
 
         float3 neighborRadianceCur;
         float3 neighborContributionCur;
@@ -110,13 +138,17 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
             else if (reevaluateFailureCode == 4u) reevaluateFailBrdf++;
             else if (reevaluateFailureCode == 5u) reevaluateFailBackfacing++;
             else if (reevaluateFailureCode == 6u) reevaluateFailZeroTarget++;
+            RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_REEVALUATION_REJECTED, id.x);
             continue;
         }
         reevaluateCount++;
 
         float jacobian = CalculateIndirectJacobian(hdCur.position, hdNeighbor.position, neighbor.secondaryPosition, neighbor.secondaryNormal);
         if (!ValidateIndirectJacobian(jacobian))
+        {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_JACOBIAN_REJECTED, id.x);
             continue;
+        }
         jacobianCount++;
 
         IndirectReservoirData neighborCandidate = neighbor;
@@ -135,15 +167,18 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
         float neighborSampleCountClamped = min(max(neighborCandidate.sampleCount, 1.0), RESTIR_GI_MAX_RESERVOIR_SAMPLES - 1.0);
         if (neighborCandidate.sampleCount > neighborSampleCountClamped)
         {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_M_CAPPED, id.x);
             neighborCandidate.weightSum *= neighborSampleCountClamped / neighborCandidate.sampleCount;
         }
         neighborCandidate.sampleCount = neighborSampleCountClamped;
 
         cachedResult |= (1u << uint(neighborSampleIdx));
         combinedCount++;
+        RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_NEIGHBOR_COMBINED, id.x);
         bool candidateSelected = CombineIndirectReservoirs(outR, neighborCandidate, RNG_Next(rng), neighborTargetLumCur);
         if (candidateSelected)
         {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_NEIGHBOR_SELECTED, id.x);
             selected = neighborSampleIdx;
             selectedTargetPdf = neighborTargetLumCur;
             selectedNeighborOriginalProposalPdf = neighbor.proposalPdf;
@@ -160,6 +195,7 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
     float outSampleCountClamped = min(outR.sampleCount, RESTIR_GI_MAX_RESERVOIR_SAMPLES);
     if (outR.sampleCount > outSampleCountClamped)
     {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_M_CAPPED, id.x);
         outR.weightSum *= outSampleCountClamped / outR.sampleCount;
     }
     outR.sampleCount = outSampleCountClamped;
@@ -203,7 +239,33 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
 
     float normalizationNumerator = pi;
     float normalizationDenominator = selectedTargetPdf * piSum;
+    if (normalizationDenominator <= 0.0)
+        RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_ZERO_NORMALIZATION, id.x);
     FinalizeIndirectReservoir(outR, normalizationNumerator, normalizationDenominator);
+    bool outputFinite = all(isfinite(outR.secondaryPosition)) &&
+        all(isfinite(outR.secondaryNormal)) && all(isfinite(outR.radiance)) &&
+        all(isfinite(outR.contribution)) && all(isfinite(outR.primaryNormal)) &&
+        isfinite(outR.proposalPdf) && isfinite(outR.targetLum) &&
+        isfinite(outR.weightSum) && isfinite(outR.selectedWeight) && isfinite(outR.sampleCount);
+    if (!outputFinite)
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_NONFINITE_OUTPUT, id.x);
+        RestirTelemetryCountCritical(RESTIR_COUNTER_CRITICAL_NONFINITE);
+    }
+    if (id.x == RestirTelemetrySelectedPixel())
+    {
+        RestirTelemetryWriteRecord(
+            2u,
+            RESTIR_STAGE_GI_SPATIAL,
+            outputFinite ? RESTIR_REASON_NONE : RESTIR_REASON_NONFINITE_RESERVOIR,
+            id.x,
+            float4(outR.secondaryPosition, outR.proposalPdf),
+            float4(outR.secondaryNormal, outR.targetLum),
+            float4(outR.radiance, outR.weightSum),
+            float4(outR.contribution, outR.selectedWeight),
+            float4(outR.primaryNormal, outR.sampleCount),
+            float4((float)compatibleCount, (float)reevaluateCount, (float)combinedCount, normalizationDenominator));
+    }
     if (id.x == _RestirDebugPixelIndex)
     {
         ReSTIRDebugData[0] = float4(

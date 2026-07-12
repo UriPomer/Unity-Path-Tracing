@@ -66,6 +66,7 @@ void kernel_generate_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     data.primaryDistance = hd.distance;
     if (hd.distance >= 1e19)
     {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_PRIMARY_MISS, id.x);
         data.flags = -11.0;
         SecondarySurfaces[id.x] = data;
         return;
@@ -114,6 +115,7 @@ void kernel_generate_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     data.reserved = throughputZeroReason;
     if (all(throughputSample <= 0.0))
     {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_ZERO_THROUGHPUT, id.x);
         data.flags = -2.0;
         SecondarySurfaces[id.x] = data;
         return;
@@ -124,6 +126,7 @@ void kernel_generate_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     EvaluateBXDF_GivenDir(primaryHit, V, bounceRay.dir, pdfBrdf, proposalPdf);
     if (proposalPdf <= 0.0)
     {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_INVALID_PROPOSAL, id.x);
         data.proposalPdf = proposalPdf;
         data.flags = -3.0;
         SecondarySurfaces[id.x] = data;
@@ -181,6 +184,7 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     SecondarySurfaceData secondary = SecondarySurfacesRead[id.x];
     if (secondary.proposalPdf <= 0.0 || all(secondary.throughput <= 0.0))
     {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_INVALID_SECONDARY, id.x);
         if (id.x == _RestirDebugPixelIndex)
         {
             ReSTIRDebugData[0] = float4(10.0, secondary.proposalPdf, secondary.throughput.x, secondary.flags);
@@ -246,6 +250,7 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     float3 contribution;
     if (!EvaluateIndirectRadianceAtSurface(_RestirGbuffer[id.x], secondary.position, secondaryRadiance, brdfAtPrimary, contribution))
     {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_INVALID_SECONDARY, id.x);
         if (id.x == _RestirDebugPixelIndex)
         {
             ReSTIRDebugData[0] = float4(12.0, secondary.proposalPdf, secondary.flags, secondary.primaryDistance);
@@ -258,6 +263,7 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     float targetLum = max(contribution.x, max(contribution.y, contribution.z));
     if (targetLum <= 0.0)
     {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_ZERO_TARGET, id.x);
         if (id.x == _RestirDebugPixelIndex)
         {
             ReSTIRDebugData[0] = float4(13.0, secondary.proposalPdf, secondary.flags, secondary.primaryDistance);
@@ -284,4 +290,32 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
         contribution,
         _RestirGbuffer[id.x].normal);
     IndirectReservoirs[_RestirInitialReservoirOffset + id.x] = reservoir;
+    RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_ACCEPTED, id.x);
+
+    bool reservoirFinite = all(isfinite(reservoir.secondaryPosition)) &&
+        all(isfinite(reservoir.secondaryNormal)) && all(isfinite(reservoir.radiance)) &&
+        all(isfinite(reservoir.contribution)) && all(isfinite(reservoir.primaryNormal)) &&
+        isfinite(reservoir.proposalPdf) && isfinite(reservoir.targetLum) &&
+        isfinite(reservoir.weightSum) && isfinite(reservoir.selectedWeight) &&
+        isfinite(reservoir.sampleCount);
+    if (!reservoirFinite)
+    {
+        RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_NONFINITE, id.x);
+        RestirTelemetryCountCritical(RESTIR_COUNTER_CRITICAL_NONFINITE);
+    }
+
+    if (RestirTelemetryClaimSelectedPixel(id.x))
+    {
+        RestirTelemetryWriteRecord(
+            0u,
+            RESTIR_STAGE_GI_INITIAL,
+            reservoirFinite ? RESTIR_REASON_NONE : RESTIR_REASON_NONFINITE_RESERVOIR,
+            id.x,
+            float4(reservoir.secondaryPosition, reservoir.proposalPdf),
+            float4(reservoir.secondaryNormal, reservoir.targetLum),
+            float4(reservoir.radiance, reservoir.weightSum),
+            float4(reservoir.contribution, reservoir.selectedWeight),
+            float4(reservoir.primaryNormal, reservoir.sampleCount),
+            float4(secondary.throughput, secondary.flags));
+    }
 }
