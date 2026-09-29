@@ -99,6 +99,8 @@ public static class ReSTIRRenderComparison
                 return;
             }
             SaveCapture();
+            if (mode == 0 && replicate == 0 && Arg("-renderCheckAccumulation", "false") == "true")
+                CheckAccumulationSwitch();
             if (++replicate == repeats) { replicate = 0; mode++; }
             if (mode == Modes.Length) { Finish(null); return; }
             BeginCase();
@@ -201,6 +203,7 @@ public static class ReSTIRRenderComparison
         camera.transform.hasChanged = false;
         Set(tracing, "FrameLimit", frames);
         Set(tracing, "ToneMap", false);
+        Set(tracing, "AccumulateFrames", true);
         Set(tracing, "OnlyDrawAlbedo", false);
         Set(tracing, "OnlyDrawNormals", false);
         Set(tracing, "OnlyDrawDepth", false);
@@ -316,6 +319,85 @@ public static class ReSTIRRenderComparison
         }
         if (failure != null) Debug.LogError(failure);
         EditorApplication.Exit(failure == null ? 0 : 1);
+    }
+
+    // Output contract: off shows this frame; on shows the arithmetic mean since reset.
+    // Also catches a missing Inspector property, stale averages after toggling, and FrameLimit bypass.
+    static void CheckAccumulationSwitch()
+    {
+        var settings = new SerializedObject(tracing);
+        var accumulation = settings.FindProperty("AccumulateFrames");
+        if (accumulation == null) throw new InvalidOperationException("Missing accumulation Inspector switch.");
+        Set(tracing, "UseReSTIRDI", true);
+        Set(tracing, "UseReSTIRGI", true);
+        Set(tracing, "FrameLimit", 4);
+        double worstError = 0;
+        double worstDisplayError = 0;
+        for (int pass = 0; pass < 3; pass++)
+        {
+            bool enabled = pass != 1;
+            settings.Update();
+            accumulation.boolValue = enabled;
+            settings.ApplyModifiedPropertiesWithoutUndo();
+            tracing.SendMessage("Update");
+            if (pass == 0)
+                typeof(Tracing).GetMethod("ResetSampleCount", Fields).Invoke(tracing, new object[] { "output_comparison" });
+            UnityEngine.Random.InitState(0);
+            var sum = new Color[size * size];
+            Color[] displayed = null;
+            for (int frame = 1; frame <= 4; frame++)
+            {
+                camera.Render();
+                var raw = ReadOutput((RenderTexture)Get(tracing, "target"));
+                var accumulated = enabled ? ReadOutput((RenderTexture)Get(tracing, "frameConverged")) : raw;
+                displayed = ReadOutput(output);
+                for (int i = 0; i < raw.Length; i++)
+                {
+                    sum[i] += raw[i];
+                    Color expected = enabled ? sum[i] / frame : raw[i];
+                    for (int channel = 0; channel < 3; channel++)
+                    {
+                        double delta = Math.Abs(accumulated[i][channel] - expected[channel]);
+                        if (double.IsNaN(delta) || delta > 1e-5 * Math.Max(1, Math.Abs(expected[channel])))
+                            throw new InvalidDataException($"Accumulation={enabled}, frame={frame}, pixel={i}: {delta}");
+                        worstError = Math.Max(worstError, delta);
+                        // Camera.Render includes a half-precision presentation copy on D3D11.
+                        // The linear HDR average above is checked separately at float precision.
+                        double displayDelta = Math.Abs(displayed[i][channel] - expected[channel]);
+                        if (double.IsNaN(displayDelta) || displayDelta > Math.Max(1.0 / 16777216, Math.Abs(expected[channel]) / 1024))
+                            throw new InvalidDataException($"Display output mismatch: {displayDelta}");
+                        worstDisplayError = Math.Max(worstDisplayError, displayDelta);
+                    }
+                }
+            }
+            camera.Render();
+            var frozen = ReadOutput(output);
+            if (SampleCount() != 4) throw new InvalidDataException("Frame limit ignored.");
+            for (int i = 0; i < frozen.Length; i++)
+                if (frozen[i] != displayed[i]) throw new InvalidDataException("Frozen output changed.");
+            var image = new Texture2D(size, size, TextureFormat.RGBAFloat, false, true);
+            image.SetPixels(displayed); image.Apply();
+            File.WriteAllBytes(Path.Combine(directory, $"accumulation_{pass}_{enabled}.exr"),
+                image.EncodeToEXR(Texture2D.EXRFlags.OutputAsFloat));
+            Object.DestroyImmediate(image);
+        }
+        Set(tracing, "FrameLimit", frames);
+        File.WriteAllText(Path.Combine(directory, "accumulation-check.json"),
+            "{\"passed\":true,\"sequence\":\"on-off-on\",\"framesPerCase\":4,\"maxAbsoluteError\":" +
+            worstError.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\"maxDisplayError\":" +
+            worstDisplayError.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + "}");
+    }
+
+    static Color[] ReadOutput(RenderTexture texture)
+    {
+        var image = new Texture2D(texture.width, texture.height, TextureFormat.RGBAFloat, false, true);
+        var previous = RenderTexture.active;
+        RenderTexture.active = texture;
+        image.ReadPixels(new Rect(0, 0, texture.width, texture.height), 0, 0); image.Apply();
+        RenderTexture.active = previous;
+        var pixels = image.GetPixels();
+        Object.DestroyImmediate(image);
+        return pixels;
     }
 
     static int SampleCount() => (int)Get(tracing, "sampleCount");

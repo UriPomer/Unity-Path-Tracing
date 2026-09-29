@@ -18,6 +18,8 @@
 
 ## 重复运行
 
+输出开关回归：在下述命令添加 `-renderCheckAccumulation true`，使用真实场景、`Camera.Render` 和 DI+GI 渲染执行开→关→开，每次四帧。逐像素检查开启时等于独立读回的帧均值、关闭时等于当前帧，以及切换后的历史清空和 `Frame Limit` 冻结输出。保存 `accumulation-check.json` 与三张线性 EXR；开关缺失、始终开启、旧样本残留或冻结分支错误均应失败。普通估计量对照显式开启累积，避免旧场景设置改变比较口径。
+
 在包含当前 Assets、Packages、ProjectSettings 的独立工程副本中，使用工程指定的 Unity 6000.4.4f1：
 
 ```powershell

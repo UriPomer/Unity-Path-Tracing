@@ -48,6 +48,8 @@ public partial class Tracing : MonoBehaviour
     [SerializeField, Min(1)] int ReSTIRGIDiagnosticFrameInterval = 8;
 
     [Header("Display")]
+    [UnityEngine.Serialization.FormerlySerializedAs("Denoise")]
+    [SerializeField] bool AccumulateFrames = true;
     [SerializeField] bool ToneMap = true;
     [SerializeField, Range(0.1f, 8.0f)] float Exposure = 1.0f;
 
@@ -85,6 +87,7 @@ public partial class Tracing : MonoBehaviour
     private int _oldDirectLightRISCandidateCount = 1;
     private bool _oldUseReSTIRDI = false;
     private bool _oldUseReSTIRGI = false;
+    private bool _oldAccumulateFrames = true;
     private bool _hasPrimarySurfaceHistory = false;
     private Matrix4x4 _previousCameraViewProjection = Matrix4x4.identity;
     private int _previousTargetFrameRate = -1;
@@ -163,7 +166,7 @@ public partial class Tracing : MonoBehaviour
 
         if (target == null || target.width != renderDimensions.x || target.height != renderDimensions.y)
         {
-            if (target != null) target.Release();
+            ReleaseRenderTexture(ref target);
             target = new RenderTexture(renderDimensions.x, renderDimensions.y, 0, RenderTextureFormat.ARGBFloat,
                 RenderTextureReadWrite.Linear);
             target.filterMode = FilterMode.Point;
@@ -175,8 +178,7 @@ public partial class Tracing : MonoBehaviour
             frameConverged.width != renderDimensions.x ||
             frameConverged.height != renderDimensions.y)
         {
-            if (frameConverged != null)
-                frameConverged.Release();
+            ReleaseRenderTexture(ref frameConverged);
             frameConverged = new RenderTexture(renderDimensions.x, renderDimensions.y, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
             frameConverged.filterMode = FilterMode.Point;
             frameConverged.wrapMode   = TextureWrapMode.Clamp;
@@ -200,7 +202,7 @@ public partial class Tracing : MonoBehaviour
         CreateReSTIRBuffersIfNeeded(renderDimensions.x * renderDimensions.y);
         if (FrameLimit > 0 && sampleCount >= FrameLimit)
         {
-            BlitToDisplay(frameConverged, destination);
+            BlitToDisplay(AccumulateFrames ? frameConverged : target, destination);
             return;
         }
 
@@ -302,10 +304,13 @@ public partial class Tracing : MonoBehaviour
         if (UseReSTIRDI || IsReSTIRGIActive)
             tracingShader.Dispatch(kernelCopyPrimarySurfaceHistory, (pixelCount + 63) / 64, 1, 1);
 
-        // One unbiased running average, independent of display options.
-        _addMaterial.SetFloat("_Sample", sampleCount);
-        Graphics.Blit(target, frameConverged, _addMaterial);
-        BlitToDisplay(frameConverged, destination);
+        // The former Denoise option was sample averaging, not a spatial denoising filter.
+        if (AccumulateFrames)
+        {
+            _addMaterial.SetFloat("_Sample", sampleCount);
+            Graphics.Blit(target, frameConverged, _addMaterial);
+        }
+        BlitToDisplay(AccumulateFrames ? frameConverged : target, destination);
 
         _hasPrimarySurfaceHistory = true;
         double renderMilliseconds =
@@ -354,6 +359,8 @@ public partial class Tracing : MonoBehaviour
                     runtimeStateChangeReason = "restir_di_toggled";
                 else if (_oldTraceDepth != TraceDepth)
                     runtimeStateChangeReason = "trace_depth_changed";
+                else if (_oldAccumulateFrames != AccumulateFrames)
+                    runtimeStateChangeReason = "accumulation_toggled";
                 else
                     runtimeStateChangeReason = "runtime_settings_changed";
             }
@@ -399,7 +406,8 @@ public partial class Tracing : MonoBehaviour
                _oldTraceDepth != TraceDepth ||
                _oldDirectLightRISCandidateCount != DirectLightRISCandidateCount ||
                _oldUseReSTIRDI != UseReSTIRDI ||
-               _oldUseReSTIRGI != UseReSTIRGI;
+               _oldUseReSTIRGI != UseReSTIRGI ||
+               _oldAccumulateFrames != AccumulateFrames;
     }
 
     private void CacheRuntimeSettings()
@@ -414,6 +422,7 @@ public partial class Tracing : MonoBehaviour
         _oldDirectLightRISCandidateCount = DirectLightRISCandidateCount;
         _oldUseReSTIRDI = UseReSTIRDI;
         _oldUseReSTIRGI = UseReSTIRGI;
+        _oldAccumulateFrames = AccumulateFrames;
     }
 
     private void ResetSampleCount(string reason = "full_reset")

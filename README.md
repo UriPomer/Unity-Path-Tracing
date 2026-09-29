@@ -69,15 +69,43 @@ fps提升20倍，复杂场景1.7->37、0.2->8等，简单场景8->120...
 
 ## ReSTIR DI / GI 使用与比较
 
+### Wavefront / ReSTIR 代码阅读
+
+建议以 `62cc166` 的运输核心和当前提交的输出控制为学习基线，先关闭 DI/GI 读完整 wavefront，再逐一开启。历史引入提交便于看新增职责，但其中部分估计量后来修正，不能直接当成正确实现复用。
+
+|提交|阅读用途|
+|---|---|
+|`dea689f`|最初分离 Trace / Shade / Shadow，理解队列和独立阴影阶段|
+|`6310814`|修正 wavefront 直接光照分工，恢复延迟阴影射线|
+|`4457f05` → `4913283`|DI reservoir 数据接入及 RIS 原型|
+|`4f6a13e`|DI 改为独立多 pass 管线|
+|`bb4a052`|GI 管线首次引入；权重语义后来有修正|
+|`46ed459` → `62cc166`|估计量、GI 与 wavefront 贡献分域及热路径的修正|
+
+当前代码按此顺序阅读：
+
+1. [Tracing.cs](Assets/Scripts/Tracing.cs) 的 `Render` → [Tracing.compute](Assets/ComputeShader/main/Tracing.compute)：生成相机射线 → 求交 → 材质采样和阴影入队 → 阴影查询 → 下一跳。用 `pixelIndex` 将压缩后的射线队列映射回像素，`BufferSizes` 记录有效队列长度，`TransferKernel` 生成间接 dispatch 参数。
+2. [Tracing.GpuPipeline.cs](Assets/Scripts/Tracing.GpuPipeline.cs) 的 `DispatchReSTIRDI` → [generate_initial.hlsl](Assets/ComputeShader/main/restir/generate_initial.hlsl)、[temporal_resampling.hlsl](Assets/ComputeShader/main/restir/temporal_resampling.hlsl)、[shade_di.hlsl](Assets/ComputeShader/main/restir/shade_di.hlsl)：候选、重采样、最终贡献。核对主表面直接光没有再由 wavefront 重复添加。
+3. 同文件的 `DispatchReSTIRGI` → [gi_initial.hlsl](Assets/ComputeShader/main/restir/gi_initial.hlsl)、[gi_temporal.hlsl](Assets/ComputeShader/main/restir/gi_temporal.hlsl)、[gi_spatial.hlsl](Assets/ComputeShader/main/restir/gi_spatial.hlsl)、[gi_shade.hlsl](Assets/ComputeShader/main/restir/gi_shade.hlsl)：区分原始 BSDF 路径与 reservoir 选中的路径，结合[估计量与执行边界](docs/ADR-ReSTIR-estimator.md)核对 PDF、Jacobian、M 和最终权重。
+4. 最后读 `kernel_finalize`、[AddShader.shader](Assets/ComputeShader/main/AddShader.shader) 和 [Tracing.Output.cs](Assets/Scripts/Tracing.Output.cs)：区分单帧估计、可选的多帧平均及色调映射。不要用显示图是否平滑替代对线性结果的检查。
+
+使用 `git show <提交>` 查看当次差异，`git show <提交>:<仓库内路径>` 查看当时完整文件，无需切换或改写当前工作区。
+
+### 运行与比较
+
 项目使用 Unity `6000.4.4f1`。在场景中选中挂有 `Tracing` 的相机，通过 Inspector 分别开启 `Use ReSTIR DI` 和 `Use ReSTIR GI`；GI 还要求 `Trace Depth` 大于 1。Albedo、Normals、Depth 调试显示开启时不会运行光照采样。场景保存了各自的开关值，因此切换场景后应重新检查 Inspector。
 
 DI 对主表面的方向光和全部项目点光源候选做 reservoir 采样和时间复用，目前不采样发光三角形。常规路径和 ReSTIR 使用同一套光源求值与完整光源列表；有限半径点光源按圆盘参数跨表面重投影。
+
+`DI Candidate Count` 只在 DI 开启时可编辑；`Exposure` 只在 `Tone Map` 开启时可编辑，数值是线性亮度乘数（0.5 为减半，2 为翻倍）。
 
 GI 与常规路径共用首次反弹方向和二次命中，只复用环境或 Lambert 二次表面的局部辐射。接收资格由主表面确定；抽到光滑或透明二次表面时仍计一个零候选，常规路径计算该路径的补集。二次及后续反弹继续由 wavefront 传播。当前模型将非金属且粗糙度至少为 0.999 的材质作为 Lambert 漫反射，GI 不做光滑表面的方向性复用。几何法线用于 Jacobian，着色法线用于 BSDF；归一化检查每个来源的路径支持，包含遮挡，且不截断亮度或 Jacobian。具体估计量、透明模型、模块职责及物理边界见 [ReSTIR 设计决策](docs/ADR-ReSTIR-estimator.md)。
 
 ReSTIR 增加了采样、复用和遮挡查询，并不保证帧率更高；只有少量灯光时，DI 的收益也可能很小。
 
-输出始终对帧结果做逐样本平均；复用使相邻帧相关，不能把累计帧数当作独立样本数。当前没有单独的降噪器。比较画质时，在相同场景、静止相机、分辨率和累计样本数下分别运行常规、DI、GI、DI+GI，查看阴影、间接光噪声及异常亮点。比较性能时关闭 `Write ReSTIR GI Diagnostics`，用 Unity Profiler 的 GPU 时间，并把达到相近噪声水平所需的时间一起比较；诊断捕获帧会执行额外的 GPU 原子计数和读回，日志中的 `frameMilliseconds` 是 CPU 侧提交耗时，不能当作 GPU 渲染时间。首次启用 GI 还可能准备此前未使用的 Compute Shader 内核；`Target Frame Rate` 仅设置帧率上限，不会缩短着色器编译或单帧光线查询。`Candidate Count` 控制 DI 每像素初始候选数；增加它通常会增加每帧成本。
+在相机的 `Tracing → Output → Denoise (Frame Accumulation)` 开关控制多帧累积：默认开启，对帧结果做逐样本平均；关闭则跳过平均，显示当前帧。旧场景的 `Denoise` 值会迁移到此开关，切换会重置累积和 ReSTIR 历史；达到 `Frame Limit` 后也按当前开关显示对应输出。这是原有的累积降噪，当前没有单独的空间降噪滤镜。复用使相邻帧相关，不能把累计帧数当作独立样本数。
+
+比较画质时，在相同场景、静止相机、分辨率和累积设置下分别运行常规、DI、GI、DI+GI，查看阴影、间接光噪声及异常亮点。比较性能时关闭 `Write ReSTIR GI Diagnostics`，用 Unity Profiler 的 GPU 时间，并把达到相近噪声水平所需的时间一起比较；诊断捕获帧会执行额外的 GPU 原子计数和读回，日志中的 `frameMilliseconds` 是 CPU 侧提交耗时，不能当作 GPU 渲染时间。首次启用 GI 还可能准备此前未使用的 Compute Shader 内核；`Target Frame Rate` 仅设置帧率上限，不会缩短着色器编译或单帧光线查询。`Candidate Count` 控制 DI 每像素初始候选数；增加它通常会增加每帧成本。
 
 启用诊断后，日志写入 `Tools/Output/<时间戳>_<会话 ID>/`，默认在样本 1、2、4 和设定间隔捕获。普通 Play 结束不自动执行强制 DI+GI 验收。需要诊断时，用 `Tests/Verify-LatestReSTIRGILogs.ps1` 显式检查当次日志；该严格检查要求有效的 DI+GI 捕获及复位后的后续样本。`acceptedCaptures=0, readbackErrors=0` 表示没有采集证据，不能据此判定渲染失败，也不能据此宣称通过验收。慢帧日志中的分段时间仍是 CPU 侧耗时。
 

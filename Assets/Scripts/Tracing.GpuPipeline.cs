@@ -317,20 +317,18 @@ public partial class Tracing
 
     private void ReleaseRenderTargets()
     {
-        if (target != null)
-        {
-            target.Release();
-            target = null;
-        }
-
-        if (frameConverged != null)
-        {
-            frameConverged.Release();
-            frameConverged = null;
-        }
-
+        ReleaseRenderTexture(ref target);
+        ReleaseRenderTexture(ref frameConverged);
         _currentRenderWidth = 0;
         _currentRenderHeight = 0;
+    }
+
+    private static void ReleaseRenderTexture(ref RenderTexture texture)
+    {
+        if (texture == null) return;
+        texture.Release();
+        Destroy(texture);
+        texture = null;
     }
 
     private void ReleaseMaterials()

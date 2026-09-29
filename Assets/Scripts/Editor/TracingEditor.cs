@@ -33,7 +33,9 @@ public class TracingEditor : Editor
 
         DrawSection("Direct Light Sampling", () =>
         {
-            Draw("DirectLightRISCandidateCount", "Candidate Count");
+            SerializedProperty di = serializedObject.FindProperty("UseReSTIRDI");
+            using (new EditorGUI.DisabledScope(!di.hasMultipleDifferentValues && !di.boolValue))
+                Draw("DirectLightRISCandidateCount", "DI Candidate Count");
         });
 
         DrawSection("ReSTIR DI", () =>
@@ -62,8 +64,12 @@ public class TracingEditor : Editor
 
         DrawSection("Output", () =>
         {
+            Draw("AccumulateFrames", "Denoise (Frame Accumulation)");
+            EditorGUILayout.HelpBox("开启：多帧平均降低噪声。关闭：显示当前帧。此选项不使用空间降噪滤镜；切换时重新累积。", MessageType.Info);
             Draw("ToneMap", "Tone Map");
-            Draw("Exposure", "Exposure");
+            SerializedProperty toneMap = serializedObject.FindProperty("ToneMap");
+            using (new EditorGUI.DisabledScope(!toneMap.hasMultipleDifferentValues && !toneMap.boolValue))
+                Draw("Exposure", "Exposure");
         });
 
         DrawSection("Gizmos", () =>
