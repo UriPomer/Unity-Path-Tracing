@@ -513,6 +513,7 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
     private int _consecutiveReadbackErrors;
     private int _nextReadbackFrame;
     private bool _gpuTelemetryDisabled;
+    private bool _restirModeSeen;
     private int _rowsSinceFlush;
     private bool _loggedFirstIssue;
     private CaptureContext _captureContext;
@@ -520,6 +521,7 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
     private ReSTIRDiagnosticsSession(ReSTIRDiagnosticsSettings settings)
     {
         _settings = settings;
+        _restirModeSeen = settings.UseReSTIRDI || settings.UseReSTIRGI;
         _readbackCallback = OnReadback;
         SessionId = Guid.NewGuid().ToString("N");
         Generation = 1;
@@ -551,6 +553,11 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
     public bool ReadbackPending => _readbackPending;
     public bool GpuTelemetryEnabled =>
         _settings.EnableGpuTelemetry && SystemInfo.supportsAsyncGPUReadback && !_gpuTelemetryDisabled;
+
+    public void RecordRenderModes(bool useDI, bool useGI)
+    {
+        _restirModeSeen |= useDI || useGI;
+    }
 
     public static ReSTIRDiagnosticsSession Start(ReSTIRDiagnosticsSettings settings)
     {
@@ -1110,6 +1117,8 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
         _sessionWriter.Write(_settings.UseReSTIRDI ? "true" : "false");
         _sessionWriter.Write(",\"useReSTIRGI\":");
         _sessionWriter.Write(_settings.UseReSTIRGI ? "true" : "false");
+        _sessionWriter.Write(",\"restirModeSeen\":");
+        _sessionWriter.Write(_restirModeSeen ? "true" : "false");
         _sessionWriter.Write(",\"denoise\":");
         _sessionWriter.Write(_settings.Denoise ? "true" : "false");
         _sessionWriter.Write(",\"asyncGpuReadbackSupported\":");

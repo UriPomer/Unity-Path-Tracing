@@ -82,6 +82,16 @@ public class BVHSAH : BVH
             return BVHNode.CreateLeaf(dst, count, BoundingBox);
         }
         
+        // TLAS leaves hold one instance. After the SAH depth budget, balanced
+        // splits bound total depth to 32 + ceil(log2(instanceCount)) <= 63.
+        if (!IsBuildingBLAS && (depth >= MaxDepth || extent < 1e-4f))
+        {
+            int median = PrimitiveBoundInfoStart + count / 2;
+            return BVHNode.CreateParent(
+                Build(Infos, PrimitiveBoundInfoStart, median, false, depth + 1),
+                Build(Infos, median, PrimitiveBoundInfoEnd, false, depth + 1));
+        }
+
         float invSplitAxisLength = 1f / extent;
         //// ------------- ////
 

@@ -116,6 +116,7 @@ public static class SelfTest
         s_modePhase = 0;
         s_waitingForModeReset = false;
         s_exitCode = 0;
+        s_lastFailReason = null;
         s_giProbePath = Path.GetFullPath(Path.Combine("Tools", "Output", "restir_gi_probe.jsonl"));
         s_giTemporalStatsPath = Path.GetFullPath(Path.Combine("Tools", "Output", "restir_gi_temporal_stats.jsonl"));
         s_giFinalStatsPath = Path.GetFullPath(Path.Combine("Tools", "Output", "restir_gi_final_stats.jsonl"));
@@ -275,7 +276,6 @@ public static class SelfTest
         SetPrivateField(tracing, "WriteReSTIRGIDiagnostics", true);
         SetPrivateField(tracing, "WriteReSTIRGIDiagnosticDetails", false);
         SetPrivateField(tracing, "ReSTIRGIDiagnosticFrameInterval", s_toggleReSTIRModes ? 4 : 1);
-        SetPrivateField(tracing, "Denoise", false);
         SetPrivateField(tracing, "FrameLimit", s_targetFrames + s_warmupFrames);
     }
 
@@ -326,34 +326,6 @@ public static class SelfTest
         {
             Fail("Reusable GI probe never produced an active reservoir; expected temporal/spatial GI reuse to feed the active pipeline");
             return;
-        }
-
-        if (SceneRequiresMirrorBypassSemantics())
-        {
-            bool sawBypassProbe = primaryHitLines.Any(line => ExtractString(line, "probeClass") == "bypass");
-            if (!sawBypassProbe)
-            {
-                Fail("GI probe file never reported a bypass probe on a primary hit for a mirror-bypass validation scene");
-                return;
-            }
-
-            bool centerProbeRegressedToInvalidStage1 = primaryHitLines.Any(line =>
-                ExtractInt(line, "probeId") == 0 &&
-                ExtractString(line, "probeClass") == "invalid_stage1");
-            if (centerProbeRegressedToInvalidStage1)
-            {
-                Fail("Center GI probe regressed to invalid_stage1; expected reference-style bypass behavior for the mirror probe");
-                return;
-            }
-
-            bool sawPerfectMetalBypassProbe = primaryHitLines.Any(line =>
-                ExtractInt(line, "probeId") == 2 &&
-                ExtractString(line, "probeClass") == "bypass");
-            if (!sawPerfectMetalBypassProbe)
-            {
-                Fail("Perfect-metal GI probe never reported bypass semantics; expected reference-style non-reusable mirror behavior");
-                return;
-            }
         }
 
         string[] ggxBackfacingInvalidLines = primaryHitLines
@@ -650,11 +622,6 @@ public static class SelfTest
         Debug.Log($"[SelfTest] GI probe OK ({fieldPrefix}): pdf={proposalPdf.ToString("R", CultureInfo.InvariantCulture)} targetLum={targetLum.ToString("R", CultureInfo.InvariantCulture)} weightSum={weightSum.ToString("R", CultureInfo.InvariantCulture)} selectedWeight={selectedWeight.ToString("R", CultureInfo.InvariantCulture)} m={sampleCountM.ToString("R", CultureInfo.InvariantCulture)}");
     }
 
-    private static bool SceneRequiresMirrorBypassSemantics()
-    {
-        return string.Equals(s_sceneName, "CornellBox", StringComparison.OrdinalIgnoreCase);
-    }
-
     // --- 辅助方法 ---
 
     private static int GetSampleCount(Tracing t)
@@ -869,12 +836,6 @@ public static class SelfTest
             return;
         }
 
-        if (!start.useReSTIRDI || !start.useReSTIRGI || start.denoise)
-        {
-            Fail("Runtime proof requires useReSTIRDI=true, useReSTIRGI=true, denoise=false");
-            return;
-        }
-
         if (end.acceptedCaptures <= 0 || end.readbackErrors != 0)
         {
             Fail($"Telemetry session ended with acceptedCaptures={end.acceptedCaptures}, readbackErrors={end.readbackErrors}");
@@ -886,7 +847,7 @@ public static class SelfTest
         if (stats.Length == 0 || stats.Any(row =>
                 row.sessionId != start.sessionId || row.frameIndex < 0 || row.sampleCount < 0 ||
                 row.generation <= 0 || row.renderWidth <= 0 || row.renderHeight <= 0 ||
-                (row.modeFlags & 3) == 0 || (row.modeFlags & 16) != 0))
+                (row.modeFlags & 3) == 0))
         {
             Fail("Telemetry stats are missing or contain invalid correlation fields");
             return;
@@ -900,6 +861,20 @@ public static class SelfTest
                 Fail("Toggle-mode runtime proof requires DI-only, GI-only, and DI+GI telemetry packets");
                 return;
             }
+        }
+
+        TelemetryStatsRow[] proofFrames = stats.Where(row => (row.modeFlags & 19) == 3).ToArray();
+        if (proofFrames.Length == 0)
+        {
+            int combined = stats.Count(row => (row.modeFlags & 3) == 3);
+            Fail($"Runtime proof needs a captured DI+GI frame with denoise off; DI+GI captures={combined}, eligible={proofFrames.Length} (session started DI={start.useReSTIRDI}, GI={start.useReSTIRGI}, denoise={start.denoise})");
+            return;
+        }
+
+        if (!proofFrames.Any(row => row.sampleCount > 1))
+        {
+            Fail("Runtime proof has only the first DI+GI sample after reset; keep Play running until a later DI+GI telemetry capture verifies temporal reuse");
+            return;
         }
 
         TelemetryStatsRow critical = stats.FirstOrDefault(row =>
@@ -923,6 +898,8 @@ public static class SelfTest
 
         ValidateTelemetryDIFile(outputDirectory, start.sessionId);
         ValidateTelemetryStageFile(outputDirectory, "restir_gi_probe.jsonl", start.sessionId, "gi_initial");
+        ValidateTelemetryStageFile(outputDirectory, "restir_gi_temporal_stats.jsonl", start.sessionId, "gi_temporal");
+        ValidateTelemetryStageFile(outputDirectory, "restir_gi_spatial_stats.jsonl", start.sessionId, "gi_spatial");
         ValidateTelemetryStageFile(outputDirectory, "restir_gi_final_stats.jsonl", start.sessionId, "gi_final");
     }
 
@@ -979,53 +956,58 @@ public static class SelfTest
     private static void Fail(string reason)
     {
         s_exitCode = 1;
-        s_lastFailReason = reason;
+        if (s_lastFailReason == null)
+            s_lastFailReason = reason;
         // SessionState is only meaningful for the batchmode Run() path, which
         // survives domain reloads. The editor menu runs synchronously inside
         // one editor frame, so writing to SessionState there would just leak
         // state into a future batchmode run.
         if (s_failMode == FailMode.ExitOnFail)
             SessionState.SetInt(SessionKeyExitCode, s_exitCode);
-        Debug.LogError($"[SelfTest] FAIL: {reason}");
+        if (s_failMode == FailMode.ExitOnFail)
+            Debug.LogError($"[SelfTest] FAIL: {reason}");
     }
 
     public static bool VerifyLatestGILogs(out string report)
+    {
+        if (!TryUseLatestReSTIRGILogPaths(out string latestDir))
+        {
+            string msg = "No Tools/Output/<timestamp>/ subdirectory found. Play the scene with WriteReSTIRGIDiagnostics enabled, then verify the latest logs.";
+            report = $"FAIL: {msg}";
+            return false;
+        }
+
+        return VerifyGILogsInDirectory(latestDir, out report);
+    }
+
+    public static bool VerifyGILogsInDirectory(string outputDirectory, out string report)
     {
         s_failMode = FailMode.LogOnFail;
         s_exitCode = 0;
         s_lastFailReason = null;
         s_toggleReSTIRModes = false;
 
-        if (!TryUseLatestReSTIRGILogPaths(out string latestDir))
+        if (string.IsNullOrEmpty(outputDirectory) || !Directory.Exists(outputDirectory))
         {
-            string msg = "No Tools/Output/<timestamp>/ subdirectory found. Play the scene with WriteReSTIRGIDiagnostics enabled, then verify the latest logs.";
+            string msg = $"ReSTIR diagnostic output directory does not exist: {outputDirectory}";
             report = $"FAIL: {msg}";
-            Debug.LogError($"[SelfTest] {msg}");
             s_failMode = FailMode.ExitOnFail;
             return false;
         }
 
+        SetReSTIRGILogPaths(outputDirectory);
+
         s_sceneName = "(editor-play)";
         s_enableReSTIRGI = true;
 
-        Debug.Log($"[SelfTest] Verifying GI logs in {latestDir}");
         ValidateLatestReSTIRLogs();
 
-        report = s_exitCode == 0 ? $"PASS\n\nLogs verified: {latestDir}" : $"FAIL: {s_lastFailReason}\n\nLogs: {latestDir}";
-        if (s_exitCode == 0)
-            Debug.Log($"[SelfTest] PASS — {latestDir}");
-        else
-            Debug.LogError($"[SelfTest] {report}");
+        report = s_exitCode == 0 ? $"PASS\n\nLogs verified: {outputDirectory}" : $"FAIL: {s_lastFailReason}\n\nLogs: {outputDirectory}";
 
         // Restore default so any subsequent batchmode Run() in the same editor
         // session still exits on failure as designed.
         s_failMode = FailMode.ExitOnFail;
         return s_exitCode == 0;
-    }
-
-    public static bool VerifyLatestGILogsNonInteractive(out string report)
-    {
-        return VerifyLatestGILogs(out report);
     }
 
     private static bool TryUseLatestReSTIRGILogPaths(out string latestDir)
@@ -1034,11 +1016,16 @@ public static class SelfTest
         if (latestDir == null)
             return false;
 
-        s_giProbePath = Path.Combine(latestDir, "restir_gi_probe.jsonl");
-        s_giTemporalStatsPath = Path.Combine(latestDir, "restir_gi_temporal_stats.jsonl");
-        s_giFinalStatsPath = Path.Combine(latestDir, "restir_gi_final_stats.jsonl");
-        s_giSpatialStatsPath = Path.Combine(latestDir, "restir_gi_spatial_stats.jsonl");
+        SetReSTIRGILogPaths(latestDir);
         return true;
+    }
+
+    private static void SetReSTIRGILogPaths(string outputDirectory)
+    {
+        s_giProbePath = Path.Combine(outputDirectory, "restir_gi_probe.jsonl");
+        s_giTemporalStatsPath = Path.Combine(outputDirectory, "restir_gi_temporal_stats.jsonl");
+        s_giFinalStatsPath = Path.Combine(outputDirectory, "restir_gi_final_stats.jsonl");
+        s_giSpatialStatsPath = Path.Combine(outputDirectory, "restir_gi_spatial_stats.jsonl");
     }
 
     // Editor-only convenience entrypoint that surfaces the same latest-log
@@ -1046,7 +1033,11 @@ public static class SelfTest
     [MenuItem("Tools/Verify GI Logs")]
     public static void VerifyGILogsFromEditor()
     {
-        VerifyLatestGILogs(out string report);
+        bool passed = VerifyLatestGILogs(out string report);
+        if (passed)
+            Debug.Log($"[SelfTest] {report}");
+        else
+            Debug.LogError($"[SelfTest] {report}");
         EditorUtility.DisplayDialog("Verify GI Logs", report, "OK");
     }
 

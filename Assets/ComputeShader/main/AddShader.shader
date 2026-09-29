@@ -8,6 +8,7 @@ Shader "Hidden/AddShader"
 	{
 		// No culling or depth
 		Cull Off ZWrite Off ZTest Always
+		// The source alpha is 1 / sample count, so blending produces the running mean.
 		Blend SrcAlpha OneMinusSrcAlpha
 
 		Pass

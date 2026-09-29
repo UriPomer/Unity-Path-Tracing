@@ -30,20 +30,6 @@ public class LightManager : MonoBehaviour
         private set => _instance = value;
     }
 
-    private void Awake()
-    {
-        if (_instance == null)
-        {
-            _instance = this;
-            DontDestroyOnLoad(gameObject); // Optional: Makes sure the instance persists across scenes.
-        }
-        else if (_instance != this)
-        {
-            Debug.LogWarning("Multiple instances of LightManager detected. Destroying the new one.");
-            Destroy(gameObject);
-        }
-    }
-
     [Header("Light Settings")]
     [SerializeField]
     public Light DirectionalLight;
@@ -58,13 +44,14 @@ public class LightManager : MonoBehaviour
 
     public void UpdateBuffer(ComputeShader tracingShader)
     {
-        Vector3 dir = DirectionalLight.transform.forward;
+        bool hasSun = DirectionalLight != null && DirectionalLight.isActiveAndEnabled;
+        Vector3 dir = hasSun ? DirectionalLight.transform.forward : Vector3.down;
         Vector3 directionalLightInfo = new Vector3(-dir.x, -dir.y, -dir.z);
         Vector4 directionalLightColorInfo = new Vector4(
-            DirectionalLight.color.r,
-            DirectionalLight.color.g,
-            DirectionalLight.color.b,
-            DirectionalLight.intensity * DirectionalLightIntensityMultiplier
+            hasSun ? DirectionalLight.color.r : 0,
+            hasSun ? DirectionalLight.color.g : 0,
+            hasSun ? DirectionalLight.color.b : 0,
+            hasSun ? DirectionalLight.intensity * DirectionalLightIntensityMultiplier : 0
         );
 
         tracingShader.SetVector("_InverseDirectionalLight", directionalLightInfo);
@@ -89,12 +76,13 @@ public class LightManager : MonoBehaviour
         unchecked
         {
             int hash = 17;
+            hash = hash * 31 + DirectionalLightIntensityMultiplier.GetHashCode();
             hash = hash * 31 + DefaultPointLightSourceRadius.GetHashCode();
             hash = hash * 31 + UseSceneRayTracingPointLights.GetHashCode();
 
             if (DirectionalLight != null)
             {
-                hash = hash * 31 + DirectionalLight.gameObject.activeSelf.GetHashCode();
+                hash = hash * 31 + DirectionalLight.isActiveAndEnabled.GetHashCode();
                 hash = hash * 31 + DirectionalLight.transform.forward.GetHashCode();
                 hash = hash * 31 + DirectionalLight.color.GetHashCode();
                 hash = hash * 31 + DirectionalLight.intensity.GetHashCode();
@@ -125,7 +113,7 @@ public class LightManager : MonoBehaviour
                         continue;
                     }
 
-                    hash = hash * 31 + light.gameObject.activeSelf.GetHashCode();
+                    hash = hash * 31 + light.gameObject.activeInHierarchy.GetHashCode();
                     hash = hash * 31 + light.enabled.GetHashCode();
                     hash = hash * 31 + light.transform.position.GetHashCode();
                     hash = hash * 31 + light.color.GetHashCode();
@@ -152,7 +140,7 @@ public class LightManager : MonoBehaviour
                 if (pointLight == null) continue;
 
                 Light light = pointLight.AttachedLight;
-                if (light == null || !light.enabled || light.gameObject.activeSelf == false || light.type != LightType.Point)
+                if (light == null || !light.enabled || light.gameObject.activeInHierarchy == false || light.type != LightType.Point)
                     continue;
 
                 AddPointLight(light, pointLight.SourceRadius);
@@ -160,9 +148,9 @@ public class LightManager : MonoBehaviour
             }
         }
 
-        foreach (Light light in PointLights)
+        foreach (Light light in PointLights ?? Array.Empty<Light>())
         {
-            if (light == null || !light.enabled || light.gameObject.activeSelf == false || light.type != LightType.Point) continue;
+            if (light == null || !light.enabled || light.gameObject.activeInHierarchy == false || light.type != LightType.Point) continue;
             if (handledLights.Contains(light.GetEntityId())) continue;
 
             float sourceRadius = DefaultPointLightSourceRadius;

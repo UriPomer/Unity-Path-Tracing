@@ -81,11 +81,12 @@ public class BVHBuilder
     public static Texture2DArray NormalTextures = null;
     public static Texture2DArray RoughnessTextures = null;
 
-    private static bool objectUpdated = false;
+    private static bool objectUpdated = true;
     private static bool objectTransformUpdated = false;
 
     public static void RegisterObject(GameObject o)
     {
+        if (objects.Contains(o)) return;
         objects.Add(o);
         objectUpdated = true;
         objectTransformUpdated = true;
@@ -104,23 +105,16 @@ public class BVHBuilder
         if (objectUpdated)
         {
             BuildBVH();
-            RebuildTLAS();
             LoadTransforms();
+            RebuildTLAS();
             objectUpdated = false;
             objectTransformUpdated = false;
             return true;
         }
 
         bool anyMoved = false;
-        foreach (var obj in objects)    // 性能瓶颈
-        {
-            if (obj.transform.hasChanged || (obj.transform.parent != null && obj.transform.parent.hasChanged))
-            {
-                anyMoved = true;
-                obj.transform.hasChanged = false;
-                if (obj.transform.parent != null) obj.transform.parent.hasChanged = false;
-            }
-        }
+        for (int i = 0; i < objects.Count; i++)
+            anyMoved |= transforms.Count <= i * 2 || transforms[i * 2] != objects[i].transform.localToWorldMatrix;
 
         if (anyMoved || objectTransformUpdated)
         {
@@ -144,6 +138,12 @@ public class BVHBuilder
     private static readonly int ID_IOR              = Shader.PropertyToID("_IOR");
     private static readonly int ID_Mode             = Shader.PropertyToID("_Mode");
     
+    private static float ReadIor(Material material)
+    {
+        float ior = material.HasProperty(ID_IOR) ? material.GetFloat(ID_IOR) : 1.5f;
+        return float.IsFinite(ior) && ior > 0.0f ? ior : 1.5f;
+    }
+
     private struct SubMeshKey
     {
         public Mesh Mesh;
@@ -153,10 +153,10 @@ public class BVHBuilder
             obj is SubMeshKey o && o.Mesh == Mesh && o.SubMeshIndex == SubMeshIndex;
     }
     
-    static Dictionary<SubMeshKey, (BVH bvh, int indexStart)> subMeshCache = new();
-
     private static void BuildMaterialAndMeshData(List<GameObject> SceneObjects)
     {
+        // Packed offsets are valid only for this build's vertex/index arrays.
+        var subMeshCache = new Dictionary<SubMeshKey, (BVH bvh, int indexStart)>();
         materials.Clear();
         indices   .Clear();
         bnodes    .Clear();
@@ -174,7 +174,7 @@ public class BVHBuilder
             Emission = Vector3.zero,
             Metallic = 0.0f,
             Smoothness = 0.0f,
-            IOR = 1.0f,
+            IOR = 1.5f,
             RenderMode = 0,
             AlbedoIdx = -1,
             EmitIdx = -1,
@@ -218,7 +218,7 @@ public class BVHBuilder
                     EmissionIntensity = Intensity,
                     Metallic   = mat.HasProperty(ID_Metallic)   ? mat.GetFloat(ID_Metallic)   : 0f,
                     Smoothness = mat.HasProperty(ID_Glossiness) ? mat.GetFloat(ID_Glossiness) : 0f,
-                    IOR        = mat.HasProperty(ID_IOR)        ? mat.GetFloat(ID_IOR)        : 1f,
+                    IOR        = ReadIor(mat),
                     RenderMode = mat.HasProperty(ID_Mode)       ? mat.GetFloat(ID_Mode)       : 0f,
                     AlbedoIdx  = albedoIdx, EmitIdx   = emitIdx,
                     MetallicIdx= metalIdx,  NormalIdx = normIdx,
@@ -277,7 +277,7 @@ public class BVHBuilder
         if (MetallicTextures) UnityEngine.Object.Destroy(MetallicTextures);
         if (NormalTextures) UnityEngine.Object.Destroy(NormalTextures);
         if (RoughnessTextures) UnityEngine.Object.Destroy(RoughnessTextures);
-        AlbedoTextures = CreateTextureArray(ref albedoTex, false);
+        AlbedoTextures = BVHTextureArrays.Create(albedoTex, false);
 #if UNITY_EDITOR && DEBUG_TEXTURE
         UnityEditor.EditorApplication.delayCall += () =>
         {
@@ -293,10 +293,10 @@ public class BVHBuilder
             win.Repaint();
         };
 #endif
-        EmissionTextures = CreateTextureArray(ref emitTex, false);
-        MetallicTextures = CreateTextureArray(ref metalTex, true);
-        NormalTextures = CreateTextureArray(ref normTex, true);
-        RoughnessTextures = CreateTextureArray(ref roughTex, true);
+        EmissionTextures = BVHTextureArrays.Create(emitTex, false);
+        MetallicTextures = BVHTextureArrays.Create(metalTex, true);
+        NormalTextures = BVHTextureArrays.Create(normTex, true);
+        RoughnessTextures = BVHTextureArrays.Create(roughTex, true);
     }
     
     static void verticesEnsure<T>(List<T> dst, T[] src, int count, T pad)
@@ -377,27 +377,25 @@ public class BVHBuilder
     
     public static void RebuildTLAS()
     {
-        if (meshNodes.Count <= 0) return;
-        if (transforms.Count <= 0) LoadTransforms();
-        tlasTree = BVH.Construct(meshNodes, transforms, BVHType.SAH);
         tlasNodes.Clear();
-        tlasTree.FlattenTLAS(ref tlasNodes, meshNodes, transforms);
+        tlasTree = meshNodes.Count > 0 ? BVH.Construct(meshNodes, transforms, BVHType.SAH) : null;
+        tlasTree?.FlattenTLAS(ref tlasNodes, meshNodes, transforms);
         SetBuffer(ref MeshNodeBuffer, tlasNodes, MeshNode.TypeSize);
     }
 
     private static void SetBuffer<T>(ref ComputeBuffer buffer, List<T> data, int stride) where T : struct
     {
-        if (data.Count == 0) return;
-        if (buffer == null || buffer.count != data.Count || buffer.stride != stride) {
+        int count = Mathf.Max(data.Count, 1);
+        if (buffer == null || buffer.count != count || buffer.stride != stride) {
             buffer?.Release();
-            buffer = new ComputeBuffer(data.Count, stride);
+            buffer = new ComputeBuffer(count, stride);
         }
-        buffer.SetData(data);
+        if (data.Count > 0) buffer.SetData(data);
     }
 
     public static bool ReloadMaterials()
     {
-        if (materials.Count <= 1 || objects.Count == 0)
+        if (objectUpdated || materials.Count <= 1 || objects.Count == 0)
             return false;
 
         int matIdx = 1;
@@ -423,7 +421,7 @@ public class BVHBuilder
                     EmissionIntensity = emissionIntensity,
                     Metallic = mat.HasProperty("_Metallic") ? mat.GetFloat("_Metallic") : 0.0f,
                     Smoothness = mat.HasProperty("_Glossiness") ? mat.GetFloat("_Glossiness") : 0.0f,
-                    IOR = mat.HasProperty("_IOR") ? mat.GetFloat("_IOR") : 1.0f,
+                    IOR = ReadIor(mat),
                     RenderMode = mat.HasProperty("_Mode") ? mat.GetFloat("_Mode") : 0.0f,
                     AlbedoIdx = materials[matIdx].AlbedoIdx,
                     EmitIdx = materials[matIdx].EmitIdx,
@@ -465,71 +463,30 @@ public class BVHBuilder
 
     public static void Destroy()
     {
-        if (IndexBuffer != null) IndexBuffer.Release();
-        if (VertexBuffer != null) VertexBuffer.Release();
-        if (NormalBuffer != null) NormalBuffer.Release();
-        if (TangentBuffer != null) TangentBuffer.Release();
-        if (UVBuffer != null) UVBuffer.Release();
-        if (MaterialBuffer != null) MaterialBuffer.Release();
-        if (MeshNodeBuffer != null) MeshNodeBuffer.Release();
-        if (BLASBuffer != null) BLASBuffer.Release();
-        if (TransformBuffer != null) TransformBuffer.Release();
+        IndexBuffer?.Release(); IndexBuffer = null;
+        VertexBuffer?.Release(); VertexBuffer = null;
+        NormalBuffer?.Release(); NormalBuffer = null;
+        TangentBuffer?.Release(); TangentBuffer = null;
+        UVBuffer?.Release(); UVBuffer = null;
+        MaterialBuffer?.Release(); MaterialBuffer = null;
+        MeshNodeBuffer?.Release(); MeshNodeBuffer = null;
+        BLASBuffer?.Release(); BLASBuffer = null;
+        TransformBuffer?.Release(); TransformBuffer = null;
         if (AlbedoTextures != null) UnityEngine.Object.Destroy(AlbedoTextures);
+        AlbedoTextures = null;
         if (EmissionTextures != null) UnityEngine.Object.Destroy(EmissionTextures);
+        EmissionTextures = null;
         if (MetallicTextures != null) UnityEngine.Object.Destroy(MetallicTextures);
+        MetallicTextures = null;
         if (NormalTextures != null) UnityEngine.Object.Destroy(NormalTextures);
+        NormalTextures = null;
         if (RoughnessTextures != null) UnityEngine.Object.Destroy(RoughnessTextures);
+        RoughnessTextures = null;
+        // Registered scene objects survive a renderer disable/enable cycle.
+        objectUpdated = true;
+        objectTransformUpdated = true;
     }
 
-    private static Texture2DArray CreateTextureArray(ref List<Texture2D> textures, bool linear)
-    {
-        int texWidth = 1, texHeight = 1;
-        foreach (Texture tex in textures)
-        {
-            texWidth = Mathf.Max(texWidth, tex.width);
-            texHeight = Mathf.Max(texHeight, tex.height);
-        }
-        int maxDim = GetMaxDimension(textures.Count, Mathf.Max(texWidth, texHeight));
-        texWidth = Mathf.Min(texWidth, maxDim);
-        texHeight = Mathf.Min(texHeight, maxDim);
-        var newTexture = new Texture2DArray(
-            texWidth, texHeight, Mathf.Max(1, textures.Count),
-            TextureFormat.ARGB32, true, linear
-        );
-        newTexture.SetPixels(Enumerable.Repeat(Color.white, texWidth * texHeight).ToArray(), 0, 0);
-        RenderTextureReadWrite readWrite = linear ? RenderTextureReadWrite.Linear : RenderTextureReadWrite.sRGB;
-        RenderTexture rt = new RenderTexture(texWidth, texHeight, 1, RenderTextureFormat.ARGB32, readWrite);
-        Texture2D tmp = new Texture2D(texWidth, texHeight, TextureFormat.ARGB32, false, linear);
-        for (int i = 0; i < textures.Count; i++)
-        {
-            RenderTexture.active = rt;
-            Graphics.Blit(textures[i], rt);
-            tmp.ReadPixels(new Rect(0, 0, texWidth, texHeight), 0, 0);
-            tmp.Apply();
-            newTexture.SetPixels(tmp.GetPixels(0), i, 0);
-        }
-        newTexture.Apply();
-        RenderTexture.active = null;
-        UnityEngine.Object.Destroy(rt);
-        UnityEngine.Object.Destroy(tmp);
-        return newTexture;
-    }
-
-    private static int GetMaxDimension(int count, int dim)
-    {
-        // 看上去是用于纹理压缩
-        if (dim >= 2048)
-        {
-            if (count <= 16) return 2048;
-            else return 1024;
-        }
-        else if (dim >= 1024)
-        {
-            if (count <= 48) return 1024;
-            else return 512;
-        }
-        else return dim;
-    }
     public static List<Matrix4x4> GetTransforms()
     {
         return transforms;

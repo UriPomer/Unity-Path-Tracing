@@ -85,3 +85,6 @@ Assets/_Recovery/
 Tools/
 Assets/_Recovery.meta
 docs/
+!/docs/
+/docs/*
+!/docs/ADR-ReSTIR-estimator.md

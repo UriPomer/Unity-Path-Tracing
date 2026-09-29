@@ -36,6 +36,11 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
     IndirectReservoirData cur = IndirectReservoirs[curIdx];
     bool currentReservoirValid = IsIndirectReservoirValid(cur);
     IndirectReservoirs[outIdx] = cur;
+    if (!IsGIReceiver(_RestirGbuffer[id.x]))
+    {
+        IndirectReservoirs[outIdx] = EmptyIndirectReservoir();
+        return;
+    }
 
     HitData hdCur = _RestirGbuffer[id.x];
     if (hdCur.distance >= 1e19)
@@ -46,18 +51,12 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
             cur, 0.0);
         return;
     }
-    if (!currentReservoirValid && hdCur.roughness < 1e-4)
-    {
-        WriteIndirectReservoirTelemetry(
-            2u, RESTIR_STAGE_GI_SPATIAL, RESTIR_REASON_NONE, id.x,
-            cur, 0.0);
-        return;
-    }
-
     uint2 pixel = uint2(id.x % _ScreenWidth, id.x / _ScreenWidth);
-    RNG_SeedPixel(rng, pixel, _FrameCount + 7919u);
+    RNG_SeedPixel(rng, pixel, _FrameCount, 6u);
 
     IndirectReservoirData outR = EmptyIndirectReservoir();
+    if (!currentReservoirValid)
+        outR.sampleCount = cur.sampleCount;
     float curTargetPdf = currentReservoirValid ? ComputeIndirectTargetPdf(cur) : 0.0;
     float selectedTargetPdf = 0.0;
     if (currentReservoirValid)
@@ -88,7 +87,9 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
     float selectedNeighborTargetPdf = 0.0;
 
     int neighborStartIdx = min((int)(RNG_Next(rng) * 8.0), 7);
-    [unroll]
+    // Keep the full eight-source estimator, but do not duplicate its BXDF
+    // reevaluation body eight times in the D3D11 shader program.
+    [loop]
     for (int neighborSampleIdx = 0; neighborSampleIdx < 8; neighborSampleIdx++)
     {
         int neighborOffsetIdx = WrapNeighborOffsetIndex(neighborStartIdx + neighborSampleIdx);
@@ -128,8 +129,16 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
 
         uint neighborReservoirIdx = _RestirShadingReservoirOffset + neighborIdx;
         IndirectReservoirData neighbor = IndirectReservoirs[neighborReservoirIdx];
+        if (!isfinite(neighbor.sampleCount) || neighbor.sampleCount <= 0.0)
+        {
+            RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INVALID_NEIGHBOR, id.x);
+            continue;
+        }
+        float neighborM = min(neighbor.sampleCount, RESTIR_GI_MAX_RESERVOIR_SAMPLES - 1.0);
+        cachedResult |= (1u << uint(neighborSampleIdx));
         if (!IsIndirectReservoirValid(neighbor))
         {
+            outR.sampleCount += neighborM;
             RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INVALID_NEIGHBOR, id.x);
             continue;
         }
@@ -137,21 +146,27 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
         float3 neighborRadianceCur;
         float3 neighborContributionCur;
         float neighborTargetLumCur;
-        uint reevaluateFailureCode = 0u;
-        if (!ReevaluateIndirectReservoirAtSurfaceDebug(
+        if (!ReevaluateIndirectReservoirAtSurface(
                 hdCur,
                 neighbor,
                 neighborRadianceCur,
                 neighborContributionCur,
-                neighborTargetLumCur,
-                reevaluateFailureCode))
+                neighborTargetLumCur))
         {
-            if (reevaluateFailureCode == 1u) reevaluateFailInvalidSample++;
-            else if (reevaluateFailureCode == 2u) reevaluateFailInvalidSurface++;
-            else if (reevaluateFailureCode == 3u) reevaluateFailDistance++;
-            else if (reevaluateFailureCode == 4u) reevaluateFailBrdf++;
-            else if (reevaluateFailureCode == 5u) reevaluateFailBackfacing++;
-            else if (reevaluateFailureCode == 6u) reevaluateFailZeroTarget++;
+            outR.sampleCount += neighborM;
+            if (id.x == _RestirDebugPixelIndex)
+            {
+                uint reevaluateFailureCode = 0u;
+                ReevaluateIndirectReservoirAtSurfaceDebug(
+                    hdCur, neighbor, neighborRadianceCur, neighborContributionCur,
+                    neighborTargetLumCur, reevaluateFailureCode);
+                if (reevaluateFailureCode == 1u) reevaluateFailInvalidSample++;
+                else if (reevaluateFailureCode == 2u) reevaluateFailInvalidSurface++;
+                else if (reevaluateFailureCode == 3u) reevaluateFailDistance++;
+                else if (reevaluateFailureCode == 4u) reevaluateFailBrdf++;
+                else if (reevaluateFailureCode == 5u) reevaluateFailBackfacing++;
+                else if (reevaluateFailureCode == 6u) reevaluateFailZeroTarget++;
+            }
             RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_REEVALUATION_REJECTED, id.x);
             continue;
         }
@@ -161,10 +176,11 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
             hdCur.position,
             hdNeighbor.position,
             neighbor.secondaryPosition,
-            neighbor.secondaryNormal,
+            neighbor.secondaryGeometryNormal,
             neighbor.sampleFlags);
         if (!ValidateIndirectJacobian(jacobian))
         {
+            outR.sampleCount += neighborM;
             RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_JACOBIAN_REJECTED, id.x);
             continue;
         }
@@ -177,17 +193,22 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
         // Transform the finalized neighbor estimator into the current receiver's
         // solid-angle domain before combining it (RTXDI spatial parity).
         neighborCandidate.weightSum *= jacobian;
-        neighborCandidate.proposalPdf = neighborCandidate.proposalPdf > 0.0
-            ? max(neighborCandidate.proposalPdf / jacobian, RESTIR_GI_MIN_REUSE_PROPOSAL_PDF)
-            : 0.0;
+        neighborCandidate.proposalPdf /= jacobian;
         // Clamp only the represented domain count. weightSum is already a finalized
         // estimator and must not be attenuated when history M is shortened.
-        float neighborSampleCountClamped = min(max(neighborCandidate.sampleCount, 1.0), RESTIR_GI_MAX_RESERVOIR_SAMPLES - 1.0);
+        float neighborSampleCountClamped = neighborM;
         if (neighborCandidate.sampleCount > neighborSampleCountClamped)
             RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_M_CAPPED, id.x);
         neighborCandidate.sampleCount = neighborSampleCountClamped;
 
-        cachedResult |= (1u << uint(neighborSampleIdx));
+        float neighborRISWeight = GetIndirectReservoirRISWeight(neighborCandidate, neighborTargetLumCur);
+        if (!(neighborRISWeight > 0.0) || !isfinite(neighborRISWeight) ||
+            !isfinite(neighborCandidate.weightSum) || !isfinite(neighborCandidate.proposalPdf) ||
+            neighborCandidate.proposalPdf <= 0.0)
+        {
+            outR.sampleCount += neighborM;
+            continue;
+        }
         combinedCount++;
         RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_NEIGHBOR_COMBINED, id.x);
         bool candidateSelected = CombineIndirectReservoirs(outR, neighborCandidate, RNG_Next(rng), neighborTargetLumCur);
@@ -218,11 +239,13 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
     }
     outR.sampleCount = outSampleCountClamped;
 
-    float pi = selectedTargetPdf;
+    float currentSourceTarget = IndirectSourceTarget(hdCur, outR);
+    float pi = currentSourceTarget;
     // The global cap scales the streamed weight and its effective domain counts together.
     // Otherwise Finalize applies the cap once through weightSum and again through piSum.
-    float piSum = curTargetPdf * max(cur.sampleCount, 1.0) * spatialMCapScale;
-    [unroll]
+    float piSum = currentSourceTarget * cur.sampleCount * spatialMCapScale;
+    // The selected-sample normalization also needs all eight source domains.
+    [loop]
     for (int cachedSampleIdx = 0; cachedSampleIdx < 8; cachedSampleIdx++)
     {
         if ((cachedResult & (1u << uint(cachedSampleIdx))) == 0)
@@ -243,18 +266,13 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
 
         uint neighborReservoirIdx = _RestirShadingReservoirOffset + neighborIdx;
         IndirectReservoirData neighbor = IndirectReservoirs[neighborReservoirIdx];
-        if (!IsIndirectReservoirValid(neighbor))
+        if (!isfinite(neighbor.sampleCount) || neighbor.sampleCount <= 0.0)
             continue;
 
-        float3 neighborRadianceNeighbor;
-        float3 neighborContributionNeighbor;
-        float neighborP = 0.0;
-        if (ReevaluateIndirectReservoirAtSurface(hdNeighbor, outR, neighborRadianceNeighbor, neighborContributionNeighbor, neighborP))
-        {
-            pi = selected == cachedSampleIdx ? neighborP : pi;
-            float neighborSampleCount = min(max(neighbor.sampleCount, 1.0), RESTIR_GI_MAX_RESERVOIR_SAMPLES - 1.0);
-            piSum += neighborP * max(neighborSampleCount, 0.0) * spatialMCapScale;
-        }
+        float neighborP = IndirectSourceTarget(hdNeighbor, outR);
+        if (selected == cachedSampleIdx) pi = neighborP;
+        float neighborSampleCount = min(neighbor.sampleCount, RESTIR_GI_MAX_RESERVOIR_SAMPLES - 1.0);
+        piSum += neighborP * neighborSampleCount * spatialMCapScale;
     }
 
     float normalizationNumerator = pi;
@@ -266,7 +284,7 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
         all(isfinite(outR.secondaryNormal)) && all(isfinite(outR.radiance)) &&
         all(isfinite(outR.contribution)) &&
         isfinite(outR.proposalPdf) && isfinite(outR.targetLum) &&
-        isfinite(outR.weightSum) && isfinite(outR.selectedWeight) && isfinite(outR.sampleCount);
+        isfinite(outR.weightSum) && isfinite(outR.sampleCount);
     if (!outputFinite)
     {
         RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_NONFINITE_OUTPUT, id.x);

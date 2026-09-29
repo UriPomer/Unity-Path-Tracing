@@ -30,6 +30,7 @@ struct RayHit
     float distance;
     float3 position;
     float3 normal;
+    float3 geometryNormal;
     Material material;
     float mode;
     bool should_break;
@@ -45,7 +46,6 @@ Texture2D<float4> _SkyboxTexture;
 SamplerState sampler_SkyboxTexture;
 float3 _InverseDirectionalLight;
 float4 _DirectionalLightColor;
-float _SunFocus;
 float _SunAngularRadius;
 float _SkyboxIntensity;
 StructuredBuffer<float4> _PointLights;
@@ -140,7 +140,6 @@ SamplerState sampler_NormalTextures;
 Texture2DArray<float4> _RoughnessTextures;
 SamplerState sampler_RoughnessTextures;
 
-float2 _PixelOffset;
 
 // ==================== Multi-Pass Data Structures ====================
 
@@ -176,6 +175,7 @@ struct HitData
     float3 emission;          float  roughness;
     float  metallic;          float  alpha;
     float  ior;
+    float3 geometryNormal;
 };
 
 struct ShadowRayData
@@ -190,7 +190,7 @@ struct DirectLightReservoirData
     float3 origin;       float  maxDist;
     float3 direction;    float  targetLum;
     float3 contribution; float  weightSum;
-    float3 surfaceNormal; float  proposalPdf;
+    float3 receiverPosition; float proposalPdf;
     uint   lightType;    uint   lightIndex;
     uint   sampleCount;  float  selectedWeight;
 };
@@ -201,9 +201,10 @@ struct IndirectReservoirData
     float3 secondaryPosition;  float proposalPdf;
     float3 secondaryNormal;    float targetLum;
     float3 radiance;           float weightSum;
-    float3 contribution;       float selectedWeight;
+    float3 contribution;
     uint   sampleFlags;        float2 reserved;
     float  sampleCount;
+    float3 secondaryGeometryNormal;
 };
 
 struct SecondarySurfaceData
@@ -215,6 +216,8 @@ struct SecondarySurfaceData
     float3 emissionRadiance;   float metallic;
     float  alpha;              float ior;
     float  mode;               float reserved;
+    float3 primaryDirection;   float secondaryDistance;
+    float3 geometryNormal;
 };
 
 globallycoherent RWStructuredBuffer<BufferSizeData> BufferSizes;
@@ -284,6 +287,7 @@ RayHit GenRayHit()
     hit.position = float3(0.0f, 0.0f, 0.0f);
     hit.distance = 1.#INF;
     hit.normal = float3(0.0f, 0.0f, 0.0f);
+    hit.geometryNormal = 0.0;
     hit.material = GenMaterial(float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), 0, 0.0f, 0.0f, 1.0f, 1.0f);
     hit.mode = 0.0f;
     hit.should_break = false;
@@ -296,6 +300,7 @@ HitData GenHitData()
     hit.position = float3(0.0f, 0.0f, 0.0f);
     hit.distance = 1.#INF;
     hit.normal = float3(0.0f, 0.0f, 0.0f);
+    hit.geometryNormal = 0.0;
     hit.mode = 0.0f;
     hit.albedo = float3(0.0f, 0.0f, 0.0f);
     hit.emission = float3(0.0f, 0.0f, 0.0f);

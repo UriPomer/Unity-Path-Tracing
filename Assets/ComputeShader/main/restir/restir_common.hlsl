@@ -13,12 +13,12 @@ uint _RestirSpatialReservoirOffset;
 uint _RestirCandidateCount;
 float4x4 _RestirPreviousViewProjection;
 
-bool IsDirectLightSampleVisible(DirectLightSample sample)
+float DirectLightVisibility(DirectLightSample sample)
 {
     Ray shadowRay;
     shadowRay.origin = sample.origin;
     shadowRay.dir = sample.direction;
     shadowRay.invDir = 1.0 / sample.direction;
-    float tMax = sample.maxDist > 0.0 ? sample.maxDist * 0.999 : 1e20;
-    return !IntersectTlasFast(shadowRay, tMax);
+    float tMax = sample.maxDist > 0.0 ? sample.maxDist : 1e20;
+    return TraceVisibility(shadowRay, tMax, true);
 }

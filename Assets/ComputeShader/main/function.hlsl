@@ -14,13 +14,12 @@ float3 GetNormal(int idx, float2 data, int normIdx, float2 uv)
     float3 norm1 = _Normals[_Indices[idx + 1]];
     float3 norm2 = _Normals[_Indices[idx + 2]];
     float3 norm = norm1 * data.x + norm2 * data.y + norm0 * (1.0 - data.x - data.y);    //插值得到法线
-    float4 tangent0 = _Tangents[_Indices[idx]];
-    float4 tangent1 = _Tangents[_Indices[idx + 1]];
-    float4 tangent2 = _Tangents[_Indices[idx + 2]];
-    float4 tangent = tangent1 * data.x + tangent2 * data.y + tangent0 * (1.0 - data.x - data.y);    //插值得到切线
-    //tangent.w = tangent0.w;
     if (normIdx >= 0)
     {
+        float4 tangent0 = _Tangents[_Indices[idx]];
+        float4 tangent1 = _Tangents[_Indices[idx + 1]];
+        float4 tangent2 = _Tangents[_Indices[idx + 2]];
+        float4 tangent = tangent1 * data.x + tangent2 * data.y + tangent0 * (1.0 - data.x - data.y);
         float3 binorm = normalize(cross(norm, tangent.xyz)) * tangent.w;    //计算副法线，也是一个切线，tangent.w通常是1或-1，为切线的方向，保持正交
         float3x3 TBN = float3x3(
             tangent.xyz,
@@ -56,11 +55,13 @@ float HashToFloat(uint h)
     return asfloat(0x3f800000u | (h >> 9)) - 1.0;
 }
 
-void RNG_SeedPixel(inout RNG rng, uint2 pixelXY, uint frameId /*帧序号*/)
+void RNG_SeedPixel(inout RNG rng, uint2 pixelXY, uint frameId, uint stream = 0u)
 {
     uint s = pixelXY.x | (pixelXY.y << 16);
     s ^= frameId * 747796405u;
-    rng.state = WangHash(s);
+    // Independent domains: camera/path, DI proposal, DI reuse, GI proposal,
+    // secondary lighting, GI temporal and GI spatial must not reuse variates.
+    rng.state = WangHash(s ^ WangHash(stream * 0x9e3779b9u));
 }
 
 float RNG_Next(inout RNG rng)
@@ -69,34 +70,13 @@ float RNG_Next(inout RNG rng)
     return HashToFloat(rng.state);
 }
 
-float SmoothnessToPhongAlpha(float s)
+float2 RNG_Next2(inout RNG rng)
 {
-    return pow(1000.0f, s * s);
-}
-
-float3x3 GetTangentSpace(float3 normal)
-{
-    // Choose a helper vector for the cross product
-    float3 helper = float3(1, 0, 0);
-    if (abs(normal.x) > 0.99f)
-        helper = float3(0, 0, 1);
-
-    // Generate vectors
-    float3 tangent = normalize(cross(normal, helper));
-    float3 binormal = normalize(cross(normal, tangent));
-    return float3x3(tangent, binormal, normal);
-}
-
-float3 SampleReflectionDirectionSphere(float3 normal, float alpha)
-{
-    // Spherical coordinate to cartesian
-    float cosTheta = pow(RNG_Next(rng), 1.0f / (alpha + 1.0f));
-    float sinTheta = sqrt(1.0f - cosTheta * cosTheta);
-    float phi = 2 * PI * RNG_Next(rng);
-    float3 tangentSpaceDir = float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
-
-    // Transform direction to world space
-    return mul(tangentSpaceDir, GetTangentSpace(normal));
+    // Sequence state changes explicitly; function-argument evaluation order
+    // must not choose which random dimension drives which sample coordinate.
+    float u = RNG_Next(rng);
+    float v = RNG_Next(rng);
+    return float2(u, v);
 }
 
 float3 SampleHemisphere(float3 norm)
@@ -132,7 +112,6 @@ Ray GenRayByID(float2 pixelCoord)
 
     Ray ray;
     ray.origin = mul(_CameraToWorld, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz;
-    //TODO: 随机扰动
     
     ray.dir = normalize(worldDir);
     ray.invDir = 1.0f / ray.dir;

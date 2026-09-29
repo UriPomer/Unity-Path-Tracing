@@ -2,8 +2,11 @@
 
 static const float RESTIR_GI_STAGE1_FLAG_SKY = 1.0;
 static const float RESTIR_GI_STAGE1_FLAG_SPECULAR = 2.0;
-static const float RESTIR_GI_STAGE1_FLAG_DELTA = 4.0;
-static const float RESTIR_GI_STAGE1_FLAG_BYPASS = 8.0;
+static const float RESTIR_GI_STAGE1_ZERO_THROUGHPUT = -2.0;
+static const float RESTIR_GI_STAGE1_INVALID_PROPOSAL = -3.0;
+static const float RESTIR_GI_STAGE1_PRIMARY_MISS = -11.0;
+static const float RESTIR_GI_STAGE1_UNSUPPORTED_PRIMARY = -12.0;
+static const float RESTIR_GI_STAGE1_UNSUPPORTED_SECONDARY = -13.0;
 static const uint RESTIR_GI_MAX_SECONDARY_LIGHT_CANDIDATES = 8u;
 
 bool IsGISecondaryMiss(float flags)
@@ -11,24 +14,35 @@ bool IsGISecondaryMiss(float flags)
     return flags >= 0.0 && (((uint)flags & (uint)RESTIR_GI_STAGE1_FLAG_SKY) != 0u);
 }
 
-bool IsGISecondaryBypass(float flags)
+bool IsGIReceiver(HitData surface)
 {
-    return flags >= 0.0 && (((uint)flags & (uint)RESTIR_GI_STAGE1_FLAG_BYPASS) != 0u);
+    // Eligibility is a property of the receiver, never of its random sample.
+    return surface.distance < 1e19 && surface.mode < 2.0 && surface.roughness >= 1e-4;
 }
 
-float3 EvaluateSecondaryMissRadiance(float3 secondaryNormal)
+bool HasCachedGISecondaryHit(float flags)
 {
-    return SampleSkyboxDirection(secondaryNormal);
+    // Unsupported secondary materials use wavefront lighting, but the trace
+    // performed during proposal generation is still their exact first hit.
+    return flags >= 0.0 || flags == RESTIR_GI_STAGE1_UNSUPPORTED_SECONDARY;
 }
 
-float3 EvaluateSecondaryHitRadiance(RayHit secondaryHit, float3 viewDir)
+// Reusable GI carries outgoing radiance independent of the receiving vertex.
+// Only Lambertian secondary surfaces enter this path. Their outgoing radiance
+// is independent of the receiving vertex, so the sample can be reused.
+float3 EvaluateLambertSecondaryRadiance(RayHit secondaryHit)
 {
+    // This stage's admitted material domain is exactly Lambert. Canonical values
+    // let the shader compiler omit unrelated glossy/alpha/dielectric branches.
+    secondaryHit.mode = 0.0;
+    secondaryHit.material.roughness = 1.0;
+    secondaryHit.material.metallic = 0.0;
     float3 radiance = 0.0;
 
     if (secondaryHit.material.emissionIntensity > 0.0)
         radiance += secondaryHit.material.emission * secondaryHit.material.emissionIntensity;
 
-    float3 V2 = viewDir;
+    float3 V2 = secondaryHit.normal;
     float3 secondaryNormal = GetDirectLightSurfaceNormal(secondaryHit, V2);
     secondaryHit.normal = secondaryNormal;
 
@@ -55,8 +69,6 @@ float3 EvaluateSecondaryHitRadiance(RayHit secondaryHit, float3 viewDir)
                 V2,
                 float3(1, 1, 1),
                 hasSun,
-                0u,
-                false,
                 candidateIndex,
                 proposalPdf,
                 sample) ||
@@ -65,7 +77,7 @@ float3 EvaluateSecondaryHitRadiance(RayHit secondaryHit, float3 viewDir)
             continue;
         }
 
-        float candidateWeight = sample.targetLum / max(sample.proposalPdf, 1e-6);
+        float candidateWeight = sample.targetLum / sample.proposalPdf;
         weightSum += candidateWeight;
         if (!hasSelectedSample || RNG_Next(rng) * weightSum < candidateWeight)
         {
@@ -74,13 +86,13 @@ float3 EvaluateSecondaryHitRadiance(RayHit secondaryHit, float3 viewDir)
         }
     }
 
-    if (hasSelectedSample && IsDirectLightSampleVisible(selectedSample))
+    if (hasSelectedSample)
     {
         float selectedWeight = ComputeMISWeight(
             weightSum,
             selectedSample.targetLum,
             sampleCount);
-        radiance += selectedSample.contribution * selectedWeight;
+        radiance += selectedSample.contribution * selectedWeight * DirectLightVisibility(selectedSample);
     }
 
     return max(radiance, 0.0);
@@ -93,27 +105,33 @@ void kernel_generate_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     if (id.x >= pixelCount) return;
 
     SecondarySurfaceData data = (SecondarySurfaceData)0;
-    data.flags = -10.0;
-    SecondarySurfaces[id.x] = data;
-
     HitData hd = _RestirGbuffer[id.x];
-    data.primaryDistance = hd.distance;
     if (hd.distance >= 1e19)
     {
         RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_PRIMARY_MISS, id.x);
-        data.flags = -11.0;
+        data.flags = RESTIR_GI_STAGE1_PRIMARY_MISS;
+        SecondarySurfaces[id.x] = data;
+        return;
+    }
+
+    // The GI reservoir reconnects reflection samples only. Let the regular
+    // wavefront path shade transmissive primary surfaces instead.
+    if (!IsGIReceiver(hd))
+    {
+        data.flags = RESTIR_GI_STAGE1_UNSUPPORTED_PRIMARY;
         SecondarySurfaces[id.x] = data;
         return;
     }
 
     uint2 pixel = uint2(id.x % _ScreenWidth, id.x / _ScreenWidth);
-    RNG_SeedPixel(rng, pixel, _FrameCount);
+    RNG_SeedPixel(rng, pixel, _FrameCount, 3u);
     _Pixel = pixel;
 
     RayHit primaryHit;
     primaryHit.position = hd.position;
     primaryHit.distance = hd.distance;
     primaryHit.normal = hd.normal;
+    primaryHit.geometryNormal = hd.geometryNormal;
     primaryHit.mode = hd.mode;
     primaryHit.material.albedo = hd.albedo;
     primaryHit.material.emission = hd.emission;
@@ -137,62 +155,53 @@ void kernel_generate_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     data.position = primaryHit.position;
     data.normal = primaryNormal;
     data.primaryDistance = primaryHit.distance;
-    data.flags = -1.0;
-    data.reserved = 0.0;
 
     float3 throughputSample;
     bool sampledSpecular;
     float throughputZeroReason;
-    EvaluateBXDFWithDotAndPDFDetailed(primaryHit, bounceRay, throughputSample, sampledSpecular, throughputZeroReason);
+    SampleOpaqueBXDF(primaryHit, bounceRay, throughputSample, sampledSpecular, throughputZeroReason);
     data.throughput = throughputSample;
-    data.normal = bounceRay.dir;
+    data.primaryDirection = bounceRay.dir;
     data.reserved = throughputZeroReason;
     if (all(throughputSample <= 0.0))
     {
         RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_ZERO_THROUGHPUT, id.x);
-        data.flags = -2.0;
+        data.flags = RESTIR_GI_STAGE1_ZERO_THROUGHPUT;
         SecondarySurfaces[id.x] = data;
         return;
     }
 
-    float3 pdfBrdf;
-    float proposalPdf;
-    EvaluateBXDF_GivenDir(primaryHit, V, bounceRay.dir, pdfBrdf, proposalPdf);
+    float3 pdfBrdf = 0.0;
+    float proposalPdf = 0.0;
+    EvaluateOpaqueBXDF_GivenDir(primaryHit, V, bounceRay.dir, pdfBrdf, proposalPdf);
     if (proposalPdf <= 0.0)
     {
         RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_INVALID_PROPOSAL, id.x);
         data.proposalPdf = proposalPdf;
-        data.flags = -3.0;
+        data.flags = RESTIR_GI_STAGE1_INVALID_PROPOSAL;
         SecondarySurfaces[id.x] = data;
         return;
     }
 
     data.proposalPdf = proposalPdf;
 
-    bounceRay.origin = primaryHit.position + primaryNormal * 1e-5;
+    bounceRay.origin = primaryHit.position + primaryHit.geometryNormal *
+        (dot(primaryHit.geometryNormal, bounceRay.dir) >= 0.0 ? 1e-5 : -1e-5);
     bounceRay.invDir = 1.0 / bounceRay.dir;
 
-    RayHit secondaryHit = (RayHit)0;
-    secondaryHit = Trace(bounceRay);
+    RayHit secondaryHit = Trace(bounceRay);
 
     data.position = secondaryHit.distance >= 1e19 ? normalize(bounceRay.dir) : secondaryHit.position;
-    data.proposalPdf = proposalPdf;
+    data.secondaryDistance = secondaryHit.distance;
     data.normal = secondaryHit.distance >= 1e19 ? -bounceRay.dir : secondaryHit.normal;
-    data.primaryDistance = primaryHit.distance;
-    bool isDeltaSurface = primaryHit.material.roughness < 1e-4;
+    data.geometryNormal = secondaryHit.distance >= 1e19 ? -bounceRay.dir : secondaryHit.geometryNormal;
     float sampleFlags = 0.0;
     if (secondaryHit.distance >= 1e19)
         sampleFlags += RESTIR_GI_STAGE1_FLAG_SKY;
     if (sampledSpecular)
         sampleFlags += RESTIR_GI_STAGE1_FLAG_SPECULAR;
-    if (isDeltaSurface)
-        sampleFlags += RESTIR_GI_STAGE1_FLAG_DELTA;
-    if (sampledSpecular && isDeltaSurface)
-        sampleFlags += RESTIR_GI_STAGE1_FLAG_BYPASS;
 
     data.flags = sampleFlags;
-    if (!IsGISecondaryBypass(sampleFlags))
-        data.throughput = 1.0;
     data.albedo = secondaryHit.distance >= 1e19 ? 0.0 : secondaryHit.material.albedo;
     data.roughness = secondaryHit.distance >= 1e19 ? 0.0 : secondaryHit.material.roughness;
     data.emissionRadiance = secondaryHit.distance >= 1e19
@@ -202,6 +211,20 @@ void kernel_generate_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     data.alpha = secondaryHit.distance >= 1e19 ? 1.0 : secondaryHit.material.alpha;
     data.ior = secondaryHit.distance >= 1e19 ? 1.0 : secondaryHit.material.ior;
     data.mode = secondaryHit.distance >= 1e19 ? 0.0 : secondaryHit.mode;
+
+    // Glossy or transmissive outgoing radiance depends on the receiver.
+    // The wavefront shades these vertices using the cached hit and original BSDF.
+    if (secondaryHit.distance < 1e19 &&
+        (secondaryHit.mode >= 2.0 || !IsLambertianMaterial(secondaryHit.material)))
+    {
+        data.flags = RESTIR_GI_STAGE1_UNSUPPORTED_SECONDARY;
+        SecondarySurfaces[id.x] = data;
+        return;
+    }
+    if (secondaryHit.distance < 1e19 &&
+        dot(data.normal, primaryHit.position - secondaryHit.position) < 0.0)
+        data.normal = -data.normal;
+    if (dot(data.geometryNormal, -bounceRay.dir) < 0.0) data.geometryNormal = -data.geometryNormal;
     SecondarySurfaces[id.x] = data;
 }
 
@@ -215,6 +238,15 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     IndirectReservoirs[_RestirInitialReservoirOffset + id.x] = reservoir;
 
     SecondarySurfaceData secondary = SecondarySurfacesRead[id.x];
+    if (!IsGIReceiver(_RestirGbuffer[id.x]))
+        return;
+
+    reservoir.sampleCount = 1.0;
+    IndirectReservoirs[_RestirInitialReservoirOffset + id.x] = reservoir;
+    // A glossy hit is a zero draw for the Lambert/environment integral.
+    // Its complementary contribution is evaluated by the wavefront path.
+    if (secondary.flags < 0.0)
+        return;
     if (secondary.proposalPdf <= 0.0 || all(secondary.throughput <= 0.0))
     {
         RestirTelemetryCount(RESTIR_COUNTER_GI_INITIAL_INVALID_SECONDARY, id.x);
@@ -237,13 +269,14 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
         return;
     }
 
+    // A zero-target path still contributes one proposal to the RIS domain.
     RayHit secondaryHit = (RayHit)0;
     secondaryHit.position = secondary.position;
     bool isMissSample = IsGISecondaryMiss(secondary.flags);
-    bool bypassReservoir = IsGISecondaryBypass(secondary.flags);
 
     secondaryHit.distance = isMissSample ? 1e19 : 1.0;
     secondaryHit.normal = secondary.normal;
+    secondaryHit.geometryNormal = secondary.geometryNormal;
     secondaryHit.mode = secondary.mode;
     secondaryHit.material.albedo = secondary.albedo;
     secondaryHit.material.emission = secondary.emissionRadiance;
@@ -255,43 +288,21 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     secondaryHit.should_break = false;
 
     uint2 pixel = uint2(id.x % _ScreenWidth, id.x / _ScreenWidth);
-    RNG_SeedPixel(rng, pixel, _FrameCount + 1543u);
+    RNG_SeedPixel(rng, pixel, _FrameCount, 4u);
 
-    float3 viewDir = isMissSample
-        ? -normalize(secondary.position)
-        : normalize(_RestirGbuffer[id.x].position - secondary.position);
     float3 secondaryRadiance = max(secondary.emissionRadiance, 0.0);
     if (!isMissSample)
-    {
-        secondaryRadiance = EvaluateSecondaryHitRadiance(secondaryHit, viewDir);
-    }
+        secondaryRadiance = EvaluateLambertSecondaryRadiance(secondaryHit);
 
     if (id.x == _RestirDebugPixelIndex)
     {
         ReSTIRDebugData[0] = float4(11.0, secondary.proposalPdf, secondary.flags, secondary.primaryDistance);
-        ReSTIRDebugData[1] = float4(secondaryRadiance.x, secondaryRadiance.y, secondaryRadiance.z, length(viewDir));
+        ReSTIRDebugData[1] = float4(secondaryRadiance.x, secondaryRadiance.y, secondaryRadiance.z, 0.0);
         ReSTIRDebugData[2] = float4(
             secondary.position.x,
             secondary.position.y,
             secondary.position.z,
             0.0);
-    }
-
-    if (bypassReservoir)
-    {
-        float3 contribution = max(secondary.throughput * secondaryRadiance, 0.0);
-        float targetLum = max(contribution.x, max(contribution.y, contribution.z));
-        GlobalColors[id.x].L += contribution;
-        WriteIndirectReservoirTelemetry(
-            0u, RESTIR_STAGE_GI_INITIAL, RESTIR_REASON_NONE, id.x,
-            reservoir, float4(secondary.throughput, secondary.flags));
-        if (id.x == _RestirDebugPixelIndex)
-        {
-            ReSTIRDebugData[0] = float4(15.0, secondary.proposalPdf, targetLum, secondary.flags);
-            ReSTIRDebugData[1] = float4(contribution.x, contribution.y, contribution.z, 0.0);
-            ReSTIRDebugData[2] = float4(secondary.throughput.x, secondary.throughput.y, secondary.throughput.z, 0.0);
-        }
-        return;
     }
 
     float3 brdfAtPrimary;
@@ -346,6 +357,7 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
         secondary.position,
         secondary.proposalPdf,
         secondary.normal,
+        secondary.geometryNormal,
         targetLum,
         secondaryRadiance,
         contribution,
@@ -357,7 +369,7 @@ void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
         all(isfinite(reservoir.secondaryNormal)) && all(isfinite(reservoir.radiance)) &&
         all(isfinite(reservoir.contribution)) &&
         isfinite(reservoir.proposalPdf) && isfinite(reservoir.targetLum) &&
-        isfinite(reservoir.weightSum) && isfinite(reservoir.selectedWeight) &&
+        isfinite(reservoir.weightSum) &&
         isfinite(reservoir.sampleCount);
     if (!reservoirFinite)
     {

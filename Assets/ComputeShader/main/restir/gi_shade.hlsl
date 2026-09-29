@@ -11,25 +11,7 @@ bool EvaluateVisibleGISample(
     if (!EvaluateIndirectSampleAtSurface(hd, res, reflectedRadiance))
         return false;
 
-    RayHit primaryHit = BuildPrimaryRayHit(hd);
-    float3 cameraPos = float3(_CameraToWorld._m03, _CameraToWorld._m13, _CameraToWorld._m23);
-    float3 V = normalize(cameraPos - hd.position);
-    float3 primaryNormal = GetDirectLightSurfaceNormal(primaryHit, V);
-    primaryHit.normal = primaryNormal;
-
-    float3 L;
-    float distToSecondary;
-    if (!ResolveIndirectSampleDirection(hd, res.secondaryPosition, res.sampleFlags, L, distToSecondary))
-        return false;
-
-    Ray shadowRay;
-    shadowRay.origin = hd.position + primaryNormal * 1e-5;
-    shadowRay.dir = L;
-    shadowRay.invDir = 1.0 / L;
-    float tMax = IsIndirectEnvironmentSample(res.sampleFlags)
-        ? distToSecondary
-        : distToSecondary * 0.999;
-    if (IntersectTlasFast(shadowRay, tMax))
+    if (!IsIndirectSampleVisibleAtSurface(hd, res))
         return false;
 
     // RTXDI parity: FinalShading.hlsl:66 -> radiance * reservoir.weightSum.

@@ -85,9 +85,14 @@ float3 GetMaterialF0(Material mat)
     return lerp(float3(dielectricF0, dielectricF0, dielectricF0), mat.albedo, mat.metallic);
 }
 
+bool IsLambertianMaterial(Material mat)
+{
+    return mat.metallic < 0.001 && mat.roughness >= 0.999;
+}
+
 void GetOpaqueLobeWeights(Material mat, out float specProb, out float diffProb)
 {
-    if (mat.metallic < 0.001 && mat.roughness >= 0.999)
+    if (IsLambertianMaterial(mat))
     {
         specProb = 0.0;
         diffProb = 1.0;
@@ -169,6 +174,13 @@ float3 EvaluateDisneyDiffuse(Material mat, float NdotV, float NdotL, float LdotH
     return (1.0 - mat.metallic) * mat.albedo * (INV_PI * lightScatter * viewScatter);
 }
 
+float3 EvaluateOpaqueDiffuse(Material mat, float NdotV, float NdotL, float LdotH)
+{
+    return IsLambertianMaterial(mat)
+        ? mat.albedo * INV_PI
+        : EvaluateDisneyDiffuse(mat, NdotV, NdotL, LdotH);
+}
+
 void SpecReflModel(
     RayHit hit, float3 V, float3 L, float3 H,
     out float3 f_brdf,
@@ -184,25 +196,20 @@ void SpecReflModel(
     float3 F = SchlickFresnel(VdotH, F0);
     float D = DistributionGGX(hit.normal, H, alpha);
     float G = GeometrySmith(hit.normal, V, L, alpha);
-    f_brdf = F * G * D / max(4.0 * NdotV * NdotL, 1e-4);
+    f_brdf = F * G * D / (4.0 * NdotV * NdotL);
 
-    pdf = NdotH * D / max(4.0 * VdotH, 1e-4);
+    pdf = NdotH * D / (4.0 * VdotH);
 }
 
-bool SkipTransparent(Material mat)
+float GGXVNDFReflectionPdf(RayHit hit, float3 V, float3 H)
 {
-    float f = DielectricFresnel(0.2, mat.ior);
-    float r = mat.roughness * mat.roughness;
-    return RNG_Next(rng) < (1.0 - f) * (1.0 - mat.metallic) * (1.0 - r);
-}
-
-void SpecRefrModel(RayHit hit, float3 V, float3 L, float3 H, inout float3 energy)
-{
-    float NdotL = abs(dot(hit.normal, L));
-    float F = DielectricFresnel(dot(V, H), hit.material.ior);
-    float alpha = hit.material.roughness * hit.material.roughness;
-    float G = SmithG(NdotL, alpha);
-    energy *= pow(hit.material.albedo, 0.5) * (1.0 - hit.material.metallic) * (1.0 - F) * G;
+    float NdotV = saturate(dot(hit.normal, V));
+    float VdotH = dot(V, H);
+    if (NdotV <= 0.0 || VdotH <= 0.0)
+        return 0.0;
+    float alpha = max(hit.material.roughness * hit.material.roughness, 1e-4);
+    float D = DistributionGGX(hit.normal, H, alpha);
+    return D * SmithG(NdotV, alpha) / (4.0 * NdotV);
 }
 
 float3 SampleGGXVNDF(float3 N, float3 V, float alpha, float2 Xi)
@@ -237,125 +244,104 @@ float3 SampleGGXVNDF(float3 N, float3 V, float alpha, float2 Xi)
     return normalize(H.x * tangentX + H.y * tangentY + H.z * N);
 }
 
-void EvaluateBXDFWithDotAndPDFDetailed(RayHit hit, inout Ray ray, out float3 f_brdf, out bool sampledSpecular, out float zeroReasonCode)
+void EvaluateBXDF_GivenDir(RayHit hit, float3 V, float3 L, out float3 f_brdf, out float pdf);
+
+void EvaluateOpaqueBXDF_GivenDir(RayHit hit, float3 V, float3 L, out float3 f_brdf, out float pdf);
+
+void SampleOpaqueBXDF(RayHit hit, inout Ray ray,
+    out float3 throughput, out bool sampledSpecular, out float zeroReasonCode)
 {
     float3 V = -ray.dir;
-    float roulette = RNG_Next(rng);
-    f_brdf = 0;
+    throughput = 0.0;
     sampledSpecular = false;
     zeroReasonCode = 0.0;
+    float roulette = RNG_Next(rng);
+    float specProbability, diffuseProbability;
+    GetOpaqueLobeWeights(hit.material, specProbability, diffuseProbability);
+    sampledSpecular = roulette < specProbability;
+    if (sampledSpecular && hit.material.roughness < 1e-4)
+    {
+        ray.dir = reflect(-V, hit.normal);
+        if (dot(hit.normal, ray.dir) > 0.0)
+            throughput = SchlickFresnel(saturate(dot(hit.normal, V)), GetMaterialF0(hit.material)) / specProbability;
+        return;
+    }
+    if (sampledSpecular)
+    {
+        float alpha = max(hit.material.roughness * hit.material.roughness, 1e-4);
+        float3 H = SampleGGXVNDF(hit.normal, V, alpha, RNG_Next2(rng));
+        ray.dir = normalize(reflect(-V, H));
+    }
+    else ray.dir = normalize(SampleHemisphere(hit.normal));
+    float3 value;
     float pdf;
-    float3 rayOutDir;
+    // The same marginal BSDF/PDF pair is used by PT and ReSTIR proposals.
+    EvaluateOpaqueBXDF_GivenDir(hit, V, ray.dir, value, pdf);
+    if (pdf > 0.0) throughput = value * saturate(dot(hit.normal, ray.dir)) / pdf;
+    if (all(throughput <= 0.0)) zeroReasonCode = 2.0;
+}
 
+void EvaluateBXDFWithDotAndPDFDetailed(RayHit hit, inout Ray ray,
+    out float3 throughput, out bool sampledSpecular, out float zeroReasonCode)
+{
+    float3 V = -ray.dir;
+    throughput = 0.0;
+    sampledSpecular = false;
+    zeroReasonCode = 0.0;
+    // Alpha coverage is a BSDF mixture with a straight-through delta event.
+    if (hit.mode == 2.0 && RNG_Next(rng) >= saturate(hit.material.alpha))
+    {
+        throughput = 1.0;
+        sampledSpecular = true;
+        return;
+    }
+    if (hit.mode < 3.0)
+    {
+        SampleOpaqueBXDF(hit, ray, throughput, sampledSpecular, zeroReasonCode);
+        return;
+    }
+    float roulette = RNG_Next(rng);
     if (hit.mode >= 3.0)
     {
-        if (dot(ray.dir, hit.normal) > 0.0)
-            hit.normal = -hit.normal;
-
-        float alpha = SmoothnessToPhongAlpha(hit.material.roughness);
-        hit.normal = normalize(lerp(
-            hit.normal,
-            SampleReflectionDirectionSphere(hit.normal, alpha),
-            hit.material.roughness * hit.material.roughness
-        ));
-        rayOutDir = normalize(reflect(ray.dir, hit.normal));
-        float3 H = normalize(V + rayOutDir);
-        float fresnel = DielectricFresnel(dot(H, V), hit.material.ior);
-        float reflChance = 1.0 - (1.0 - fresnel) * (1.0 - hit.material.metallic);
-        if (roulette < reflChance)
+        bool exiting = dot(V, hit.normal) < 0.0;
+        float3 N = exiting ? -hit.normal : hit.normal;
+        float eta = exiting ? rcp(hit.material.ior) : hit.material.ior;
+        float3 H = N;
+        bool smooth = hit.material.roughness < 1e-4;
+        if (!smooth)
+            H = SampleGGXVNDF(N, V, max(hit.material.roughness * hit.material.roughness, 1e-4),
+                RNG_Next2(rng));
+        float F = DielectricFresnel(dot(V, H), eta);
+        float reflectProbability = lerp(F, 1.0, hit.material.metallic);
+        sampledSpecular = true;
+        if (roulette < reflectProbability)
         {
-            sampledSpecular = true;
-            float3 brdfCos;
-            float microPdf;
-            SpecReflModel(hit, V, rayOutDir, H, brdfCos, microPdf);
-            pdf = reflChance * microPdf;
-            float NdotL = saturate(dot(hit.normal, rayOutDir));
-            pdf = max(pdf, 1e-5);
-            f_brdf = brdfCos * NdotL / pdf;
-        }
-        else
-        {
-            sampledSpecular = true;
-            rayOutDir = normalize(refract(ray.dir, hit.normal, 1.0 / hit.material.ior));
-            float3 refrWeight = 1.0;
-            SpecRefrModel(hit, V, rayOutDir, H, refrWeight);
-            pdf = clamp(1.0 - reflChance, 1e-3, 1.0);
-            f_brdf = refrWeight / pdf;
-        }
-    }
-    else
-    {
-        float specProb, diffProb;
-        GetOpaqueLobeWeights(hit.material, specProb, diffProb);
-        bool isPerfectMetal = hit.material.metallic >= 0.999 && hit.material.roughness < 1e-4;
-        if (isPerfectMetal)
-        {
-            specProb = 1.0;
-            diffProb = 0.0;
-        }
-
-        if (roulette < specProb)
-        {
-            sampledSpecular = true;
-            if (hit.material.roughness < 1e-4)
+            ray.dir = normalize(reflect(-V, H));
+            if (dot(N, ray.dir) <= 0.0) return;
+            if (smooth)
             {
-                rayOutDir = reflect(-V, hit.normal);
-                float NdotL = saturate(dot(hit.normal, rayOutDir));
-                if (NdotL <= 0.0)
-                {
-                    ray.dir = rayOutDir;
-                    f_brdf = 0.0;
-                    zeroReasonCode = 1.0;
-                    return;
-                }
-
-                float3 F0 = GetMaterialF0(hit.material);
-                float3 F = SchlickFresnel(saturate(dot(hit.normal, V)), F0);
-                pdf = max(specProb, 1e-3);
-                f_brdf = F / pdf;
-                if (all(f_brdf <= 0.0))
-                    zeroReasonCode = 3.0;
-            }
-            else
-            {
-                float alpha = max(hit.material.roughness * hit.material.roughness, 1e-4);
-                float2 xi = float2(RNG_Next(rng), RNG_Next(rng));
-                float3 H = SampleGGXVNDF(hit.normal, V, alpha, xi);
-                rayOutDir = normalize(reflect(-V, H));
-                float NdotL = saturate(dot(hit.normal, rayOutDir));
-                if (NdotL <= 0.0)
-                {
-                    ray.dir = rayOutDir;
-                    f_brdf = 0.0;
-                    zeroReasonCode = 2.0;
-                    return;
-                }
-
-                float3 f_spec;
-                float microPdf;
-                SpecReflModel(hit, V, rayOutDir, H, f_spec, microPdf);
-
-                pdf = max(specProb * microPdf, 1e-4);
-                f_brdf = f_spec * NdotL / pdf;
+                throughput = lerp(F.xxx, hit.material.albedo, hit.material.metallic) / reflectProbability;
+                return;
             }
         }
         else
         {
-            rayOutDir = normalize(SampleHemisphere(hit.normal));
-
-            float NdotV = saturate(dot(hit.normal, V));
-            float NdotL = saturate(dot(hit.normal, rayOutDir));
-            float diffusePdf = NdotL / PI;
-            float3 H = normalize(V + rayOutDir);
-            float LdotH = saturate(dot(rayOutDir, H));
-            float3 f_diffuse = EvaluateDisneyDiffuse(hit.material, NdotV, NdotL, LdotH);
-
-            pdf = max(diffusePdf * diffProb, 1e-4);
-            f_brdf = f_diffuse * NdotL / pdf;
+            float3 direction = refract(-V, H, rcp(eta));
+            if (dot(direction, direction) == 0.0 || dot(N, direction) >= 0.0) return;
+            ray.dir = normalize(direction);
+            if (smooth || eta == 1.0)
+            {
+                throughput = sqrt(max(hit.material.albedo, 0.0)) / (eta * eta);
+                return;
+            }
         }
+        float3 value;
+        float pdf;
+        EvaluateBXDF_GivenDir(hit, V, ray.dir, value, pdf);
+        if (pdf > 0.0) throughput = value * abs(dot(N, ray.dir)) / pdf;
+        return;
     }
 
-    ray.dir = rayOutDir;
 }
 
 void EvaluateBXDFWithDotAndPDF(RayHit hit, inout Ray ray, out float3 f_brdf)
@@ -375,27 +361,56 @@ void EvaluateBXDF_GivenDir(RayHit hit, float3 V, float3 L, out float3 f_brdf, ou
 
     if (hit.mode >= 3.0)
     {
-        if (dot(V, N) < 0.0)
-            N = -N;
-
-        NdotL = saturate(dot(N, L));
-        if (NdotL <= 0.0)
-            return;
-
-        hit.normal = N;
-        float3 H = normalize(V + L);
-        float3 brdfSpec;
-        float pdfSpec;
-        SpecReflModel(hit, V, L, H, brdfSpec, pdfSpec);
-
-        float fresnel = DielectricFresnel(dot(H, V), hit.material.ior);
-        float reflChance = 1.0 - (1.0 - fresnel) * (1.0 - hit.material.metallic);
-
-        f_brdf = brdfSpec;
-        pdf = reflChance * max(pdfSpec, 0.0);
+        if (hit.material.roughness < 1e-4) return; // Delta distributions have no continuous density.
+        bool exiting = dot(V, N) < 0.0;
+        if (exiting) N = -N;
+        float eta = exiting ? rcp(hit.material.ior) : hit.material.ior;
+        float NV = dot(N, V), NL = dot(N, L);
+        if (NV <= 0.0 || NL == 0.0) return;
+        bool reflection = NL > 0.0;
+        float3 halfVector = reflection ? V + L : V + eta * L;
+        if (dot(halfVector, halfVector) == 0.0) return;
+        float3 H = normalize(halfVector);
+        if (dot(N, H) < 0.0) H = -H;
+        float VH = dot(V, H), LH = dot(L, H);
+        if (VH <= 0.0 || LH * NL <= 0.0) return;
+        float alpha = max(hit.material.roughness * hit.material.roughness, 1e-4);
+        float D = DistributionGGX(N, H, alpha);
+        float G1 = SmithG(NV, alpha);
+        float G = G1 * SmithG(abs(NL), alpha);
+        float F = DielectricFresnel(VH, eta);
+        float probability = lerp(F, 1.0, hit.material.metallic);
+        if (reflection)
+        {
+            f_brdf = lerp(F.xxx, hit.material.albedo, hit.material.metallic) * D * G / (4.0 * NV * NL);
+            pdf = probability * D * G1 / (4.0 * NV);
+        }
+        else
+        {
+            float denominator = VH + eta * LH;
+            denominator *= denominator;
+            if (denominator <= 0.0) return;
+            float T = (1.0 - probability);
+            f_brdf = sqrt(max(hit.material.albedo, 0.0)) * T * D * G * abs(VH * LH) / (NV * abs(NL) * denominator);
+            pdf = T * D * G1 * VH / NV * eta * eta * abs(LH) / denominator;
+        }
         return;
     }
 
+    EvaluateOpaqueBXDF_GivenDir(hit, V, L, f_brdf, pdf);
+    if (hit.mode == 2.0)
+    {
+        f_brdf *= saturate(hit.material.alpha);
+        pdf *= saturate(hit.material.alpha);
+    }
+}
+
+void EvaluateOpaqueBXDF_GivenDir(RayHit hit, float3 V, float3 L, out float3 f_brdf, out float pdf)
+{
+    f_brdf = 0.0;
+    pdf = 0.0;
+    float3 N = hit.normal;
+    float NdotL;
     NdotL = saturate(dot(N, L));
     float NdotV = saturate(dot(N, V));
     if (NdotL <= 0.0 || NdotV <= 0.0)
@@ -406,18 +421,18 @@ void EvaluateBXDF_GivenDir(RayHit hit, float3 V, float3 L, out float3 f_brdf, ou
 
     float3 H = normalize(V + L);
     float LdotH = saturate(dot(L, H));
-    float3 f_diff = EvaluateDisneyDiffuse(hit.material, NdotV, NdotL, LdotH);
+    float3 f_diff = EvaluateOpaqueDiffuse(hit.material, NdotV, NdotL, LdotH);
     float pdf_d = NdotL / PI;
     float3 f_spec = 0.0;
     float pdf_s = 0.0;
 
-    if (hit.material.roughness >= 1e-4)
+    if (hit.material.roughness >= 1e-4 && !IsLambertianMaterial(hit.material))
     {
         float3 brdfSpec;
         float microPdf;
         SpecReflModel(hit, V, L, H, brdfSpec, microPdf);
         f_spec = brdfSpec;
-        pdf_s = microPdf;
+        pdf_s = GGXVNDFReflectionPdf(hit, V, H);
     }
 
     f_brdf = f_diff + f_spec;

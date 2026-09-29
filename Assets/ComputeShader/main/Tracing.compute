@@ -122,14 +122,24 @@ void kernel_capture_restir_frame(uint3 id : SV_DispatchThreadID)
 void kernel_generate(uint3 id : SV_DispatchThreadID)
 {
     uint pixelCount = _ScreenWidth * _ScreenHeight;
+    // Reset on the GPU in the existing dispatch. Later dispatches observe these
+    // writes; no thread in this kernel consumes the counters.
+    if (id.x == 0u)
+    {
+        for (int bounce = 0; bounce <= _TraceDepth; bounce++)
+        {
+            BufferSizes[bounce].traceRays = bounce == 0 ? pixelCount : 0;
+            BufferSizes[bounce].shadowRays = 0;
+        }
+    }
     if (id.x >= pixelCount) return;
 
     uint2 pixel = uint2(id.x % _ScreenWidth, id.x / _ScreenWidth);
 
-    // Use global rng so that Trace() -> SkipTransparent() etc. work correctly
+    // Independent per-pixel camera/path random stream.
     RNG_SeedPixel(rng, pixel, _FrameCount);
 
-    float2 jitter = float2(RNG_Next(rng), RNG_Next(rng)) - 0.5;
+    float2 jitter = RNG_Next2(rng) - 0.5;
     Ray r = GenRayByID((float2)pixel + jitter);
 
     RayData rd;
@@ -144,7 +154,8 @@ void kernel_generate(uint3 id : SV_DispatchThreadID)
     GlobalColors[id.x].L = float3(0, 0, 0);
     GlobalColors[id.x].throughput = float3(1, 1, 1);
     GlobalHits[id.x].distance = 1.#INF;
-    PrimarySurfaceHistory[id.x] = GenHitData();
+    if (_UseReSTIRDI || _UseReSTIRGI)
+        PrimarySurfaceHistory[id.x] = GenHitData();
 
     // Debug modes: write debug color to GlobalColors (finalize kernel will output it)
     if (_OnlyDrawAlbedo || _OnlyDrawDepth || _OnlyDrawNormals)
@@ -178,6 +189,29 @@ void kernel_trace(uint3 id : SV_DispatchThreadID)
     RayData rd = GlobalRays[id.x];
     if (rd.throughput.x <= 0 && rd.throughput.y <= 0 && rd.throughput.z <= 0) return;
 
+    if (_UseReSTIRGI && CurBounce == 1)
+    {
+        SecondarySurfaceData cached = SecondarySurfaces[rd.pixelIndex];
+        if (HasCachedGISecondaryHit(cached.flags))
+        {
+            HitData hd;
+            hd.position = cached.position;
+            hd.distance = cached.secondaryDistance >= 1e19 ? 1.#INF : cached.secondaryDistance;
+            hd.normal = cached.normal;
+            hd.geometryNormal = cached.geometryNormal;
+            hd.mode = cached.mode;
+            hd.albedo = cached.albedo;
+            hd.emission = cached.emissionRadiance;
+            hd.emissionIntensity = 1.0;
+            hd.roughness = cached.roughness;
+            hd.metallic = cached.metallic;
+            hd.alpha = cached.alpha;
+            hd.ior = cached.ior;
+            GlobalHits[id.x] = hd;
+            return;
+        }
+    }
+
     rng.state = rd.rngState;
     _Pixel = uint2(rd.pixelIndex % _ScreenWidth, rd.pixelIndex / _ScreenWidth);
 
@@ -187,11 +221,13 @@ void kernel_trace(uint3 id : SV_DispatchThreadID)
     ray.invDir = 1.0 / ray.dir;
 
     RayHit hit = Trace(ray);
+    GlobalRays[id.x].rngState = rng.state;
 
     HitData hd;
     hd.position = hit.position;
     hd.distance = hit.distance;
     hd.normal = hit.normal;
+    hd.geometryNormal = hit.geometryNormal;
     hd.mode = hit.mode;
     hd.albedo = hit.material.albedo;
     hd.emission = hit.material.emission;
@@ -223,7 +259,9 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
     // ReSTIR GI estimates the local radiance reached by the primary BSDF sample.
     // The wavefront path still crosses that vertex so it can continue at bounce 2+,
     // but must not add the same sky/emission/direct-light terms a second time.
-    bool restirGIReplacesLocalShading = _UseReSTIRGI && CurBounce == 1;
+    SecondarySurfaceData giPath = (SecondarySurfaceData)0;
+    [branch] if (_UseReSTIRGI) giPath = SecondarySurfaces[rd.pixelIndex];
+    bool restirGIReplacesLocalShading = _UseReSTIRGI && CurBounce == 1 && giPath.flags >= 0.0;
 
     // Miss → skybox
     if (hd.distance >= 1.#INF)
@@ -245,6 +283,7 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
     hit.position = hd.position;
     hit.distance = hd.distance;
     hit.normal = hd.normal;
+    hit.geometryNormal = hd.geometryNormal;
     hit.mode = hd.mode;
     hit.material.albedo = hd.albedo;
     hit.material.emission = hd.emission;
@@ -254,13 +293,15 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
     hit.material.alpha = hd.alpha;
     hit.material.ior = hd.ior;
     hit.should_break = false;
+    if (hit.mode < 3.0 && dot(-rd.direction, hit.normal) < 0.0)
+        hit.normal = -hit.normal;
 
-    if (CurBounce == 0)
+    if (CurBounce == 0 && (_UseReSTIRDI || _UseReSTIRGI))
         PrimarySurfaceHistory[rd.pixelIndex] = hd;
 
     // Emission
     if (!restirGIReplacesLocalShading && hit.material.emissionIntensity > 0.0f)
-        L += throughput * (hit.material.emission * hit.material.emissionIntensity);
+        L += throughput * (hit.material.emission * hit.material.emissionIntensity) * (hit.mode == 2.0 ? saturate(hit.material.alpha) : 1.0);
 
     // Wavefront direct lighting: shade samples a light candidate and queues a shadow ray.
     // The shadow kernel is the only stage that resolves visibility and commits the contribution.
@@ -273,11 +314,18 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
     ray.dir = rd.direction;
     ray.invDir = 1.0 / ray.dir;
     float3 f_brdf;
-    EvaluateBXDFWithDotAndPDF(hit, /*inout*/ ray, f_brdf);
+    if (_UseReSTIRGI && CurBounce == 0 && dot(giPath.primaryDirection, giPath.primaryDirection) > 0.5)
+    {
+        // Continue the exact primary BSDF sample used to construct GI.
+        ray.dir = giPath.primaryDirection;
+        f_brdf = giPath.throughput;
+    }
+    else
+        EvaluateBXDFWithDotAndPDF(hit, /*inout*/ ray, f_brdf);
     throughput *= f_brdf;
 
     // Russian Roulette
-    float p = max(throughput.r, max(throughput.g, throughput.b));
+    float p = saturate(max(throughput.r, max(throughput.g, throughput.b)));
     if (RNG_Next(rng) >= p)
     {
         GlobalColors[rd.pixelIndex].L = L;
@@ -289,7 +337,8 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
 
     // Write next-bounce ray
     ray.invDir = 1.0 / ray.dir;
-    ray.origin = hit.position + hit.normal * 1e-5;
+    ray.origin = hit.position + hit.geometryNormal *
+        (dot(hit.geometryNormal, ray.dir) >= 0.0 ? 1e-5 : -1e-5);
 
     uint nextIndex;
     InterlockedAdd(BufferSizes[CurBounce + 1].traceRays, 1, nextIndex);
@@ -319,10 +368,8 @@ void kernel_shadow(uint3 id : SV_DispatchThreadID)
     ray.dir = sr.direction;
     ray.invDir = 1.0 / ray.dir;
 
-    if (IntersectTlasFast(ray, sr.maxDist))
-        return;
-
-    GlobalColors[sr.pixelIndex].L += sr.illumination;
+    float visibility = TraceVisibility(ray, sr.maxDist, true);
+    GlobalColors[sr.pixelIndex].L += sr.illumination * visibility;
 }
 
 // ==================== Kernel 4: Finalize ====================

@@ -1,135 +1,29 @@
 using System;
 using System.IO;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using NUnit.Framework;
-using UnityEngine;
 
 public class ReSTIRDiagnosticsTests
 {
     [Test]
-    public void Diagnostics_Use_One_Compact_Async_Readback()
+    public void Indirect_Reservoir_Stride_Matches_Shader_Layout()
     {
-        string path = ProjectFile("Assets", "Scripts", "ReSTIRDiagnosticsSession.cs");
-        Assert.That(File.Exists(path), Is.True, $"Missing diagnostics session: {path}");
-
-        string source = File.ReadAllText(path);
-        StringAssert.Contains("PacketWordCount = 1024", source);
-        StringAssert.Contains("AsyncGPUReadback.Request", source);
-        StringAssert.Contains("_readbackPending", source);
-        StringAssert.DoesNotContain(".GetData(", source);
-        StringAssert.DoesNotContain("File.AppendAllText", source);
-    }
-
-    [Test]
-    public void Diagnostics_Isolate_File_Sinks_And_Back_Off_Repeated_Readback_Failures()
-    {
-        string source = File.ReadAllText(ProjectFile("Assets", "Scripts", "ReSTIRDiagnosticsSession.cs"));
-
-        StringAssert.Contains("private sealed class JsonlSink", source);
-        StringAssert.Contains("disabled sink", source);
-        StringAssert.Contains("MaxConsecutiveReadbackErrors", source);
-        StringAssert.Contains("_nextReadbackFrame", source);
-        StringAssert.Contains("_gpuTelemetryDisabled = true", source);
-        StringAssert.Contains("WriteWarning(\"packet_stale\"", source);
-    }
-
-    [Test]
-    public void Tracing_Does_Not_Synchronously_Read_Diagnostic_Buffers()
-    {
-        string source = File.ReadAllText(ProjectFile("Assets", "Scripts", "Tracing.cs"));
-        StringAssert.DoesNotContain(".GetData(", source);
-        StringAssert.DoesNotContain("_globalColorFrameBeforeReadback", source);
-        StringAssert.DoesNotContain("_globalColorFrameAfterReadback", source);
-        StringAssert.DoesNotContain("WriteReSTIRGIProbeIfNeeded", source);
-        StringAssert.Contains("ReSTIRDiagnosticsSession", source);
-        StringAssert.Contains("RequestCapture", source);
-    }
-
-    [Test]
-    public void Telemetry_Capture_Uses_The_Exact_Shader_Frame_Id()
-    {
-        string source = File.ReadAllText(ProjectFile("Assets", "Scripts", "Tracing.cs"));
-
-        StringAssert.Contains("_restirDiagnostics.BeginCapture(\n            (int)frameId,", source);
-        StringAssert.Contains("SetInt(\"_FrameCount\", (int)frameId)", source);
-        StringAssert.DoesNotContain("_currentShaderFrameId", source);
-    }
-
-    [Test]
-    public void Runtime_Proof_Uses_DI_And_GI_With_Denoise_Disabled()
-    {
-        string selfTest = File.ReadAllText(ProjectFile("Assets", "Scripts", "Editor", "SelfTest.cs"));
-        string tracing = File.ReadAllText(ProjectFile("Assets", "Scripts", "Tracing.cs"));
-        string session = File.ReadAllText(ProjectFile("Assets", "Scripts", "ReSTIRDiagnosticsSession.cs"));
-        string verifier = File.ReadAllText(ProjectFile("Tests", "Verify-LatestReSTIRGILogs.ps1"));
-
-        StringAssert.Contains("SetPrivateField(tracing, \"UseReSTIRDI\", true);", selfTest);
-        StringAssert.Contains("SetPrivateField(tracing, \"UseReSTIRGI\", true);", selfTest);
-        StringAssert.Contains("SetPrivateField(tracing, \"Denoise\", false);", selfTest);
-        StringAssert.Contains("GetBoolArg(\"-toggleRestirModes\", false)", selfTest);
-        StringAssert.Contains("ApplyReSTIRModePhase(s_tracing, s_modePhase);", selfTest);
-        StringAssert.Contains("ReSTIR mode reset observed", selfTest);
-        StringAssert.Contains("observedModes.Contains(1)", selfTest);
-        StringAssert.Contains("observedModes.Contains(2)", selfTest);
-        StringAssert.Contains("observedModes.Contains(3)", selfTest);
-        StringAssert.Contains("(Denoise ? 16 : 0)", tracing);
-        StringAssert.Contains("useReSTIRDI", session);
-        StringAssert.Contains("useReSTIRGI", session);
-        StringAssert.Contains("denoise", session);
-        StringAssert.Contains("Stopwatch.GetTimestamp() - renderStartTimestamp", tracing);
-        StringAssert.Contains("RequestCapture(_restirTelemetry, frameMilliseconds)", tracing);
-        StringAssert.DoesNotContain("Time.unscaledDeltaTime * 1000.0", tracing);
-        StringAssert.Contains("restir_di_stats.jsonl", verifier);
-        StringAssert.Contains("DI initial/temporal/shade rows", verifier);
-    }
-
-    [Test]
-    public void Telemetry_Instrumentation_Does_Not_Change_GI_Estimator_Behavior()
-    {
-        string giInitial = RestirShader("gi_initial.hlsl");
-        string giShade = RestirShader("gi_shade.hlsl");
-        string common = RestirShader("restir_common.hlsl");
-
-        StringAssert.Contains("IsDirectLightSampleVisible(selectedSample)", giInitial);
-        StringAssert.Contains("return !IntersectTlasFast(shadowRay, tMax);", common);
-        StringAssert.Contains("if (!IsGISecondaryBypass(sampleFlags))\n        data.throughput = 1.0;", giInitial);
-        StringAssert.DoesNotContain("ApplyGIContributionFence", giShade);
-        StringAssert.DoesNotContain("RESTIR_GI_FIRE_FLY_LUM_LIMIT", giShade);
-        StringAssert.Contains("weightedReflectedRadiance = reflectedRadiance * res.weightSum;", giShade);
-    }
-
-    [Test]
-    public void Async_Readback_Uses_The_Generation_Captured_With_The_Request()
-    {
-        string session = File.ReadAllText(ProjectFile("Assets", "Scripts", "ReSTIRDiagnosticsSession.cs"));
-
-        StringAssert.Contains("ProcessPacketWords(_packetWords, context.Generation, out string error)", session);
-        StringAssert.DoesNotContain("ProcessPacketWords(_packetWords, Generation, out string error)", session,
-            "A mode toggle may advance the live generation while an older valid readback is still pending.");
-    }
-
-    [Test]
-    public void Render_Frame_Uses_One_Frame_Id_Across_Primary_And_ReSTIR_Kernels()
-    {
-        string tracing = File.ReadAllText(ProjectFile("Assets", "Scripts", "Tracing.cs"));
-
-        StringAssert.Contains("SetInt(\"_FrameCount\", (int)++frameId)", tracing);
-        StringAssert.DoesNotContain("SetInt(\"_FrameCount\", (int)frameId++)", tracing,
-            "Post-increment makes primary generation use the previous frame while ReSTIR uses the next one.");
-    }
-
-    [Test]
-    public void Direct_Light_Candidate_Selection_Does_Not_Require_A_Second_Gpu_Cdf()
-    {
-        string tracing = File.ReadAllText(ProjectFile("Assets", "Scripts", "Tracing.cs"));
-        string compute = File.ReadAllText(ProjectFile("Assets", "ComputeShader", "main", "Tracing.compute"));
-        string initial = RestirShader("generate_initial.hlsl");
-
-        StringAssert.DoesNotContain(".GetData(", tracing);
-        StringAssert.DoesNotContain("FindKernel(\"kernel_build_light_cdf\")", tracing);
-        StringAssert.DoesNotContain("Dispatch(kernelBuildLightCdf, 1, 1, 1)", tracing);
-        StringAssert.DoesNotContain("#pragma kernel kernel_build_light_cdf", compute);
-        StringAssert.Contains("SampleDirectLightCandidate(", initial);
+        Type tracing = RuntimeType("Tracing");
+        FieldInfo field = tracing.GetField("IndirectReservoirStride", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.That(field, Is.Not.Null);
+        string shader = File.ReadAllText(Path.Combine(Path.GetDirectoryName(UnityEngine.Application.dataPath),
+            "Assets", "ComputeShader", "main", "global.hlsl"));
+        Match definition = Regex.Match(shader, @"struct IndirectReservoirData\s*\{(?<fields>.*?)\};", RegexOptions.Singleline);
+        Assert.That(definition.Success, Is.True);
+        string fields = Regex.Replace(definition.Groups["fields"].Value, @"//[^\r\n]*", "");
+        int bytes = 0;
+        foreach (Match member in Regex.Matches(fields, @"\b(?:float|uint)(?<count>[234]?)\s+\w+\s*;"))
+        {
+            string count = member.Groups["count"].Value;
+            bytes += 4 * (count.Length == 0 ? 1 : int.Parse(count));
+        }
+        Assert.That((int)field.GetValue(null), Is.EqualTo(bytes));
     }
 
     [TestCase(1, true)]
@@ -201,7 +95,7 @@ public class ReSTIRDiagnosticsTests
             Type settingsType = RuntimeType("ReSTIRDiagnosticsSettings");
             object settings = Activator.CreateInstance(settingsType, new object[]
             {
-                root, "TestScene", 640, 360, false, 60, true, true, false
+                root, "TestScene", 640, 360, false, 60, false, false, false
             });
 
             Type sessionType = RuntimeType("ReSTIRDiagnosticsSession");
@@ -210,14 +104,18 @@ public class ReSTIRDiagnosticsTests
             string outputDirectory = (string)sessionType.GetProperty("OutputDirectory").GetValue(session);
             string sessionId = (string)sessionType.GetProperty("SessionId").GetValue(session);
 
+            sessionType.GetMethod("RecordRenderModes").Invoke(session, new object[] { true, true });
             sessionType.GetMethod("RecordStateChange").Invoke(session, new object[] { "restir_gi_toggled", 1 });
             ((IDisposable)session).Dispose();
 
-            string sessionLog = File.ReadAllText(Path.Combine(outputDirectory, "restir_session.jsonl"));
+            string[] sessionLog = File.ReadAllLines(Path.Combine(outputDirectory, "restir_session.jsonl"));
             string eventsLog = File.ReadAllText(Path.Combine(outputDirectory, "restir_events.jsonl"));
-            StringAssert.Contains("\"event\":\"session_start\"", sessionLog);
-            StringAssert.Contains("\"event\":\"session_end\"", sessionLog);
-            StringAssert.Contains("\"sessionId\":\"" + sessionId + "\"", sessionLog);
+            Assert.That(sessionLog, Has.Length.EqualTo(2));
+            StringAssert.Contains("\"event\":\"session_start\"", sessionLog[0]);
+            StringAssert.Contains("\"restirModeSeen\":false", sessionLog[0]);
+            StringAssert.Contains("\"event\":\"session_end\"", sessionLog[1]);
+            StringAssert.Contains("\"restirModeSeen\":true", sessionLog[1]);
+            StringAssert.Contains("\"sessionId\":\"" + sessionId + "\"", sessionLog[1]);
             StringAssert.Contains("\"reason\":\"restir_gi_toggled\"", eventsLog);
             StringAssert.Contains("\"sessionId\":\"" + sessionId + "\"", eventsLog);
         }
@@ -288,101 +186,33 @@ public class ReSTIRDiagnosticsTests
     }
 
     [Test]
-    public void Editor_Bridge_Validates_Only_A_New_Completed_Session_Without_UI_Or_Exit()
+    public void Explicit_Validation_Rejects_Zero_Captures()
     {
-        string bridgePath = ProjectFile("Assets", "Scripts", "Editor", "ReSTIRDiagnosticsEditorBridge.cs");
-        Assert.That(File.Exists(bridgePath), Is.True, $"Missing Editor diagnostics bridge: {bridgePath}");
+        string root = Path.Combine(Path.GetTempPath(), "restir-verifier-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            File.WriteAllLines(Path.Combine(root, "restir_session.jsonl"), new[]
+            {
+                "{\"sessionId\":\"test\",\"event\":\"session_start\",\"useReSTIRDI\":true,\"useReSTIRGI\":true}",
+                "{\"sessionId\":\"test\",\"event\":\"session_end\",\"acceptedCaptures\":0,\"readbackErrors\":0}"
+            });
+            Type verifier = Type.GetType("SelfTest, Assembly-CSharp-Editor");
+            Assert.That(verifier, Is.Not.Null);
+            MethodInfo verify = verifier.GetMethod("VerifyGILogsInDirectory", new[]
+            {
+                typeof(string), typeof(string).MakeByRefType()
+            });
+            Assert.That(verify, Is.Not.Null);
 
-        string bridge = File.ReadAllText(bridgePath);
-        StringAssert.Contains("[InitializeOnLoad]", bridge);
-        StringAssert.Contains("EditorApplication.playModeStateChanged", bridge);
-        StringAssert.Contains("PlayModeStateChange.EnteredEditMode", bridge);
-        StringAssert.Contains("EditorApplication.delayCall", bridge);
-        StringAssert.Contains("session_end", bridge);
-        StringAssert.Contains("VerifyLatestGILogsNonInteractive", bridge);
-        StringAssert.DoesNotContain("DisplayDialog", bridge);
-        StringAssert.DoesNotContain("EditorApplication.Exit", bridge);
-
-        string selfTest = File.ReadAllText(ProjectFile("Assets", "Scripts", "Editor", "SelfTest.cs"));
-        StringAssert.Contains("public static bool VerifyLatestGILogsNonInteractive(out string report)", selfTest);
-    }
-
-    [Test]
-    public void Telemetry_Hlsl_Layout_Matches_CSharp_And_Has_Clear_Kernel()
-    {
-        Type layout = RuntimeType("ReSTIRTelemetryLayout");
-        int packetWords = Constant<int>(layout, "PacketWordCount");
-        int recordEnd = Constant<int>(layout, "RecordBase") +
-            Constant<int>(layout, "RecordWordCount") * Constant<int>(layout, "RecordCount");
-        Assert.That(recordEnd, Is.EqualTo(packetWords), "Record region must end at the packet boundary");
-
-        string telemetryPath = ProjectFile("Assets", "ComputeShader", "main", "restir", "telemetry.hlsl");
-        Assert.That(File.Exists(telemetryPath), Is.True, $"Missing telemetry include: {telemetryPath}");
-        string telemetry = File.ReadAllText(telemetryPath);
-
-        StringAssert.Contains("#define RESTIR_TELEMETRY_MAGIC 0x52535452u", telemetry);
-        StringAssert.Contains("#define RESTIR_TELEMETRY_SCHEMA 1u", telemetry);
-        StringAssert.Contains("#define RESTIR_TELEMETRY_PACKET_WORDS 1024u", telemetry);
-        StringAssert.Contains("#define RESTIR_TELEMETRY_COUNTER_BASE 32u", telemetry);
-        StringAssert.Contains("#define RESTIR_TELEMETRY_COUNTER_COUNT 96u", telemetry);
-        StringAssert.Contains("#define RESTIR_TELEMETRY_RECORD_BASE 128u", telemetry);
-        StringAssert.Contains("#define RESTIR_TELEMETRY_RECORD_WORDS 56u", telemetry);
-        StringAssert.Contains("#define RESTIR_TELEMETRY_RECORD_COUNT 16u", telemetry);
-        StringAssert.Contains("RWByteAddressBuffer ReSTIRTelemetry", telemetry);
-        StringAssert.Contains("InterlockedCompareExchange", telemetry);
-        StringAssert.Contains("_RestirTelemetrySampleStride", telemetry);
-
-        string compute = File.ReadAllText(ProjectFile("Assets", "ComputeShader", "main", "Tracing.compute"));
-        StringAssert.Contains("#pragma kernel kernel_clear_restir_telemetry", compute);
-        StringAssert.Contains("void kernel_clear_restir_telemetry", compute);
-    }
-
-    [Test]
-    public void ReSTIR_Stages_Emit_Bounded_Telemetry_Without_Replacing_Estimator_Formulas()
-    {
-        string diInitial = RestirShader("generate_initial.hlsl");
-        StringAssert.Contains("RESTIR_COUNTER_DI_INITIAL_INVALID_SURFACE", diInitial);
-        StringAssert.Contains("RESTIR_COUNTER_DI_INITIAL_INVALID_PROPOSAL", diInitial);
-        StringAssert.Contains("RESTIR_COUNTER_DI_INITIAL_ACCEPTED", diInitial);
-
-        string diTemporal = RestirShader("temporal_resampling.hlsl");
-        StringAssert.Contains("RESTIR_COUNTER_DI_TEMPORAL_INVALID_CURRENT", diTemporal);
-        StringAssert.Contains("RESTIR_COUNTER_DI_TEMPORAL_REPROJECTION_OOB", diTemporal);
-        StringAssert.Contains("RESTIR_COUNTER_DI_TEMPORAL_HISTORY_COMBINED", diTemporal);
-        StringAssert.Contains("RESTIR_COUNTER_DI_TEMPORAL_HISTORY_SELECTED", diTemporal);
-        StringAssert.Contains("float prevW = prev.selectedWeight * prevSample.targetLum", diTemporal);
-
-        string giInitial = RestirShader("gi_initial.hlsl");
-        StringAssert.Contains("RESTIR_COUNTER_GI_INITIAL_PRIMARY_MISS", giInitial);
-        StringAssert.Contains("RESTIR_COUNTER_GI_INITIAL_INVALID_SECONDARY", giInitial);
-        StringAssert.Contains("RESTIR_COUNTER_GI_INITIAL_ZERO_TARGET", giInitial);
-        StringAssert.Contains("RESTIR_COUNTER_GI_INITIAL_ACCEPTED", giInitial);
-        StringAssert.Contains("WriteIndirectReservoirTelemetry", giInitial);
-        StringAssert.Contains("InitializeIndirectReservoirSample(", giInitial);
-
-        string giTemporal = RestirShader("gi_temporal.hlsl");
-        StringAssert.Contains("RESTIR_COUNTER_GI_TEMPORAL_INVALID_CURRENT", giTemporal);
-        StringAssert.Contains("RESTIR_COUNTER_GI_TEMPORAL_REPROJECTION_OOB", giTemporal);
-        StringAssert.Contains("RESTIR_COUNTER_GI_TEMPORAL_HISTORY_COMBINED", giTemporal);
-        StringAssert.Contains("RESTIR_COUNTER_GI_TEMPORAL_HISTORY_SELECTED", giTemporal);
-        StringAssert.Contains("FinalizeIndirectReservoir(outR, normalizationNumerator, normalizationDenominator);", giTemporal);
-
-        string giSpatial = RestirShader("gi_spatial.hlsl");
-        StringAssert.Contains("RESTIR_COUNTER_GI_SPATIAL_INVALID_CURRENT", giSpatial);
-        StringAssert.Contains("RESTIR_COUNTER_GI_SPATIAL_INVALID_NEIGHBOR", giSpatial);
-        StringAssert.Contains("RESTIR_COUNTER_GI_SPATIAL_REEVALUATION_REJECTED", giSpatial);
-        StringAssert.Contains("RESTIR_COUNTER_GI_SPATIAL_JACOBIAN_REJECTED", giSpatial);
-        StringAssert.Contains("RESTIR_COUNTER_GI_SPATIAL_NEIGHBOR_COMBINED", giSpatial);
-        StringAssert.Contains("RESTIR_COUNTER_GI_SPATIAL_NEIGHBOR_SELECTED", giSpatial);
-        StringAssert.Contains("FinalizeIndirectReservoir(outR, normalizationNumerator, normalizationDenominator);", giSpatial);
-
-        string giFinal = RestirShader("gi_shade.hlsl");
-        StringAssert.Contains("RESTIR_COUNTER_GI_FINAL_INVALID_PRIMARY", giFinal);
-        StringAssert.Contains("RESTIR_COUNTER_GI_FINAL_INVALID_RESERVOIR", giFinal);
-        StringAssert.Contains("RESTIR_COUNTER_GI_FINAL_VISIBILITY_REJECTED", giFinal);
-        StringAssert.Contains("RESTIR_COUNTER_GI_FINAL_NONFINITE_CONTRIBUTION", giFinal);
-        StringAssert.Contains("RESTIR_COUNTER_GI_FINAL_POSITIVE_CONTRIBUTION", giFinal);
-        StringAssert.Contains("GlobalColors[id.x].L += max(gi, 0.0);", giFinal);
+            object[] arguments = { root, null };
+            Assert.That((bool)verify.Invoke(null, arguments), Is.False);
+            StringAssert.Contains("acceptedCaptures=0, readbackErrors=0", (string)arguments[1]);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
     }
 
     private static void AssertDecodeFails(Type packetType, uint[] words, int expectedGeneration, string expectedMessage)
@@ -411,17 +241,5 @@ public class ReSTIRDiagnosticsTests
     private static uint FloatBits(float value)
     {
         return BitConverter.ToUInt32(BitConverter.GetBytes(value), 0);
-    }
-
-    private static string ProjectFile(params string[] parts)
-    {
-        string projectRoot = Path.GetDirectoryName(Application.dataPath);
-        Assert.That(projectRoot, Is.Not.Null.And.Not.Empty);
-        return Path.GetFullPath(Path.Combine(projectRoot, Path.Combine(parts)));
-    }
-
-    private static string RestirShader(string fileName)
-    {
-        return File.ReadAllText(ProjectFile("Assets", "ComputeShader", "main", "restir", fileName));
     }
 }

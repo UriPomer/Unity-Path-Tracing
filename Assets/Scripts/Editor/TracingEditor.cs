@@ -21,7 +21,6 @@ public class TracingEditor : Editor
         {
             Draw("skyboxTexture", "Skybox");
             Draw("SkyboxIntensity", "Sky Intensity");
-            Draw("SunFocus", "Sun Focus");
             Draw("SunAngularRadius", "Sun Angular Radius");
         });
 
@@ -48,11 +47,21 @@ public class TracingEditor : Editor
             Draw("WriteReSTIRGIDiagnostics", "Write GI Diagnostics");
             Draw("WriteReSTIRGIDiagnosticDetails", "Write GI Diagnostic Details");
             Draw("ReSTIRGIDiagnosticFrameInterval", "GI Diagnostic Frame Interval");
+            SerializedProperty gi = serializedObject.FindProperty("UseReSTIRGI");
+            SerializedProperty depth = serializedObject.FindProperty("TraceDepth");
+            if (!gi.hasMultipleDifferentValues && gi.boolValue &&
+                !depth.hasMultipleDifferentValues && depth.intValue <= 1)
+                EditorGUILayout.HelpBox("ReSTIR GI requires Trace Depth greater than 1.", MessageType.Warning);
         });
+
+        SerializedProperty albedoOnly = serializedObject.FindProperty("OnlyDrawAlbedo");
+        SerializedProperty normalsOnly = serializedObject.FindProperty("OnlyDrawNormals");
+        SerializedProperty depthOnly = serializedObject.FindProperty("OnlyDrawDepth");
+        if (albedoOnly.boolValue || normalsOnly.boolValue || depthOnly.boolValue)
+            EditorGUILayout.HelpBox("Lighting debug view is active; ReSTIR DI and GI are not dispatched.", MessageType.Info);
 
         DrawSection("Output", () =>
         {
-            Draw("Denoise", "Denoise");
             Draw("ToneMap", "Tone Map");
             Draw("Exposure", "Exposure");
         });

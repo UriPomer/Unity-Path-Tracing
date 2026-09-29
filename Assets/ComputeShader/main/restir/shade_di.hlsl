@@ -23,8 +23,9 @@ void kernel_shade_di_samples(uint3 id : SV_DispatchThreadID)
     shadowRay.origin = res.origin;
     shadowRay.dir = res.direction;
     shadowRay.invDir = 1.0 / res.direction;
-    float tMax = res.maxDist > 0.0 ? res.maxDist * 0.999 : 1e20;
-    if (IntersectTlasFast(shadowRay, tMax))
+    float tMax = res.maxDist > 0.0 ? res.maxDist : 1e20;
+    float visibility = TraceVisibility(shadowRay, tMax, true);
+    if (visibility <= 0.0)
     {
         RestirTelemetryCount(RESTIR_COUNTER_DI_SHADE_VISIBILITY_REJECTED, id.x);
         WriteDirectReservoirTelemetry(
@@ -36,7 +37,7 @@ void kernel_shade_di_samples(uint3 id : SV_DispatchThreadID)
     }
 
     // Visible: accumulate weighted contribution
-    float3 di = res.contribution * res.selectedWeight;
+    float3 di = res.contribution * res.selectedWeight * visibility;
     if (!all(isfinite(di)))
     {
         RestirTelemetryCountCritical(RESTIR_COUNTER_CRITICAL_NONFINITE);

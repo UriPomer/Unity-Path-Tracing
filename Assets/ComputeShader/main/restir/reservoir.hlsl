@@ -30,9 +30,12 @@ float ComputeDirectBiasCorrectedWeight(
 bool IsReservoirValid(DirectLightReservoirData r)
 {
     return r.targetLum > 0.0 && r.weightSum > 0.0 && r.maxDist > 0.0
+        && r.sampleCount > 0u && r.proposalPdf > 0.0
+        && isfinite(r.targetLum) && isfinite(r.proposalPdf)
         && isfinite(r.weightSum) && isfinite(r.maxDist)
         && r.selectedWeight > 0.0 && isfinite(r.selectedWeight)
         && all(isfinite(r.origin)) && all(isfinite(r.direction))
+        && all(isfinite(r.contribution))
         && (r.lightType == 1u || r.lightType == 2u);
 }
 
@@ -78,7 +81,7 @@ void WriteDirectReservoirTelemetry(
         float4(reservoir.origin, reservoir.maxDist),
         float4(reservoir.direction, reservoir.targetLum),
         float4(reservoir.contribution, reservoir.weightSum),
-        float4(reservoir.surfaceNormal, reservoir.proposalPdf),
+        float4(reservoir.receiverPosition, reservoir.proposalPdf),
         stageData0,
         stageData1);
 }

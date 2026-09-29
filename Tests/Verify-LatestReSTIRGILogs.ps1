@@ -60,9 +60,6 @@ function Verify-TelemetrySession([System.IO.DirectoryInfo]$directory) {
     }
 
     $sessionId = [string]$start[0].sessionId
-    if ($start[0].denoise -ne $false) {
-        Fail "Runtime proof requires denoise=false"
-    }
     if ([int]$end[0].acceptedCaptures -le 0 -or [int]$end[0].readbackErrors -ne 0) {
         Fail "Telemetry session ended with acceptedCaptures=$($end[0].acceptedCaptures), readbackErrors=$($end[0].readbackErrors)"
     }
@@ -76,8 +73,8 @@ function Verify-TelemetrySession([System.IO.DirectoryInfo]$directory) {
             Fail "Invalid telemetry stats correlation"
         }
         $mode = [int]$row.modeFlags -band 3
-        if ($mode -eq 0 -or ([int]$row.modeFlags -band 16) -ne 0) {
-            Fail "Telemetry packet must have DI or GI enabled with denoise disabled at frame=$($row.frameIndex)"
+        if ($mode -eq 0) {
+            Fail "Telemetry packet must have DI or GI enabled at frame=$($row.frameIndex)"
         }
         $centerX = [int][Math]::Floor([int]$row.renderWidth / 2.0)
         $centerY = [int][Math]::Floor([int]$row.renderHeight / 2.0)
@@ -92,6 +89,14 @@ function Verify-TelemetrySession([System.IO.DirectoryInfo]$directory) {
             [int]$row.criticalBufferContract -ne 0) {
             Fail "Critical telemetry counter failed at frame=$($row.frameIndex)"
         }
+    }
+
+    $proofFrames = @($stats | Where-Object { ([int]$_.modeFlags -band 19) -eq 3 })
+    if ($proofFrames.Count -eq 0) {
+        Fail "Runtime proof needs a captured DI+GI frame with denoise off"
+    }
+    if (@($proofFrames | Where-Object { [int]$_.sampleCount -gt 1 }).Count -eq 0) {
+        Fail "Runtime proof has only the first DI+GI sample after reset; capture a later frame to verify temporal reuse"
     }
 
     $events = @(Parse-OptionalJsonLines (Join-Path $directory.FullName 'restir_events.jsonl'))
@@ -128,10 +133,8 @@ function Verify-TelemetrySession([System.IO.DirectoryInfo]$directory) {
 
     $temporal = @(Parse-OptionalJsonLines (Join-Path $directory.FullName 'restir_gi_temporal_stats.jsonl'))
     $spatial = @(Parse-OptionalJsonLines (Join-Path $directory.FullName 'restir_gi_spatial_stats.jsonl'))
-    if ($RequireReuseFormulaCoverage) {
-        Assert-TelemetryStageRows $temporal $sessionId 'gi_temporal' 'restir_gi_temporal_stats.jsonl'
-        Assert-TelemetryStageRows $spatial $sessionId 'gi_spatial' 'restir_gi_spatial_stats.jsonl'
-    }
+    Assert-TelemetryStageRows $temporal $sessionId 'gi_temporal' 'restir_gi_temporal_stats.jsonl'
+    Assert-TelemetryStageRows $spatial $sessionId 'gi_spatial' 'restir_gi_spatial_stats.jsonl'
 
     $allStageRows = @($diInitial) + @($diTemporal) + @($diShade) + @($probe) + @($temporal) + @($spatial) + @($final) + @($frameOutput)
     $frameOutputByMode = @{}
@@ -474,11 +477,9 @@ $temporalSelectedHistoryRows = @($validTemporal | Where-Object {
     [double]$_.selectedPrevJacobian -gt 0
 })
 foreach ($row in $temporalSelectedHistoryRows) {
-    $expectedReuseProposalPdf = [Math]::Max(
-        [double]$row.selectedPrevOriginalProposalPdf / [double]$row.selectedPrevJacobian,
-        1e-8)
+    $expectedReuseProposalPdf = [double]$row.selectedPrevOriginalProposalPdf / [double]$row.selectedPrevJacobian
     $currentM = [Math]::Max([double]$row.sampleCountM - [double]$row.combinedPrevSampleCountM, 0.0)
-    $expectedPiSum = [double]$row.currentTargetPdf * $currentM + [double]$row.combinedPrevPi * [double]$row.combinedPrevSampleCountM
+    $expectedPiSum = [double]$row.selectedTargetPdf * $currentM + [double]$row.combinedPrevPi * [double]$row.combinedPrevSampleCountM
     $expectedDenominator = [double]$row.selectedTargetPdf * [double]$row.temporalPiSum
 
     Assert-Near ([double]$row.selectedPrevReuseProposalPdf) $expectedReuseProposalPdf "temporal selected-history proposalPdf/jacobian frame=$($row.frameIndex) probe=$($row.selectedProbeId)"
@@ -497,11 +498,9 @@ $temporalCurrentSelectedHistoryRows = @($validTemporal | Where-Object {
     [double]$_.combinedPrevSampleCountM -gt 0
 })
 foreach ($row in $temporalCurrentSelectedHistoryRows) {
-    $expectedReuseProposalPdf = [Math]::Max(
-        [double]$row.combinedPrevOriginalProposalPdf / [double]$row.combinedPrevJacobian,
-        1e-8)
+    $expectedReuseProposalPdf = [double]$row.combinedPrevOriginalProposalPdf / [double]$row.combinedPrevJacobian
     $currentM = [Math]::Max([double]$row.sampleCountM - [double]$row.combinedPrevSampleCountM, 0.0)
-    $expectedPiSum = [double]$row.currentTargetPdf * $currentM + [double]$row.combinedPrevPi * [double]$row.combinedPrevSampleCountM
+    $expectedPiSum = [double]$row.selectedTargetPdf * $currentM + [double]$row.combinedPrevPi * [double]$row.combinedPrevSampleCountM
     $expectedDenominator = [double]$row.selectedTargetPdf * [double]$row.temporalPiSum
 
     Assert-Near ([double]$row.combinedPrevReuseProposalPdf) $expectedReuseProposalPdf "temporal current-selected history proposalPdf/jacobian frame=$($row.frameIndex) probe=$($row.selectedProbeId)"

@@ -20,12 +20,13 @@ void kernel_generate_initial(uint3 id : SV_DispatchThreadID)
     }
 
     uint2 pixel = uint2(id.x % _ScreenWidth, id.x / _ScreenWidth);
-    RNG_SeedPixel(rng, pixel, _FrameCount);
+    RNG_SeedPixel(rng, pixel, _FrameCount, 1u);
     _Pixel = pixel;
 
     RayHit hit;
     hit.position = hd.position; hit.distance = hd.distance;
-    hit.normal = hd.normal; hit.mode = hd.mode;
+    hit.normal = hd.normal;
+    hit.geometryNormal = hd.geometryNormal; hit.mode = hd.mode;
     hit.material.albedo = hd.albedo; hit.material.emission = hd.emission;
     hit.material.emissionIntensity = hd.emissionIntensity;
     hit.material.roughness = hd.roughness;
@@ -35,27 +36,24 @@ void kernel_generate_initial(uint3 id : SV_DispatchThreadID)
 
     float3 cameraPos = _CameraToWorld._m03_m13_m23;
     float3 V = normalize(cameraPos - hd.position);
-    float3 surfaceNormal = GetDirectLightSurfaceNormal(hit, V);
 
     DirectLightSample selected = (DirectLightSample)0;
     float weightSum = 0.0;
     bool hasSelected = false;
     uint cCount = max(_RestirCandidateCount, 1u);
     DirectLightReservoirData emptyReservoir = (DirectLightReservoirData)0;
-    emptyReservoir.surfaceNormal = surfaceNormal;
+    emptyReservoir.receiverPosition = hd.position;
     emptyReservoir.sampleCount = cCount;
     DirectLightReservoirs[_RestirInitialReservoirOffset + id.x] = emptyReservoir;
 
-    // Use the same candidate domain as the regular wavefront direct-light path.
-    // ReSTIR changes how candidates are retained, not which lights are eligible.
+    // Every receiver uses the same light-index domain. A tile-specific list can
+    // remove samples from a reused reservoir's proposal support.
     bool hasSun = _DirectionalLightColor.a > 0.0;
-    uint pointLightCount;
-    uint pointLightOffset;
-    bool useCulledList;
-    bool hasPointLights = GetPointLightCandidateRange(pointLightCount, pointLightOffset, useCulledList);
-    uint candidatePoolCount = (hasSun ? 1u : 0u) + (hasPointLights ? pointLightCount : 0u);
+    uint candidatePoolCount = (hasSun ? 1u : 0u) + (uint)max(_PointLightsCount, 0);
     if (candidatePoolCount == 0u)
     {
+        emptyReservoir.sampleCount = 0u;
+        DirectLightReservoirs[_RestirInitialReservoirOffset + id.x] = emptyReservoir;
         RestirTelemetryCount(RESTIR_COUNTER_DI_INITIAL_INVALID_PROPOSAL, id.x);
         WriteDirectReservoirTelemetry(
             4u, RESTIR_STAGE_DI_INITIAL, RESTIR_REASON_INVALID_PROPOSAL_PDF, id.x,
@@ -73,14 +71,12 @@ void kernel_generate_initial(uint3 id : SV_DispatchThreadID)
             V,
             float3(1, 1, 1),
             hasSun,
-            pointLightOffset,
-            useCulledList,
             candidateIndex,
             proposalPdf,
             s);
         if (!ok || !IsValidDirectLightSample(s)) continue;
 
-        float w = s.targetLum / max(s.proposalPdf, 1e-6);
+        float w = s.targetLum / s.proposalPdf;
         weightSum += w;
         if (!hasSelected || RNG_Next(rng) * weightSum < w)
         {
@@ -105,7 +101,7 @@ void kernel_generate_initial(uint3 id : SV_DispatchThreadID)
     r.targetLum = selected.targetLum;
     r.contribution = selected.contribution;
     r.weightSum = weightSum;
-    r.surfaceNormal = surfaceNormal;
+    r.receiverPosition = hd.position;
     r.proposalPdf = selected.proposalPdf;
     r.lightType = selected.lightType;
     r.lightIndex = selected.lightIndex;

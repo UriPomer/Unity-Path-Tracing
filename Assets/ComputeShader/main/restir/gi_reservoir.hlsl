@@ -1,10 +1,6 @@
 #pragma once
 
 static const float RESTIR_GI_MAX_RESERVOIR_SAMPLES = 32.0;
-static const float RESTIR_GI_MAX_JACOBIAN = 3.0;
-static const float RESTIR_GI_MIN_JACOBIAN = 1.0 / 3.0;
-static const float RESTIR_GI_DISCARD_JACOBIAN = 10.0;
-static const float RESTIR_GI_MIN_REUSE_PROPOSAL_PDF = 1e-8;
 static const uint RESTIR_GI_RESERVOIR_FLAG_ENVIRONMENT = 1u;
 
 bool IsFiniteIndirectScalar(float v)
@@ -17,18 +13,8 @@ bool IsFiniteIndirectFloat3(float3 v)
     return all(isfinite(v));
 }
 
-// In RTXDI semantics, weightSum AFTER FinalizeIndirectReservoir already encodes
-// the RIS unbiased contribution weight W. It is the selected sample's final estimator multiplier,
-// not another targetLum/M-normalized value. selectedWeight is kept
-// as a mirror so existing readback/diagnostic code paths keep working without
-// any CPU-side struct reshuffle. We deliberately do NOT divide by (targetLum*M)
-// here -- that division is what produced the runaway 1e+29 selectedWeight in
-// pre-fix logs.
-float ComputeIndirectMISWeight(float weightSum, float targetLum, float sampleCount)
-{
-    return max(weightSum, 0.0);
-}
-
+// weightSum holds the temporary RIS stream sum while combining, and the
+// finalized contribution multiplier W after FinalizeIndirectReservoir.
 float ComputeIndirectProposalInversePdf(float proposalPdf)
 {
     return proposalPdf > 0.0 ? rcp(proposalPdf) : 0.0;
@@ -41,10 +27,12 @@ bool IsIndirectReservoirValid(IndirectReservoirData r)
         (r.sampleFlags & ~RESTIR_GI_RESERVOIR_FLAG_ENVIRONMENT) == 0u &&
         IsFiniteIndirectFloat3(r.secondaryPosition) &&
         IsFiniteIndirectFloat3(r.secondaryNormal) &&
+        IsFiniteIndirectFloat3(r.secondaryGeometryNormal) &&
         IsFiniteIndirectFloat3(r.radiance) &&
         IsFiniteIndirectFloat3(r.contribution) &&
         IsFiniteIndirectScalar(r.proposalPdf) &&
-        IsFiniteIndirectScalar(r.selectedWeight) &&
+        IsFiniteIndirectScalar(r.targetLum) &&
+        IsFiniteIndirectScalar(r.weightSum) &&
         IsFiniteIndirectScalar(r.sampleCount) &&
         r.proposalPdf > 0.0;
 }
@@ -83,6 +71,7 @@ RayHit BuildPrimaryRayHit(HitData hd)
     hit.position = hd.position;
     hit.distance = hd.distance;
     hit.normal = hd.normal;
+    hit.geometryNormal = hd.geometryNormal;
     hit.mode = hd.mode;
     hit.material.albedo = hd.albedo;
     hit.material.emission = hd.emission;
@@ -124,7 +113,7 @@ bool EvaluateIndirectRadianceAtSurface(
         return false;
 
     float proposalPdf;
-    EvaluateBXDF_GivenDir(primaryHit, V, L, f_brdf, proposalPdf);
+    EvaluateOpaqueBXDF_GivenDir(primaryHit, V, L, f_brdf, proposalPdf);
     if (!IsFiniteIndirectFloat3(f_brdf))
         return false;
 
@@ -138,41 +127,39 @@ bool EvaluateIndirectRadianceAtSurface(
 }
 
 // Validity-gated wrapper around EvaluateIndirectRadianceAtSurface for reservoir samples:
-// returns the reflected radiance integrand (f_brdf * NdotL * sample.radiance) for finite,
+// returns the reflected radiance integrand (f_brdf * NdotL * source radiance) for finite,
 // valid reservoir samples. Callers multiply by sample.weightSum themselves to obtain the
 // unbiased GI estimate radiance * NdotL * f_brdf * W (RTXDI FinalShading.hlsl:66 parity).
 bool EvaluateIndirectSampleAtSurface(
     HitData hd,
     IndirectReservoirData sample,
+    out float3 radiance,
     out float3 reflectedRadiance)
 {
+    radiance = 0.0;
     reflectedRadiance = 0.0;
 
     if (!IsIndirectReservoirValid(sample) || hd.distance >= 1e19)
         return false;
 
+    if (!IsIndirectEnvironmentSample(sample.sampleFlags) &&
+        (dot(sample.secondaryNormal, hd.position - sample.secondaryPosition) <= 0.0 ||
+         dot(sample.secondaryGeometryNormal, hd.position - sample.secondaryPosition) <= 0.0))
+        return false;
+
+    radiance = max(sample.radiance, 0.0);
     float3 f_brdf;
-    return EvaluateIndirectRadianceAtSurface(hd, sample.secondaryPosition, sample.sampleFlags, sample.radiance, f_brdf, reflectedRadiance)
+    return EvaluateIndirectRadianceAtSurface(hd, sample.secondaryPosition, sample.sampleFlags, radiance, f_brdf, reflectedRadiance)
         && IsFiniteIndirectFloat3(reflectedRadiance);
 }
 
-bool IsIndirectSampleVisibleAtSurface(HitData hd, IndirectReservoirData sample)
+bool EvaluateIndirectSampleAtSurface(
+    HitData hd,
+    IndirectReservoirData sample,
+    out float3 reflectedRadiance)
 {
-    float3 direction;
-    float distance;
-    if (!ResolveIndirectSampleDirection(hd, sample.secondaryPosition, sample.sampleFlags, direction, distance))
-        return false;
-
-    RayHit primaryHit = BuildPrimaryRayHit(hd);
-    float3 cameraPos = float3(_CameraToWorld._m03, _CameraToWorld._m13, _CameraToWorld._m23);
-    float3 V = normalize(cameraPos - hd.position);
-    float3 primaryNormal = GetDirectLightSurfaceNormal(primaryHit, V);
-    Ray shadowRay;
-    shadowRay.origin = hd.position + primaryNormal * 1e-5;
-    shadowRay.dir = direction;
-    shadowRay.invDir = 1.0 / direction;
-    float tMax = IsIndirectEnvironmentSample(sample.sampleFlags) ? distance : distance * 0.999;
-    return !IntersectTlasFast(shadowRay, tMax);
+    float3 radiance;
+    return EvaluateIndirectSampleAtSurface(hd, sample, radiance, reflectedRadiance);
 }
 
 bool ReevaluateIndirectReservoirAtSurface(
@@ -187,13 +174,43 @@ bool ReevaluateIndirectReservoirAtSurface(
     targetLum = 0.0;
 
     float3 reflectedRadiance;
-    if (!EvaluateIndirectSampleAtSurface(hd, sample, reflectedRadiance))
+    if (!EvaluateIndirectSampleAtSurface(hd, sample, radiance, reflectedRadiance))
         return false;
 
-    radiance = max(sample.radiance, 0.0);
     contribution = reflectedRadiance;
     targetLum = max(reflectedRadiance.x, max(reflectedRadiance.y, reflectedRadiance.z));
     return targetLum > 0.0 && IsFiniteIndirectFloat3(contribution);
+}
+
+bool IsIndirectSampleVisibleAtSurface(HitData surface, IndirectReservoirData sample)
+{
+    float3 direction;
+    float distance;
+    if (!ResolveIndirectSampleDirection(surface, sample.secondaryPosition, sample.sampleFlags, direction, distance))
+        return false;
+    Ray ray;
+    ray.origin = surface.position + surface.geometryNormal *
+        (dot(surface.geometryNormal, direction) >= 0.0 ? 1e-5 : -1e-5);
+    if (!IsIndirectEnvironmentSample(sample.sampleFlags))
+    {
+        float3 connection = sample.secondaryPosition - ray.origin;
+        distance = length(connection);
+        direction = connection / distance;
+    }
+    ray.dir = direction;
+    ray.invDir = 1.0 / direction;
+    float tMax = IsIndirectEnvironmentSample(sample.sampleFlags) ? distance : max(distance - 1e-5, 0.0);
+    return !IntersectTlasFast(ray, tMax);
+}
+
+float IndirectSourceTarget(HitData surface, IndirectReservoirData sample)
+{
+    float3 radiance, contribution;
+    float target;
+    if (!ReevaluateIndirectReservoirAtSurface(surface, sample, radiance, contribution, target))
+        return 0.0;
+    // MIS source weights must vanish outside that source's path support.
+    return IsIndirectSampleVisibleAtSurface(surface, sample) ? target : 0.0;
 }
 
 bool ReevaluateIndirectReservoirAtSurfaceDebug(
@@ -222,7 +239,7 @@ bool ReevaluateIndirectReservoirAtSurfaceDebug(
     }
 
     float3 reflectedRadiance;
-    if (!EvaluateIndirectSampleAtSurface(hd, sample, reflectedRadiance))
+    if (!EvaluateIndirectSampleAtSurface(hd, sample, radiance, reflectedRadiance))
     {
         RayHit primaryHit = BuildPrimaryRayHit(hd);
         float3 cameraPos = float3(_CameraToWorld._m03, _CameraToWorld._m13, _CameraToWorld._m23);
@@ -245,7 +262,7 @@ bool ReevaluateIndirectReservoirAtSurfaceDebug(
 
         float3 f_brdf;
         float proposalPdf;
-        EvaluateBXDF_GivenDir(primaryHit, V, L, f_brdf, proposalPdf);
+        EvaluateOpaqueBXDF_GivenDir(primaryHit, V, L, f_brdf, proposalPdf);
         if (!IsFiniteIndirectFloat3(f_brdf))
         {
             failureCode = 4u;
@@ -256,7 +273,6 @@ bool ReevaluateIndirectReservoirAtSurfaceDebug(
         return false;
     }
 
-    radiance = max(sample.radiance, 0.0);
     contribution = reflectedRadiance;
     targetLum = max(reflectedRadiance.x, max(reflectedRadiance.y, reflectedRadiance.z));
     if (!(targetLum > 0.0) || !IsFiniteIndirectFloat3(contribution))
@@ -283,25 +299,21 @@ float CalculateIndirectJacobian(
 
     float newDistSqr = dot(toNew, toNew);
     float oldDistSqr = dot(toOld, toOld);
-    if (newDistSqr <= 1e-8 || oldDistSqr <= 1e-8)
+    if (newDistSqr <= 0.0 || oldDistSqr <= 0.0)
         return 0.0;
 
     float newCos = saturate(dot(neighborSampleNormal, toNew * rsqrt(newDistSqr)));
     float oldCos = saturate(dot(neighborSampleNormal, toOld * rsqrt(oldDistSqr)));
-    if (newCos <= 1e-6 || oldCos <= 1e-6)
+    if (newCos <= 0.0 || oldCos <= 0.0)
         return 0.0;
 
     float jacobian = (newCos * oldDistSqr) / (oldCos * newDistSqr);
     return IsFiniteIndirectScalar(jacobian) ? jacobian : 0.0;
 }
 
-bool ValidateIndirectJacobian(inout float jacobian)
+bool ValidateIndirectJacobian(float jacobian)
 {
-    if (jacobian > RESTIR_GI_DISCARD_JACOBIAN || jacobian < (1.0 / RESTIR_GI_DISCARD_JACOBIAN))
-        return false;
-
-    jacobian = clamp(jacobian, RESTIR_GI_MIN_JACOBIAN, RESTIR_GI_MAX_JACOBIAN);
-    return true;
+    return jacobian > 0.0 && isfinite(jacobian);
 }
 
 float ComputeIndirectTargetPdf(IndirectReservoirData sample)
@@ -319,6 +331,7 @@ void InitializeIndirectReservoirSample(
     float3 secondaryPosition,
     float proposalPdf,
     float3 secondaryNormal,
+    float3 secondaryGeometryNormal,
     float targetLum,
     float3 radiance,
     float3 contribution,
@@ -332,11 +345,11 @@ void InitializeIndirectReservoirSample(
     reservoir.secondaryPosition = secondaryPosition;
     reservoir.proposalPdf = proposalPdf;
     reservoir.secondaryNormal = secondaryNormal;
+    reservoir.secondaryGeometryNormal = secondaryGeometryNormal;
     reservoir.targetLum = targetLum;
     reservoir.radiance = radiance;
     reservoir.weightSum = ComputeIndirectProposalInversePdf(reservoir.proposalPdf);
     reservoir.contribution = contribution;
-    reservoir.selectedWeight = reservoir.weightSum;  // mirror, see ComputeIndirectMISWeight
     reservoir.sampleFlags = sampleFlags;
     reservoir.reserved = 0.0;
     reservoir.sampleCount = 1.0;
@@ -369,6 +382,7 @@ bool CombineIndirectReservoirs(
         reservoir.secondaryPosition = candidate.secondaryPosition;
         reservoir.proposalPdf = candidate.proposalPdf;
         reservoir.secondaryNormal = candidate.secondaryNormal;
+        reservoir.secondaryGeometryNormal = candidate.secondaryGeometryNormal;
         reservoir.targetLum = targetPdf;
         reservoir.radiance = candidate.radiance;
         reservoir.contribution = candidate.contribution;
@@ -390,9 +404,7 @@ void FinalizeIndirectReservoir(
         ? 0.0
         : (reservoir.weightSum * normalizationNumerator) / normalizationDenominator;
 
-    // selectedWeight is now a mirror of weightSum (kept for readback / diagnostics
-    // compatibility -- TracingContractsTests + restir_gi_*.jsonl still inspect it).
-    reservoir.selectedWeight = ComputeIndirectMISWeight(reservoir.weightSum, reservoir.targetLum, reservoir.sampleCount);
+
 }
 
 void WriteIndirectReservoirTelemetry(
@@ -411,7 +423,7 @@ void WriteIndirectReservoirTelemetry(
         float4(reservoir.secondaryPosition, reservoir.proposalPdf),
         float4(reservoir.secondaryNormal, reservoir.targetLum),
         float4(reservoir.radiance, reservoir.weightSum),
-        float4(reservoir.contribution, reservoir.selectedWeight),
+        float4(reservoir.contribution, reservoir.weightSum),
         float4((float)reservoir.sampleFlags, reservoir.reserved, reservoir.sampleCount),
         stageData);
 }
