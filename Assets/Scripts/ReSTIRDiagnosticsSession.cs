@@ -64,7 +64,6 @@ public enum ReSTIRTelemetryCounter
     DITemporalHistorySelected = 11,
     DITemporalNonFiniteOutput = 12,
     DIShadeInvalidReservoir = 13,
-    DIShadeVisibilityRejected = 14,
     DIShadePositiveContribution = 15,
     DITemporalMCapped = 23,
 
@@ -444,7 +443,6 @@ public sealed class ReSTIRDiagnosticsSession : IDisposable
         new CounterField(ReSTIRTelemetryCounter.DITemporalHistorySelected, "diTemporalHistorySelected"),
         new CounterField(ReSTIRTelemetryCounter.DITemporalNonFiniteOutput, "diTemporalNonFiniteOutput"),
         new CounterField(ReSTIRTelemetryCounter.DIShadeInvalidReservoir, "diShadeInvalidReservoir"),
-        new CounterField(ReSTIRTelemetryCounter.DIShadeVisibilityRejected, "diShadeVisibilityRejected"),
         new CounterField(ReSTIRTelemetryCounter.DIShadePositiveContribution, "diShadePositiveContribution"),
         new CounterField(ReSTIRTelemetryCounter.DITemporalMCapped, "diTemporalMCapped"),
         new CounterField(ReSTIRTelemetryCounter.GIInitialPrimaryMiss, "giInitialPrimaryMiss"),

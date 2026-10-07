@@ -2,14 +2,8 @@
 
 static const int2 kNeighborOffsets[8] =
 {
-    int2(-1, 0),
-    int2(1, 0),
-    int2(0, -1),
-    int2(0, 1),
-    int2(-1, -1),
-    int2(1, -1),
-    int2(-1, 1),
-    int2(1, 1)
+    int2(-1, 0), int2(-1, -1), int2(0, -1), int2(1, -1),
+    int2(1, 0), int2(1, 1), int2(0, 1), int2(-1, 1)
 };
 
 int WrapNeighborOffsetIndex(int idx)
@@ -17,9 +11,16 @@ int WrapNeighborOffsetIndex(int idx)
     return idx >= 8 ? (idx - 8) : idx;
 }
 
-[numthreads(64, 1, 1)]
-void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
+// Two opposite offsets, rotated uniformly each frame. Each source has the
+// same marginal inclusion probability; normalize over this sampled domain set.
+// Enumerating all eight requires eight visibility queries in the MIS pass.
+static const int RESTIR_GI_SPATIAL_SOURCE_COUNT = 2;
+
+[numthreads(8, 8, 1)]
+void kernel_spatial_gi_resampling(uint3 dispatchId : SV_DispatchThreadID)
 {
+    if (dispatchId.x >= _ScreenWidth || dispatchId.y >= _ScreenHeight) return;
+    uint3 id = uint3(dispatchId.y * _ScreenWidth + dispatchId.x, 0, 0);
     uint pixelCount = _ScreenWidth * _ScreenHeight;
     if (id.x >= pixelCount) return;
 
@@ -36,21 +37,14 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
     IndirectReservoirData cur = IndirectReservoirs[curIdx];
     bool currentReservoirValid = IsIndirectReservoirValid(cur);
     IndirectReservoirs[outIdx] = cur;
-    if (!IsGIReceiver(_RestirGbuffer[id.x]))
+    HitData hdCur = _RestirGbuffer[id.x];
+    if (!IsGIReceiver(hdCur))
     {
         IndirectReservoirs[outIdx] = EmptyIndirectReservoir();
+        ShadeGISample(id.x,hdCur,EmptyIndirectReservoir(),false);
         return;
     }
 
-    HitData hdCur = _RestirGbuffer[id.x];
-    if (hdCur.distance >= 1e19)
-    {
-        RestirTelemetryCount(RESTIR_COUNTER_GI_SPATIAL_INVALID_CURRENT, id.x);
-        WriteIndirectReservoirTelemetry(
-            2u, RESTIR_STAGE_GI_SPATIAL, RESTIR_REASON_INVALID_SURFACE, id.x,
-            cur, 0.0);
-        return;
-    }
     uint2 pixel = uint2(id.x % _ScreenWidth, id.x / _ScreenWidth);
     RNG_SeedPixel(rng, pixel, _FrameCount, 6u);
 
@@ -87,12 +81,11 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
     float selectedNeighborTargetPdf = 0.0;
 
     int neighborStartIdx = min((int)(RNG_Next(rng) * 8.0), 7);
-    // Keep the full eight-source estimator, but do not duplicate its BXDF
-    // reevaluation body eight times in the D3D11 shader program.
+    // Source selection is independent of reservoir radiance and visibility.
     [loop]
-    for (int neighborSampleIdx = 0; neighborSampleIdx < 8; neighborSampleIdx++)
+    for (int neighborSampleIdx = 0; neighborSampleIdx < RESTIR_GI_SPATIAL_SOURCE_COUNT; neighborSampleIdx++)
     {
-        int neighborOffsetIdx = WrapNeighborOffsetIndex(neighborStartIdx + neighborSampleIdx);
+        int neighborOffsetIdx = WrapNeighborOffsetIndex(neighborStartIdx + neighborSampleIdx * 4);
         int2 neighborPixel = int2(pixel) + kNeighborOffsets[neighborOffsetIdx];
         if (neighborPixel.x < 0 || neighborPixel.x >= (int)_ScreenWidth ||
             neighborPixel.y < 0 || neighborPixel.y >= (int)_ScreenHeight)
@@ -224,10 +217,8 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    // Same proportional-scale M cap, applied to the streamed reservoir before the second
-    // (normalization) pass. With up to 8 neighbors combined, outR.sampleCount can reach
-    // 1 (cur) + 8 * (MAX-1) which exceeds MAX; without scaling weightSum the per-neighbor
-    // RIS contributions would still be summed at full magnitude.
+    // Apply the same cap scale to streamed weights and every selected source
+    // domain in the normalization pass; limiting M must not change brightness.
     float outSampleCountBeforeCap = outR.sampleCount;
     float outSampleCountClamped = min(outSampleCountBeforeCap, RESTIR_GI_MAX_RESERVOIR_SAMPLES);
     float spatialMCapScale = 1.0;
@@ -244,14 +235,14 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
     // The global cap scales the streamed weight and its effective domain counts together.
     // Otherwise Finalize applies the cap once through weightSum and again through piSum.
     float piSum = currentSourceTarget * cur.sampleCount * spatialMCapScale;
-    // The selected-sample normalization also needs all eight source domains.
+    // Normalize against exactly the same sampled sources as the selection pass.
     [loop]
-    for (int cachedSampleIdx = 0; cachedSampleIdx < 8; cachedSampleIdx++)
+    for (int cachedSampleIdx = 0; cachedSampleIdx < RESTIR_GI_SPATIAL_SOURCE_COUNT; cachedSampleIdx++)
     {
         if ((cachedResult & (1u << uint(cachedSampleIdx))) == 0)
             continue;
 
-        int cachedNeighborOffsetIdx = WrapNeighborOffsetIndex(neighborStartIdx + cachedSampleIdx);
+        int cachedNeighborOffsetIdx = WrapNeighborOffsetIndex(neighborStartIdx + cachedSampleIdx * 4);
         int2 neighborPixel = int2(pixel) + kNeighborOffsets[cachedNeighborOffsetIdx];
         if (neighborPixel.x < 0 || neighborPixel.x >= (int)_ScreenWidth ||
             neighborPixel.y < 0 || neighborPixel.y >= (int)_ScreenHeight)
@@ -340,4 +331,5 @@ void kernel_spatial_gi_resampling(uint3 id : SV_DispatchThreadID)
             curTargetPdf);
     }
     IndirectReservoirs[outIdx] = outR;
+    ShadeGISample(id.x,hdCur,outR,currentSourceTarget > 0.0);
 }

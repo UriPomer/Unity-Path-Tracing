@@ -32,8 +32,11 @@ float3 SampleSkybox(Ray ray)
 }
 
 // trace a ray and detect nearest hit
-RayHit Trace(Ray ray)
+RayHit Trace(Ray ray, bool primary = false)
 {
+    // Reconnected GI samples and ordinary PT must evaluate the same secondary
+    // material. Only primary hits use the camera-dependent texture footprint.
+    if (!primary) ray.coneSpread = 0.0;
     RayHit bestHit = GenRayHit();
     IntersectTlas(ray, bestHit);
     return bestHit;
@@ -400,6 +403,34 @@ bool ReevaluatePointLightDirectSample(
     return true;
 }
 
+float DirectDiffuseLuminance(RayHit hit, float3 V, float3 direction, float3 radiance)
+{
+    hit.normal = GetDirectLightSurfaceNormal(hit,V);
+    float3 diffuse = radiance * OpaqueDiffuseFraction(hit,V,direction);
+    return dot(diffuse / max(hit.material.albedo*(1.0-hit.material.metallic),0.001), LUM);
+}
+
+float IndependentDirectDiffuseObservation(RayHit hit, float3 V)
+{
+    bool hasSun = _DirectionalLightColor.a > 0.0;
+    uint count = (hasSun ? 1u : 0u) + (uint)max(_PointLightsCount,0);
+    if (count == 0u) return 0.0;
+    // The uncertainty draw never advances the transport/RIS random stream.
+    uint savedState = rng.state;
+    RNG_SeedPixel(rng,(uint2)_Pixel,_FrameCount,43u);
+    uint index = min((uint)(RNG_Next(rng)*count),count-1u);
+    DirectLightSample sample = (DirectLightSample)0;
+    float observation = 0.0;
+    if (SampleDirectLightCandidate(hit,V,1.0,hasSun,index,rcp((float)count),sample) && IsValidDirectLightSample(sample))
+    {
+        Ray ray = GenRay(sample.origin,sample.direction);
+        float visibility = TraceVisibility(ray,sample.maxDist,true);
+        observation = DirectDiffuseLuminance(hit,V,sample.direction,sample.illumination*visibility);
+    }
+    rng.state = savedState;
+    return observation;
+}
+
 void GenerateShadowRays(RayHit hit, float3 V, float3 throughput, uint pixelIndex)
 {
     bool hasSun = _DirectionalLightColor.a > 0.0;
@@ -416,6 +447,13 @@ void GenerateShadowRays(RayHit hit, float3 V, float3 throughput, uint pixelIndex
         hit, V, throughput, hasSun,
         candidateIndex, proposalPdf, sample);
 
+    if (_DenoiseEnabled && CurBounce == 0 && hit.mode < 2.0 && hit.material.roughness >= 0.1)
+    {
+        float second = IndependentDirectDiffuseObservation(hit,V);
+        // A queued shadow completes the pair after visibility. A rejected
+        // proposal is a zero observation, and needs no shadow queue entry.
+        _DenoisePathDiffuse[(uint2)_Pixel] = float4(0,0,0,accepted ? second : 0.5*second*second);
+    }
     if (accepted)
         QueueDirectLightSample(sample, pixelIndex);
 }

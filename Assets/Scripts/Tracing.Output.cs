@@ -13,6 +13,28 @@ using UnityEditor;
 // One renderer owns these resources; partial files group its pipeline responsibilities.
 public partial class Tracing
 {
+    private int _rasterCullingMask;
+    private bool _rasterCullingSuppressed;
+
+    // The compute tracer supplies the complete image. Avoid rasterizing the
+    // same scene into a source image that Render() never reads.
+    private void OnPreCull()
+    {
+        if (!_runtimeStarted || tracingShader == null || _rasterCullingSuppressed) return;
+        _rasterCullingMask = cam.cullingMask;
+        _rasterCullingSuppressed = true;
+        cam.cullingMask = 0;
+    }
+
+    private void OnPostRender() => RestoreRasterCulling();
+
+    private void RestoreRasterCulling()
+    {
+        if (!_rasterCullingSuppressed) return;
+        cam.cullingMask = _rasterCullingMask;
+        _rasterCullingSuppressed = false;
+    }
+
     private void BlitToDisplay(RenderTexture source, RenderTexture destination)
     {
         if (!ToneMap || _toneMapMaterial == null)
@@ -422,4 +444,24 @@ public partial class Tracing
         if (tracingShader != null)
             tracingShader.DisableKeyword("RESTIR_TELEMETRY_ENABLED");
     }
+    private void ClearAccumulationRenderTargets()
+    {
+        if (target != null)
+            ClearRenderTexture(target);
+
+        if (frameConverged != null)
+            ClearRenderTexture(frameConverged);
+    }
+
+    private static void ClearRenderTexture(RenderTexture renderTexture)
+    {
+        if (renderTexture == null)
+            return;
+
+        RenderTexture previous = RenderTexture.active;
+        RenderTexture.active = renderTexture;
+        GL.Clear(false, true, Color.clear);
+        RenderTexture.active = previous;
+    }
+
 }

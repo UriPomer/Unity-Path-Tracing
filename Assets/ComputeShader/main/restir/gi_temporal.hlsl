@@ -14,9 +14,11 @@ int WrapTemporalOffsetIndex(int idx)
     return idx >= 5 ? (idx - 5) : idx;
 }
 
-[numthreads(64, 1, 1)]
-void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
+[numthreads(8, 8, 1)]
+void kernel_temporal_gi_resampling(uint3 dispatchId : SV_DispatchThreadID)
 {
+    if (dispatchId.x >= _ScreenWidth || dispatchId.y >= _ScreenHeight) return;
+    uint3 id = uint3(dispatchId.y * _ScreenWidth + dispatchId.x, 0, 0);
     uint pixelCount = _ScreenWidth * _ScreenHeight;
     if (id.x >= pixelCount) return;
 
@@ -237,7 +239,7 @@ void kernel_temporal_gi_resampling(uint3 id : SV_DispatchThreadID)
     if (selectedTargetPdf > 0.0 && combinedPrevious)
     {
         IndirectReservoirData selectedSample = outR;
-        temporalP = IndirectSourceTarget(combinedPrevSurface, selectedSample);
+        temporalP = IndirectSourceTarget(combinedPrevSurface, selectedSample, true);
     }
     pi = selectedPrevious ? temporalP : currentSourceTarget;
     piSum += temporalP * max(combinedPrevCandidate.sampleCount, 0.0);

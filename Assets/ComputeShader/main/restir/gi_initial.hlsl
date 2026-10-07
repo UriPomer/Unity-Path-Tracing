@@ -98,9 +98,11 @@ float3 EvaluateLambertSecondaryRadiance(RayHit secondaryHit)
     return max(radiance, 0.0);
 }
 
-[numthreads(64, 1, 1)]
-void kernel_generate_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
+[numthreads(8, 8, 1)]
+void kernel_generate_gi_secondary_surfaces(uint3 dispatchId : SV_DispatchThreadID)
 {
+    if (dispatchId.x >= _ScreenWidth || dispatchId.y >= _ScreenHeight) return;
+    uint3 id = uint3(dispatchId.y * _ScreenWidth + dispatchId.x, 0, 0);
     uint pixelCount = _ScreenWidth * _ScreenHeight;
     if (id.x >= pixelCount) return;
 
@@ -228,9 +230,11 @@ void kernel_generate_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
     SecondarySurfaces[id.x] = data;
 }
 
-[numthreads(64, 1, 1)]
-void kernel_shade_gi_secondary_surfaces(uint3 id : SV_DispatchThreadID)
+[numthreads(8, 8, 1)]
+void kernel_shade_gi_secondary_surfaces(uint3 dispatchId : SV_DispatchThreadID)
 {
+    if (dispatchId.x >= _ScreenWidth || dispatchId.y >= _ScreenHeight) return;
+    uint3 id = uint3(dispatchId.y * _ScreenWidth + dispatchId.x, 0, 0);
     uint pixelCount = _ScreenWidth * _ScreenHeight;
     if (id.x >= pixelCount) return;
 

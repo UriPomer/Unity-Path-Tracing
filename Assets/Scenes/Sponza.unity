@@ -509,7 +509,9 @@ MonoBehaviour:
   WriteReSTIRGIDiagnostics: 1
   WriteReSTIRGIDiagnosticDetails: 0
   ReSTIRGIDiagnosticFrameInterval: 8
-  ToneMap: 1
+  UseTemporalDenoising: 1
+  AccumulateFrames: 0
+  ToneMap: 0
   Exposure: 1
   drawGizmos: 0
   DrawTLAS: 1

@@ -204,6 +204,7 @@ public static class ReSTIRRenderComparison
         Set(tracing, "FrameLimit", frames);
         Set(tracing, "ToneMap", false);
         Set(tracing, "AccumulateFrames", true);
+        Set(tracing, "UseTemporalDenoising", false);
         Set(tracing, "OnlyDrawAlbedo", false);
         Set(tracing, "OnlyDrawNormals", false);
         Set(tracing, "OnlyDrawDepth", false);

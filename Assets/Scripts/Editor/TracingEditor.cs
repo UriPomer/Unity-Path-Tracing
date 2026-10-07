@@ -64,8 +64,11 @@ public class TracingEditor : Editor
 
         DrawSection("Output", () =>
         {
-            Draw("AccumulateFrames", "Denoise (Frame Accumulation)");
-            EditorGUILayout.HelpBox("开启：多帧平均降低噪声。关闭：显示当前帧。此选项不使用空间降噪滤镜；切换时重新累积。", MessageType.Info);
+            Draw("UseTemporalDenoising", "Temporal Denoising (SVGF)");
+            SerializedProperty denoise = serializedObject.FindProperty("UseTemporalDenoising");
+            using (new EditorGUI.DisabledScope(!denoise.hasMultipleDifferentValues && denoise.boolValue))
+                Draw("AccumulateFrames", "Progressive Accumulation");
+            EditorGUILayout.HelpBox("时空降噪：运动重投影与边缘保持滤波。关闭后可选择静止画面的逐帧平均；两项都关闭则显示原始当前帧。", MessageType.Info);
             Draw("ToneMap", "Tone Map");
             SerializedProperty toneMap = serializedObject.FindProperty("ToneMap");
             using (new EditorGUI.DisabledScope(!toneMap.hasMultipleDifferentValues && !toneMap.boolValue))

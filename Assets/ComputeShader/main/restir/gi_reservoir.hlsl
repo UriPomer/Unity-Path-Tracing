@@ -90,7 +90,8 @@ bool EvaluateIndirectRadianceAtSurface(
     uint sampleFlags,
     float3 sampleRadiance,
     out float3 f_brdf,
-    out float3 reflectedRadiance)
+    out float3 reflectedRadiance,
+    bool previousView = false)
 {
     f_brdf = 0.0;
     reflectedRadiance = 0.0;
@@ -99,7 +100,7 @@ bool EvaluateIndirectRadianceAtSurface(
         return false;
 
     RayHit primaryHit = BuildPrimaryRayHit(hd);
-    float3 cameraPos = float3(_CameraToWorld._m03, _CameraToWorld._m13, _CameraToWorld._m23);
+    float3 cameraPos = previousView ? _RestirPreviousCameraPosition : _CameraToWorld._m03_m13_m23;
     float3 V = normalize(cameraPos - hd.position);
     float3 primaryNormal = GetDirectLightSurfaceNormal(primaryHit, V);
     primaryHit.normal = primaryNormal;
@@ -134,7 +135,8 @@ bool EvaluateIndirectSampleAtSurface(
     HitData hd,
     IndirectReservoirData sample,
     out float3 radiance,
-    out float3 reflectedRadiance)
+    out float3 reflectedRadiance,
+    bool previousView = false)
 {
     radiance = 0.0;
     reflectedRadiance = 0.0;
@@ -149,7 +151,7 @@ bool EvaluateIndirectSampleAtSurface(
 
     radiance = max(sample.radiance, 0.0);
     float3 f_brdf;
-    return EvaluateIndirectRadianceAtSurface(hd, sample.secondaryPosition, sample.sampleFlags, radiance, f_brdf, reflectedRadiance)
+    return EvaluateIndirectRadianceAtSurface(hd, sample.secondaryPosition, sample.sampleFlags, radiance, f_brdf, reflectedRadiance, previousView)
         && IsFiniteIndirectFloat3(reflectedRadiance);
 }
 
@@ -167,14 +169,15 @@ bool ReevaluateIndirectReservoirAtSurface(
     IndirectReservoirData sample,
     out float3 radiance,
     out float3 contribution,
-    out float targetLum)
+    out float targetLum,
+    bool previousView = false)
 {
     radiance = 0.0;
     contribution = 0.0;
     targetLum = 0.0;
 
     float3 reflectedRadiance;
-    if (!EvaluateIndirectSampleAtSurface(hd, sample, radiance, reflectedRadiance))
+    if (!EvaluateIndirectSampleAtSurface(hd, sample, radiance, reflectedRadiance, previousView))
         return false;
 
     contribution = reflectedRadiance;
@@ -203,11 +206,11 @@ bool IsIndirectSampleVisibleAtSurface(HitData surface, IndirectReservoirData sam
     return !IntersectTlasFast(ray, tMax);
 }
 
-float IndirectSourceTarget(HitData surface, IndirectReservoirData sample)
+float IndirectSourceTarget(HitData surface, IndirectReservoirData sample, bool previousView = false)
 {
     float3 radiance, contribution;
     float target;
-    if (!ReevaluateIndirectReservoirAtSurface(surface, sample, radiance, contribution, target))
+    if (!ReevaluateIndirectReservoirAtSurface(surface, sample, radiance, contribution, target, previousView))
         return 0.0;
     // MIS source weights must vanish outside that source's path support.
     return IsIndirectSampleVisibleAtSurface(surface, sample) ? target : 0.0;

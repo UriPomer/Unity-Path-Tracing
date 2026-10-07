@@ -1,14 +1,5 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Reflection;
 using UnityEngine;
 using UnityEngine.Rendering;
-using UnityEngine.SceneManagement;
-using Stopwatch = System.Diagnostics.Stopwatch;
-#if UNITY_EDITOR
-using UnityEditor;
-#endif
 
 // One renderer owns these resources; partial files group its pipeline responsibilities.
 public partial class Tracing
@@ -28,7 +19,6 @@ public partial class Tracing
     private int kernelShadeGISecondarySurfaces;
     private int kernelTemporalGIResampling;
     private int kernelSpatialGIResampling;
-    private int kernelShadeGISamples;
     private int kernelClearReSTIRTelemetry;
     private int kernelCaptureReSTIRFrame;
 
@@ -51,10 +41,11 @@ public partial class Tracing
     private ComputeBuffer _globalColors;
     private ComputeBuffer _bufferSizes;
     private ComputeBuffer _indirectArgs;
+    private RenderTexture _denoisePlaceholder;
 
     // Struct sizes (must match HLSL layout)
-    private const int RayDataStride = 48;         // float3+float3+uint+uint+float3+float = 12+12+4+4+12+4
-    private const int HitDataStride = 88;          // includes distinct geometric and shading normals
+    private const int RayDataStride = 44;         // float3+float3+uint+uint+float3
+    private const int HitDataStride = 92;          // geometric/shading normals and material identity
     private const int ShadowRayDataStride = 48;    // 3×(float3+scalar)
     private const int DirectLightReservoirStride = 80; // matches DirectLightReservoirData (5 float4 rows)
     private const int IndirectReservoirStride = 88; // one finalized weight; distinct geometric/shading normals
@@ -86,7 +77,6 @@ public partial class Tracing
         kernelShadeGISecondarySurfaces = tracingShader.FindKernel("kernel_shade_gi_secondary_surfaces");
         kernelTemporalGIResampling = tracingShader.FindKernel("kernel_temporal_gi_resampling");
         kernelSpatialGIResampling = tracingShader.FindKernel("kernel_spatial_gi_resampling");
-        kernelShadeGISamples = tracingShader.FindKernel("kernel_shade_gi_samples");
         kernelClearReSTIRTelemetry = tracingShader.FindKernel("kernel_clear_restir_telemetry");
         kernelCaptureReSTIRFrame = tracingShader.FindKernel("kernel_capture_restir_frame");
 
@@ -103,8 +93,7 @@ public partial class Tracing
             kernelGenerateGISecondarySurfaces,
             kernelShadeGISecondarySurfaces,
             kernelTemporalGIResampling,
-            kernelSpatialGIResampling,
-            kernelShadeGISamples
+            kernelSpatialGIResampling
         };
         lightKernels = new int[]
         {
@@ -123,7 +112,6 @@ public partial class Tracing
             kernelShadeGISecondarySurfaces,
             kernelTemporalGIResampling,
             kernelSpatialGIResampling,
-            kernelShadeGISamples,
             kernelCaptureReSTIRFrame
         };
         cmdBuffer = new CommandBuffer();
@@ -170,7 +158,7 @@ public partial class Tracing
 
     private void CreateReSTIRBuffersIfNeeded(int pixelCount)
     {
-        int historyCount = UseReSTIRDI || IsReSTIRGIActive ? pixelCount : 1;
+        int historyCount = UseReSTIRDI || IsReSTIRGIActive || TemporalDenoisingActive ? pixelCount : 1;
         EnsureBuffer(ref _primarySurfaceHistory, historyCount, HitDataStride);
         EnsureBuffer(ref _primarySurfaceHistoryPrev, historyCount, HitDataStride);
         EnsureBuffer(ref _directLightReservoirs, UseReSTIRDI ? pixelCount * 3 : 1, DirectLightReservoirStride);
@@ -220,6 +208,8 @@ public partial class Tracing
         tracingShader.SetMatrix("_CameraInverseProjection", cam.projectionMatrix.inverse);
         tracingShader.SetMatrix("_PreviousCameraViewProjection", _previousCameraViewProjection);
         tracingShader.SetMatrix("_RestirPreviousViewProjection", _previousCameraViewProjection);
+        tracingShader.SetVector("_RestirPreviousCameraPosition", _previousRestirCameraPosition);
+        tracingShader.SetFloat("_RayPixelSpread", 2f * Mathf.Tan(cam.fieldOfView * Mathf.Deg2Rad * 0.5f) / _currentRenderHeight);
         tracingShader.SetFloat("_SunAngularRadius", SunAngularRadius);
         tracingShader.SetFloat("_SkyboxIntensity", SkyboxIntensity);
 
@@ -237,7 +227,6 @@ public partial class Tracing
         tracingShader.SetTexture(kernelShade, "_SkyboxTexture", skyboxTexture);
         tracingShader.SetTexture(kernelGenerateGISecondarySurfaces, "_SkyboxTexture", skyboxTexture);
         tracingShader.SetTexture(kernelShadeGISecondarySurfaces, "_SkyboxTexture", skyboxTexture);
-        tracingShader.SetTexture(kernelShadeGISamples, "_SkyboxTexture", skyboxTexture);
 
         // Set multi-pass buffers on all relevant kernels
         tracingShader.SetBuffer(kernelGenerate, "GlobalRays", _globalRaysA);
@@ -263,6 +252,7 @@ public partial class Tracing
         tracingShader.SetBuffer(kernelShadow, "GlobalColors", _globalColors);
         tracingShader.SetBuffer(kernelShadow, "DirectLightReservoirs", _directLightReservoirs);
         tracingShader.SetBuffer(kernelShadow, "BufferSizes", _bufferSizes);
+        tracingShader.SetBuffer(kernelShadow, "PrimarySurfaceHistory", _primarySurfaceHistory);
         tracingShader.SetBuffer(kernelCopyPrimarySurfaceHistory, "PrimarySurfaceHistory", _primarySurfaceHistory);
         tracingShader.SetBuffer(kernelCopyPrimarySurfaceHistory, "PrimarySurfaceHistoryPrevRW", _primarySurfaceHistoryPrev);
         tracingShader.SetBuffer(kernelTransfer, "BufferSizes", _bufferSizes);
@@ -280,16 +270,35 @@ public partial class Tracing
         tracingShader.SetBool("_HasPrimarySurfaceHistory", _hasPrimarySurfaceHistory);
         tracingShader.SetBool("_UseReSTIRDI", UseReSTIRDI);
         tracingShader.SetBool("_UseReSTIRGI", IsReSTIRGIActive);
+        tracingShader.SetBool("_DenoiseEnabled", TemporalDenoisingActive);
+        if (_denoisePlaceholder == null)
+        {
+            _denoisePlaceholder = new RenderTexture(1, 1, 0, RenderTextureFormat.ARGBFloat) { enableRandomWrite = true };
+            _denoisePlaceholder.Create();
+        }
+        foreach (int kernel in new[] { kernelGenerate, kernelShade, kernelShadow, kernelFinalize, kernelGenerateInitial, kernelShadeDISamples, kernelSpatialGIResampling })
+        {
+            tracingShader.SetTexture(kernel, "_DenoiseDirect", _denoiser?.DirectInput ?? _denoisePlaceholder);
+            tracingShader.SetTexture(kernel, "_DenoiseDiffuse", _denoiser?.DiffuseInput ?? _denoisePlaceholder);
+            tracingShader.SetTexture(kernel, "_DenoisePathDiffuse", _denoiser?.PathDiffuseWeights ?? _denoisePlaceholder);
+        }
+        if (!TemporalDenoisingActive)
+        {
+            tracingShader.SetTexture(kernelTrace, "_DenoiseMotion", _denoisePlaceholder);
+            tracingShader.SetBuffer(kernelTrace, "_DenoisePreviousTransforms", BVHBuilder.TransformBuffer);
+        }
         tracingShader.SetFloat("_CameraFar", cam.farClipPlane);
 
         // Bind current light data immediately before dispatch so rendering does not depend on Update() timing.
         _lights.UpdateBuffer(tracingShader, lightKernels);
         _previousCameraViewProjection = gpuProjection * cam.worldToCameraMatrix;
+        _previousRestirCameraPosition = cam.transform.position;
     }
 
     private void BindSceneBuffersToKernel(int kernel)
     {
         if (BVHBuilder.VertexBuffer != null) tracingShader.SetBuffer(kernel, "_Vertices", BVHBuilder.VertexBuffer);
+        if (BVHBuilder.TriangleBuffer != null) tracingShader.SetBuffer(kernel, "_Triangles", BVHBuilder.TriangleBuffer);
         if (BVHBuilder.IndexBuffer != null) tracingShader.SetBuffer(kernel, "_Indices", BVHBuilder.IndexBuffer);
         if (BVHBuilder.NormalBuffer != null) tracingShader.SetBuffer(kernel, "_Normals", BVHBuilder.NormalBuffer);
         if (BVHBuilder.TangentBuffer != null) tracingShader.SetBuffer(kernel, "_Tangents", BVHBuilder.TangentBuffer);
@@ -319,6 +328,7 @@ public partial class Tracing
     {
         ReleaseRenderTexture(ref target);
         ReleaseRenderTexture(ref frameConverged);
+        ReleaseRenderTexture(ref _denoisePlaceholder);
         _currentRenderWidth = 0;
         _currentRenderHeight = 0;
     }
@@ -394,6 +404,7 @@ public partial class Tracing
         int shadingReservoirIdx = useTemporal ? temporalIdx : initialIdx;
 
         tracingShader.SetBuffer(kernelShadeDISamples, "DirectLightReservoirs", _directLightReservoirs);
+        tracingShader.SetBuffer(kernelShadeDISamples, "_RestirGbuffer", _globalHits);
         tracingShader.SetBuffer(kernelShadeDISamples, "GlobalColors", _globalColors);
         tracingShader.SetInt("_RestirShadingReservoirOffset", shadingReservoirIdx * pixelCount);
         tracingShader.Dispatch(kernelShadeDISamples, (pixelCount + 63) / 64, 1, 1);
@@ -413,7 +424,7 @@ public partial class Tracing
         tracingShader.SetBuffer(kernelGenerateGISecondarySurfaces, "_RestirGbuffer", _globalHits);
         tracingShader.SetBuffer(kernelGenerateGISecondarySurfaces, "SecondarySurfaces", _secondarySurfaces);
         tracingShader.SetBuffer(kernelGenerateGISecondarySurfaces, "SecondarySurfacesRead", _secondarySurfaces);
-        tracingShader.Dispatch(kernelGenerateGISecondarySurfaces, (pixelCount + 63) / 64, 1, 1);
+        tracingShader.Dispatch(kernelGenerateGISecondarySurfaces, (_currentRenderWidth + 7) / 8, (_currentRenderHeight + 7) / 8, 1);
 
         tracingShader.SetBuffer(kernelShadeGISecondarySurfaces, "IndirectReservoirs", _indirectReservoirs);
         tracingShader.SetBuffer(kernelShadeGISecondarySurfaces, "SecondarySurfaces", _secondarySurfaces);
@@ -424,7 +435,7 @@ public partial class Tracing
         tracingShader.SetBuffer(kernelShadeGISecondarySurfaces, "_RestirGbuffer", _globalHits);
         tracingShader.SetInt("_RestirInitialReservoirOffset", initialIdx * pixelCount);
         tracingShader.SetInt("_RestirDebugPixelIndex", diagnosticPixelIndex);
-        tracingShader.Dispatch(kernelShadeGISecondarySurfaces, (pixelCount + 63) / 64, 1, 1);
+        tracingShader.Dispatch(kernelShadeGISecondarySurfaces, (_currentRenderWidth + 7) / 8, (_currentRenderHeight + 7) / 8, 1);
 
         bool useTemporal = _hasIndirectRestirHistory;
         if (useTemporal)
@@ -439,11 +450,12 @@ public partial class Tracing
             tracingShader.SetInt("_RestirTemporalReservoirOffset", temporalIdx * pixelCount);
             tracingShader.SetInt("_RestirPrevReservoirOffset", prevIdx * pixelCount);
             tracingShader.SetInt("_RestirDebugPixelIndex", diagnosticPixelIndex);
-            tracingShader.Dispatch(kernelTemporalGIResampling, (pixelCount + 63) / 64, 1, 1);
+            tracingShader.Dispatch(kernelTemporalGIResampling, (_currentRenderWidth + 7) / 8, (_currentRenderHeight + 7) / 8, 1);
         }
 
         int shadingReservoirIdx = useTemporal ? temporalIdx : initialIdx;
 
+        tracingShader.SetBuffer(kernelSpatialGIResampling, "GlobalColors", _globalColors);
         tracingShader.SetBuffer(kernelSpatialGIResampling, "IndirectReservoirs", _indirectReservoirs);
         tracingShader.SetBuffer(kernelSpatialGIResampling, "SecondarySurfaces", _secondarySurfaces);
         tracingShader.SetBuffer(kernelSpatialGIResampling, "ReSTIRDebugData", _restirDebugData);
@@ -451,18 +463,9 @@ public partial class Tracing
         tracingShader.SetInt("_RestirShadingReservoirOffset", shadingReservoirIdx * pixelCount);
         tracingShader.SetInt("_RestirSpatialReservoirOffset", spatialIdx * pixelCount);
         tracingShader.SetInt("_RestirDebugPixelIndex", diagnosticPixelIndex);
-        tracingShader.Dispatch(kernelSpatialGIResampling, (pixelCount + 63) / 64, 1, 1);
+        tracingShader.Dispatch(kernelSpatialGIResampling, (_currentRenderWidth + 7) / 8, (_currentRenderHeight + 7) / 8, 1);
 
         shadingReservoirIdx = spatialIdx;
-
-        tracingShader.SetBuffer(kernelShadeGISamples, "IndirectReservoirs", _indirectReservoirs);
-        tracingShader.SetBuffer(kernelShadeGISamples, "IndirectReservoirsRead", _indirectReservoirs);
-        tracingShader.SetBuffer(kernelShadeGISamples, "GlobalColors", _globalColors);
-        tracingShader.SetBuffer(kernelShadeGISamples, "ReSTIRDebugData", _restirDebugData);
-        tracingShader.SetBuffer(kernelShadeGISamples, "_RestirGbuffer", _globalHits);
-        tracingShader.SetInt("_RestirShadingReservoirOffset", shadingReservoirIdx * pixelCount);
-        tracingShader.SetInt("_RestirDebugPixelIndex", diagnosticPixelIndex);
-        tracingShader.Dispatch(kernelShadeGISamples, (pixelCount + 63) / 64, 1, 1);
 
         _lastIndirectReservoirOutputIdx = shadingReservoirIdx;
         _hasIndirectRestirHistory = true;

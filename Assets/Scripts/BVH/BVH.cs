@@ -7,8 +7,9 @@ public struct BLASNode
     public Vector3 BoundMin;
     public int PrimitiveEndIdx;
     public int Index;   // Child ChildIdx or PrimitiveStart ChildIdx According to whether PrimitiveEndIdx == -1
+    public int EscapeIndex; // Next subtree after a miss or completed leaf.
 
-    public static int TypeSize = sizeof(float) * 3 * 2 + sizeof(int) * 2; 
+    public static int TypeSize = sizeof(float) * 3 * 2 + sizeof(int) * 3;
 }
 
 public struct MeshNode
@@ -18,8 +19,9 @@ public struct MeshNode
     public int TransformIdx;
     public int MaterialIdx;
     public int Index;   // Child Index or BLAS Root Index According to whether TransformIdx == -1
+    public int EscapeIndex;
 
-    public static int TypeSize = sizeof(float)*3*2+sizeof(int)*3;
+    public static int TypeSize = sizeof(float)*3*2+sizeof(int)*4;
 }
 
 /// <summary>
@@ -103,20 +105,22 @@ public abstract class BVH
     {
         int blasRootIdx = bnodes.Count;
 
-        Queue<BVHNode> q = new Queue<BVHNode>();
-        q.Enqueue(BVHRoot);
+        Queue<(BVHNode node, int escape)> q = new();
+        q.Enqueue((BVHRoot,-1));
         while (q.Count > 0)
         {
-            var node = q.Dequeue();
+            var (node, escape) = q.Dequeue();
+            int child = q.Count + bnodes.Count + 1;
             bnodes.Add(new BLASNode
             {
+                EscapeIndex      = escape,
                 BoundMax         = node.Bounds.max,
                 BoundMin         = node.Bounds.min,
                 PrimitiveEndIdx  = node.IsLeaf() ? node.OriginTriOrMeshEndIndex   + globalPrimitiveBase : -1,
-                Index         = node.IsLeaf() ? node.OriginTriOrMeshStartIndex + globalPrimitiveBase : q.Count + bnodes.Count + 1
+                Index         = node.IsLeaf() ? node.OriginTriOrMeshStartIndex + globalPrimitiveBase : child
             });
-            if (node.LeftChild  != null) q.Enqueue(node.LeftChild);
-            if (node.RightChild != null) q.Enqueue(node.RightChild);
+            if (node.LeftChild  != null) q.Enqueue((node.LeftChild,child+1));
+            if (node.RightChild != null) q.Enqueue((node.RightChild,escape));
         }
 
         meshNodes.Add(new MeshNode
@@ -137,12 +141,12 @@ public abstract class BVH
         IReadOnlyList<Matrix4x4> transforms)
     {
         dst.Clear();
-        Queue<BVHNode> q = new();
-        q.Enqueue(BVHRoot);
+        Queue<(BVHNode node, int escape)> q = new();
+        q.Enqueue((BVHRoot,-1));
 
         while (q.Count > 0)
         {
-            var cur = q.Dequeue();
+            var (cur, escape) = q.Dequeue();
             MeshNode n;
 
             if (cur.IsLeaf())
@@ -177,11 +181,12 @@ public abstract class BVH
 
                 if (cur.LeftChild != null)
                 {
-                    q.Enqueue(cur.LeftChild);
-                    q.Enqueue(cur.RightChild);
+                    q.Enqueue((cur.LeftChild,n.Index+1));
+                    q.Enqueue((cur.RightChild,escape));
                 }
             }
 
+            n.EscapeIndex = escape;
             dst.Add(n);
         }
     }

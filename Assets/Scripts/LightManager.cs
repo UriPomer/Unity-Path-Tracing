@@ -70,6 +70,8 @@ public class LightManager : MonoBehaviour
     }
 
     private List<Vector4> pointLightsPosColor = new List<Vector4>();
+    private List<Vector4> previousPointLights = new List<Vector4>();
+    private readonly HashSet<EntityId> handledLights = new HashSet<EntityId>();
 
     public int ComputeLightStateHash()
     {
@@ -129,9 +131,11 @@ public class LightManager : MonoBehaviour
     public void UpdateLights()
     {
         pointLightsCount = 0;
+        var scratch = previousPointLights;
+        previousPointLights = pointLightsPosColor;
+        pointLightsPosColor = scratch;
         pointLightsPosColor.Clear();
-
-        HashSet<EntityId> handledLights = new HashSet<EntityId>();
+        handledLights.Clear();
 
         if (UseSceneRayTracingPointLights)
         {
@@ -162,13 +166,17 @@ public class LightManager : MonoBehaviour
 
         int neededCount = pointLightsPosColor.Count;
 
+        bool changed = previousPointLights.Count != neededCount;
+        for (int i = 0; !changed && i < neededCount; i++)
+            changed = !pointLightsPosColor[i].Equals(previousPointLights[i]);
         if (pointLightsBuffer == null || pointLightsBuffer.count != neededCount)
         {
             pointLightsBuffer?.Release();
             pointLightsBuffer = new ComputeBuffer(neededCount, 4 * sizeof(float));
+            changed = true;
         }
 
-        pointLightsBuffer.SetData(pointLightsPosColor);
+        if (changed) pointLightsBuffer.SetData(pointLightsPosColor);
     }
 
     private void AddPointLight(Light light, float sourceRadius)

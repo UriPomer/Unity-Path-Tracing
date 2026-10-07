@@ -8,7 +8,7 @@
  * 传入面的索引idx，交点处通过插值得到的uv坐标data，法线纹理索引normIdx，uv坐标uv
  * 返回局部坐标的法线
  */
-float3 GetNormal(int idx, float2 data, int normIdx, float2 uv)
+float3 GetNormal(int idx, float2 data, int normIdx, float2 uv, float2 uvFootprint)
 {
     float3 norm0 = _Normals[_Indices[idx]];
     float3 norm1 = _Normals[_Indices[idx + 1]];
@@ -26,7 +26,7 @@ float3 GetNormal(int idx, float2 data, int normIdx, float2 uv)
             binorm,
             norm
         );  // 切线空间矩阵
-        float3 normTS = _NormalTextures.SampleLevel(sampler_NormalTextures, float3(uv, normIdx), 0.0).xyz * 2.0 - 1.0;
+        float3 normTS = _NormalTextures.SampleLevel(sampler_NormalTextures, float3(uv, normIdx), TextureArrayLod(_NormalTextures,uvFootprint)).xyz * 2.0 - 1.0;
         return normalize(mul(normTS, TBN));   //将法线从切线空间变换到物体的局部坐标系
     }
     else
@@ -100,21 +100,19 @@ float3 SampleHemisphere(float3 norm)
 
 Ray GenRayByID(float2 pixelCoord)
 {
-    uint width, height;
-    _Result.GetDimensions(width, height);
-
-    float2 screenPos = (pixelCoord + 0.5f) / float2(width, height);
+    float2 screenPos = (pixelCoord + 0.5f) / float2(_ScreenWidth, _ScreenHeight);
     float2 ndcPos = screenPos * 2.0f - 1.0f;  // NDC 坐标
 
     float4 clipPos = float4(ndcPos, 1.0f, 1.0f);
     float3 viewPos = mul(_CameraInverseProjection, clipPos).xyz;
     float3 worldDir = mul((float3x3)_CameraToWorld, normalize(viewPos));
 
-    Ray ray;
+    Ray ray = (Ray)0;
     ray.origin = mul(_CameraToWorld, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz;
     
     ray.dir = normalize(worldDir);
     ray.invDir = 1.0f / ray.dir;
+    ray.coneSpread = _RayPixelSpread;
 
     return ray;
 }

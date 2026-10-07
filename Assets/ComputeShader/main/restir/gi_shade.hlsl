@@ -1,32 +1,10 @@
 #pragma once
 
-bool EvaluateVisibleGISample(
-    HitData hd,
-    IndirectReservoirData res,
-    out float3 weightedReflectedRadiance,
-    out float3 reflectedRadiance)
+// Spatial normalization already evaluated this receiver's selected connection.
+// Shade that same contribution and visibility before discarding them.
+void ShadeGISample(uint pixelIndex, HitData hd, IndirectReservoirData finalRes, bool finalVisible)
 {
-    weightedReflectedRadiance = 0.0;
-    reflectedRadiance = 0.0;
-    if (!EvaluateIndirectSampleAtSurface(hd, res, reflectedRadiance))
-        return false;
-
-    if (!IsIndirectSampleVisibleAtSurface(hd, res))
-        return false;
-
-    // RTXDI parity: FinalShading.hlsl:66 -> radiance * reservoir.weightSum.
-    // After Finalize, weightSum encodes the RIS unbiased contribution weight W/UCW.
-    weightedReflectedRadiance = reflectedRadiance * res.weightSum;
-    return all(isfinite(weightedReflectedRadiance));
-}
-
-[numthreads(64, 1, 1)]
-void kernel_shade_gi_samples(uint3 id : SV_DispatchThreadID)
-{
-    uint pixelCount = _ScreenWidth * _ScreenHeight;
-    if (id.x >= pixelCount) return;
-
-    HitData hd = _RestirGbuffer[id.x];
+    uint3 id = uint3(pixelIndex,0,0);
     if (hd.distance >= 1e19)
     {
         RestirTelemetryCount(RESTIR_COUNTER_GI_FINAL_INVALID_PRIMARY, id.x);
@@ -36,7 +14,6 @@ void kernel_shade_gi_samples(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    IndirectReservoirData finalRes = IndirectReservoirsRead[_RestirShadingReservoirOffset + id.x];
     bool reservoirWeightFinite = isfinite(finalRes.weightSum);
     bool reservoirWeightExcessive = reservoirWeightFinite && abs(finalRes.weightSum) > 1e20;
     if (!reservoirWeightFinite)
@@ -64,9 +41,8 @@ void kernel_shade_gi_samples(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    float3 finalWeightedReflectedRadiance;
-    float3 finalReflectedRadiance;
-    bool finalVisible = EvaluateVisibleGISample(hd, finalRes, finalWeightedReflectedRadiance, finalReflectedRadiance);
+    float3 finalReflectedRadiance = finalRes.contribution;
+    float3 finalWeightedReflectedRadiance = finalReflectedRadiance * finalRes.weightSum;
     if (!finalVisible)
     {
         RestirTelemetryCount(RESTIR_COUNTER_GI_FINAL_VISIBILITY_REJECTED, id.x);
@@ -125,4 +101,14 @@ void kernel_shade_gi_samples(uint3 id : SV_DispatchThreadID)
             finalRes,
             float4(gi, rawLum));
     GlobalColors[id.x].L += max(gi, 0.0);
+    if (_DenoiseEnabled)
+    {
+        RayHit primary = BuildPrimaryRayHit(hd);
+        float3 V = normalize(_CameraToWorld._m03_m13_m23-hd.position);
+        primary.normal = GetDirectLightSurfaceNormal(primary,V);
+        float3 direction; float distance;
+        ResolveIndirectSampleDirection(hd,finalRes.secondaryPosition,finalRes.sampleFlags,direction,distance);
+        _DenoiseDiffuse[uint2(id.x % _ScreenWidth,id.x / _ScreenWidth)] +=
+            float4(gi * OpaqueDiffuseFraction(primary,V,direction),0);
+    }
 }

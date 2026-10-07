@@ -1,0 +1,317 @@
+#pragma kernel PrepareGeometry
+#pragma kernel Reproject
+#pragma kernel Temporal
+#pragma kernel Variance
+#pragma kernel Atrous
+#pragma kernel Combine
+#include "../ComputeShader/main/global.hlsl"
+
+// Schied et al., SVGF (HPG 2017), sections 4.2-4.4: reprojection,
+// short-history spatial moments, and edge-avoiding a-trous reconstruction.
+StructuredBuffer<HitData> _CurrentSurface, _PreviousSurface;
+// Spatial reconstruction needs only this compact, derived geometry view.
+// Full transport/material data stays in the path tracer's HitData buffers.
+struct FilterGeometry
+{
+    float3 normal; float roughness;
+    float3 position; float metallic;
+    uint material, instance; float mode, valid;
+};
+RWStructuredBuffer<FilterGeometry> _Geometry;
+StructuredBuffer<float4x4> _CurrentTransforms, _PreviousTransforms;
+Texture2D<float4> _Noisy, _Motion, _PreviousMotion, _History, _PreviousMoments;
+Texture2D<float4> _Input, _Moments, _Reprojected, _ReprojectedMoments;
+Texture2D<float4> _Direct, _Diffuse, _DirectFiltered, _IndirectFiltered;
+RWTexture2D<float4> _Out, _MomentsOut;
+int2 _Size;
+int _HistoryValid, _Step, _Final, _Signal;
+float _PixelWorldScale;
+float4x4 _View;
+float3 _CameraPosition, _PreviousCameraPosition;
+
+bool Inside(int2 p) { return all(p >= 0) && all(p < _Size); }
+uint Index(int2 p) { return p.y * _Size.x + p.x; }
+float Lum(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
+float3 Observation(int2 p)
+{
+    return _Signal == 0 ? _Direct[p].rgb : _Signal == 1 ?
+        _Diffuse[p].rgb - _Direct[p].rgb : _Noisy[p].rgb - _Diffuse[p].rgb;
+}
+bool Filterable(HitData h)
+{
+    // Primary-surface reprojection does not track reflected/refracted motion.
+    // Keep ideal specular, transparent and emissive surfaces on the raw path.
+    return h.distance < 1e19 && h.mode < 2.0 && h.roughness >= 0.1 &&
+        Lum(h.emission * h.emissionIntensity) <= 0.0;
+}
+float3 AlbedoFactor(HitData h)
+{
+    if (_Signal != 2) return max(h.albedo * (1.0-h.metallic),0.001);
+    // Karis' split-sum environment BRDF approximation. A dielectric's specular
+    // factor comes from F0 and view/roughness, independently of its base color.
+    float eta = max(h.ior,1.0);
+    float f0 = max(0.04,pow((eta-1.0)/(eta+1.0),2.0));
+    float3 F0 = lerp(f0.xxx,h.albedo,h.metallic);
+    float NV = abs(dot(h.normal,normalize(_CameraPosition-h.position)));
+    float4 r = h.roughness * float4(-1,-0.0275,-0.572,0.022) + float4(1,0.0425,1.04,-0.04);
+    float a = min(r.x*r.x,exp2(-9.28*NV))*r.x+r.y;
+    float2 AB = float2(-1.04,1.04)*a+r.zw;
+    return max(F0*AB.x+AB.y,0.001);
+}
+bool SameMaterial(HitData a, HitData b)
+{
+    // Texture colors vary within one material. Filter its demodulated light,
+    // while keeping actual submaterial and scattering-lobe boundaries.
+    return a.materialIndex == b.materialIndex && abs(a.mode - b.mode) < 0.1 &&
+        abs(a.roughness - b.roughness) < 0.2 && abs(a.metallic - b.metallic) < 0.1;
+}
+float Footprint(HitData h)
+{
+    return max(0.001, abs(mul(_View, float4(h.position, 1)).z) * _PixelWorldScale);
+}
+float GeometryWeight(int2 q, HitData center, float instance, float inverseTolerance)
+{
+    if (!Inside(q)) return 0.0;
+    FilterGeometry neighbor = _Geometry[Index(q)];
+    if (neighbor.instance != (uint)instance || neighbor.valid == 0 || neighbor.material != (uint)center.materialIndex ||
+        abs(center.mode-neighbor.mode) >= 0.1 || abs(center.roughness-neighbor.roughness) >= 0.2 ||
+        abs(center.metallic-neighbor.metallic) >= 0.1) return 0.0;
+    float alignment = saturate(dot(center.normal, neighbor.normal));
+    float planeDistance = abs(dot(center.geometryNormal, neighbor.position - center.position));
+    // World-space plane distance is the geometric equivalent of SVGF's local
+    // linear depth model; coplanar slopes are not mistaken for depth edges.
+    // An integer power needs five multiplies, not logarithm/exponent SFUs.
+    alignment *= alignment; alignment *= alignment; alignment *= alignment;
+    alignment *= alignment; alignment *= alignment;
+    return alignment * exp(-planeDistance * inverseTolerance);
+}
+bool HistoryCompatible(int2 q, HitData current, float instance, float3 oldPosition, float3 oldNormal, float3 oldShadingNormal, float oldDepth)
+{
+    if (!Inside(q) || _PreviousMotion[q].w != instance) return false;
+    HitData h = _PreviousSurface[Index(q)];
+    if (!Filterable(h) || !SameMaterial(current, h) || dot(oldNormal, h.geometryNormal) < 0.9) return false;
+    float normalThreshold = _Signal == 2 ? lerp(0.999,0.9,current.roughness*current.roughness) : 0.9;
+    if (dot(oldShadingNormal,h.normal) < normalThreshold) return false;
+    float tolerance = max(0.001, abs(oldDepth) * _PixelWorldScale);
+    float3 delta = h.position - oldPosition;
+    return abs(dot(delta, oldNormal)) < 0.25 * tolerance + 1e-4 && length(delta) < 3.0 * tolerance;
+}
+
+void GatherHistory(int2 p, HitData h, out float4 history, out float4 moments, out float weight)
+{
+    history = 0; moments = 0;
+    weight = 0;
+    float4 motion = _Motion[p];
+    if (_HistoryValid != 0 && motion.w > 0 && motion.z > 0)
+    {
+        uint instance = (uint)motion.w - 1;
+        float3 localPosition = mul(_CurrentTransforms[instance * 2 + 1], float4(h.position, 1)).xyz;
+        float3 oldPosition = mul(_PreviousTransforms[instance * 2], float4(localPosition, 1)).xyz;
+        float3 localNormal = mul(h.geometryNormal, (float3x3)_CurrentTransforms[instance * 2]);
+        float3 oldNormal = normalize(mul(localNormal, (float3x3)_PreviousTransforms[instance * 2 + 1]));
+        float3 localShadingNormal = mul(h.normal,(float3x3)_CurrentTransforms[instance*2]);
+        float3 oldShadingNormal = normalize(mul(localShadingNormal,(float3x3)_PreviousTransforms[instance*2+1]));
+        if (_Signal == 2)
+        {
+            float3 V = normalize(_CameraPosition-h.position);
+            float3 localV = mul((float3x3)_CurrentTransforms[instance*2+1],V);
+            float3 mappedV = normalize(mul((float3x3)_PreviousTransforms[instance*2],localV));
+            if (dot(mappedV,normalize(_PreviousCameraPosition-oldPosition)) < cos(h.roughness*h.roughness*1.5707963)) return;
+        }
+        // History stores pixel estimates, not individual jittered ray samples.
+        // Zero motion must read this pixel, without accumulating jitter blur.
+        float2 previousPixel = float2(p) + motion.xy;
+        // Split the small displacement before adding integer pixel coordinates.
+        // This keeps floor and interpolation weights consistent near zero motion.
+        int2 origin = p + (int2)floor(motion.xy);
+        float2 f = frac(motion.xy);
+        [unroll] for (int y = 0; y < 2; y++) [unroll] for (int x = 0; x < 2; x++)
+        {
+            int2 q = origin + int2(x, y);
+            float w = (x ? f.x : 1-f.x) * (y ? f.y : 1-f.y);
+            if (w <= 0 || !HistoryCompatible(q, h, motion.w, oldPosition, oldNormal, oldShadingNormal, motion.z)) continue;
+            history += _History[q] * w; moments += _PreviousMoments[q] * w; weight += w;
+        }
+        if (weight < 1e-5)
+        {
+            // Geometry-gated 3x3 fallback recovers thin surfaces, never an
+            // incompatible background merely because it is near the lookup.
+            int2 nearest = (int2)floor(previousPixel + 0.5);
+            for (int ny = -1; ny <= 1; ny++) for (int nx = -1; nx <= 1; nx++)
+            {
+                int2 q = nearest + int2(nx, ny);
+                if (!HistoryCompatible(q, h, motion.w, oldPosition, oldNormal, oldShadingNormal, motion.z)) continue;
+                float w = rcp(1.0 + dot(float2(q)-previousPixel, float2(q)-previousPixel));
+                history += _History[q] * w; moments += _PreviousMoments[q] * w; weight += w;
+            }
+        }
+    }
+    if (weight > 1e-5) { history /= weight; moments /= weight; }
+}
+
+float DirectResponse(int2 p, HitData h, out float reuseVariance)
+{
+    float inverseTolerance = rcp(0.25*Footprint(h)+1e-5), instance = _Motion[p].w;
+    float3 sum = 0, oldSum = 0;
+    float3 residualSum = 0, residualSecond = 0;
+    float luminanceSum = 0, luminanceSecond = 0;
+    float weights = 0, noiseDeviation = 0;
+    for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++)
+    {
+        int2 q = p + int2(x,y); float w = GeometryWeight(q,h,instance,inverseTolerance);
+        if (w <= 0) continue;
+        HitData neighbor = _CurrentSurface[Index(q)];
+        float4 old = _Reprojected[q], oldMoments = _ReprojectedMoments[q];
+        if (oldMoments.z <= 0) continue;
+        float3 c = _Direct[q].rgb / AlbedoFactor(neighbor);
+        sum += w*c; oldSum += w*old.rgb;
+        float3 residual = c-old.rgb;
+        residualSum += w*residual; residualSecond += w*residual*residual;
+        float luminanceResidual = Lum(residual);
+        luminanceSum += w*luminanceResidual;
+        luminanceSecond += w*luminanceResidual*luminanceResidual;
+        noiseDeviation += w*(sqrt(max(0,_Direct[q].a))+sqrt(max(0,oldMoments.w)));
+        weights += w;
+    }
+    float3 mean = sum / max(weights,1e-5), oldMean = oldSum / max(weights,1e-5);
+    float3 residualMean = residualSum/max(weights,1e-5);
+    float3 colorVariance = max(0,residualSecond/max(weights,1e-5)-residualMean*residualMean);
+    float luminanceMean = luminanceSum/max(weights,1e-5);
+    reuseVariance = max(0,luminanceSecond/max(weights,1e-5)-luminanceMean*luminanceMean);
+    // Match footprints to detect changes without mistaking lighting gradients
+    // for change. Paired-observation uncertainty covers cold/frozen noise; residual spread
+    // also covers fluctuations of RIS reuse weights. Neither is an independent
+    // pixel count, so spatial averaging must not divide uncertainty by N.
+    float scale = max(max(abs(mean.x),abs(mean.y)),abs(mean.z));
+    scale = max(scale,max(max(abs(oldMean.x),abs(oldMean.y)),abs(oldMean.z)));
+    // Compare RGB changes against RGB residual spread. Luminance alone loses
+    // equal-brightness chromatic noise. Scale the proposal's luminance deviation
+    // by the local light color before combining the two sources of uncertainty.
+    float3 lightColor = max(abs(mean),abs(oldMean));
+    lightColor /= max(Lum(lightColor),1e-5);
+    float3 uncertainty = noiseDeviation/max(weights,1e-5)*lightColor + sqrt(colorVariance) + 0.02*scale + 1e-4;
+    float3 delta = abs(mean-oldMean)/uncertainty;
+    return smoothstep(2.0,4.0,max(delta.x,max(delta.y,delta.z)));
+}
+// Derived once per frame, shared by every wavelet scale and signal.
+[numthreads(8, 8, 1)]
+void PrepareGeometry(uint3 id : SV_DispatchThreadID)
+{
+    int2 p = id.xy; if (!Inside(p)) return;
+    HitData h = _CurrentSurface[Index(p)];
+    FilterGeometry g;
+    g.normal = h.normal; g.roughness = h.roughness;
+    g.position = h.position; g.metallic = h.metallic;
+    g.material = (uint)h.materialIndex; g.instance = (uint)_Motion[p].w;
+    g.mode = h.mode; g.valid = Filterable(h) ? 1.0 : 0.0;
+    _Geometry[Index(p)] = g;
+}
+
+// Reproject each signal once. Lighting response consumes the matched footprint
+// instead of repeating object transforms and geometry tests for every neighbor.
+[numthreads(8, 8, 1)]
+void Reproject(uint3 id : SV_DispatchThreadID)
+{
+    int2 p = id.xy; if (!Inside(p)) return;
+    HitData h = _CurrentSurface[Index(p)];
+    float4 history = 0, moments = 0; float weight = 0;
+    if (Filterable(h)) GatherHistory(p,h,history,moments,weight);
+    _Out[p] = history;
+    _MomentsOut[p] = weight > 1e-5 ? moments : 0;
+}
+
+[numthreads(8, 8, 1)]
+void Temporal(uint3 id : SV_DispatchThreadID)
+{
+    int2 p = id.xy; if (!Inside(p)) return;
+    HitData h = _CurrentSurface[Index(p)];
+    float3 noisy = Observation(p);
+    if (!Filterable(h)) { _Out[p] = float4(noisy, 0); _MomentsOut[p] = 0; return; }
+    float3 current = noisy / AlbedoFactor(h);
+    float l = Lum(current);
+    float4 history = _Reprojected[p], moments = _ReprojectedMoments[p];
+    float sampleVariance = _Signal == 0 ? max(0,_Direct[p].a) : 0;
+    float length = 1;
+    float2 m = float2(l, l*l);
+    if (moments.z > 0)
+    {
+        length = min(32.0, moments.z + 1.0);
+        // Sparse GI can legitimately sample zero for many frames. SVGF's
+        // temporal fade handles lighting changes; zero is not disocclusion.
+        float reuseVariance = 0;
+        float response = _Signal == 0 ? DirectResponse(p,h,reuseVariance) : 0;
+        length = lerp(length,1.0,response);
+        float alpha = max(response,max(_Signal == 0 ? 0.05 : _Signal == 1 ? 0.2 : lerp(0.3,0.1,h.roughness),rcp(length)));
+        current = lerp(history.rgb, current, alpha);
+        m = lerp(moments.xy, m, alpha);
+        sampleVariance = max(reuseVariance,lerp(moments.w,sampleVariance,alpha));
+    }
+    _MomentsOut[p] = float4(m, length, sampleVariance);
+    _Out[p] = float4(current, max(max(0, m.y-m.x*m.x), _Signal == 0 ? sampleVariance : 0));
+}
+
+[numthreads(8, 8, 1)]
+void Variance(uint3 id : SV_DispatchThreadID)
+{
+    int2 p = id.xy; if (!Inside(p)) return;
+    HitData h = _CurrentSurface[Index(p)];
+    float4 center = _Input[p]; float historyLength = _Moments[p].z;
+    if (!Filterable(h) || historyLength >= 4) { _Out[p] = center; return; }
+    float2 moments = 0; float weight = 0;
+    // A disocclusion has no reliable temporal moments. Estimate from current
+    // same-surface neighbors; this does not fabricate additional history frames.
+    float inverseTolerance = rcp(0.25*Footprint(h)+1e-5), instance = _Motion[p].w;
+    int radius = 3;
+    for (int y = -radius; y <= radius; y++) for (int x = -radius; x <= radius; x++)
+    {
+        int2 q = p + int2(x,y); float w = GeometryWeight(q,h,instance,inverseTolerance);
+        if (w <= 0) continue;
+        moments += w * _Moments[q].xy; weight += w;
+    }
+    moments /= max(weight,1e-5);
+    float variance = max(0,moments.y-moments.x*moments.x) * 4.0/max(historyLength,1.0);
+    // Estimate uncertainty only. Pre-blurring color without a lighting edge
+    // weight destroys penumbrae before the edge-aware wavelet even sees them.
+    _Out[p] = float4(center.rgb,variance);
+}
+
+[numthreads(8, 8, 1)]
+void Atrous(uint3 id : SV_DispatchThreadID)
+{
+    int2 p = id.xy; if (!Inside(p)) return;
+    HitData h = _CurrentSurface[Index(p)];
+    float4 center = _Input[p];
+    if (!Filterable(h)) { _Out[p] = float4(center.rgb, _Final != 0 ? 1.0 : center.a); return; }
+    float inverseTolerance = rcp(0.25*Footprint(h)+1e-5), instance = _Motion[p].w;
+    float variance = 0, norm = 0;
+    for (int y=-1;y<=1;y++) for(int x=-1;x<=1;x++)
+    {
+        int2 q=p+int2(x,y); if(!Inside(q))continue;
+        float w=GeometryWeight(q,h,instance,inverseTolerance); variance+=_Input[q].a*w;norm+=w;
+    }
+    float sigma = 4.0*sqrt(max(0,variance/max(norm,1e-5)))+1e-4;
+    float3 color = 0; float v = 0, weights = 0;
+    const float kernel[3] = { 1.0, 2.0/3.0, 1.0/6.0 };
+    for(int ky=-2;ky<=2;ky++) for(int kx=-2;kx<=2;kx++)
+    {
+        int2 q=p+int2(kx,ky)*_Step; float w=GeometryWeight(q,h,instance,inverseTolerance);
+        if(w<=0)continue;
+        float4 tap=_Input[q];
+        w*=kernel[abs(kx)]*kernel[abs(ky)]*exp(-abs(Lum(center.rgb)-Lum(tap.rgb))/sigma);
+        color+=w*tap.rgb;v+=w*sqrt(max(0,tap.a));weights+=w;
+    }
+    // ReSTIR and overlapping wavelet footprints correlate inputs. The squared
+    // weighted standard deviation bounds variance without assuming independence.
+    color/=max(weights,1e-5); v=pow(v/max(weights,1e-5),2.0);
+    if(_Final!=0)color*=AlbedoFactor(h);
+    _Out[p]=float4(color,_Final!=0?1.0:v);
+}
+
+[numthreads(8, 8, 1)]
+void Combine(uint3 id : SV_DispatchThreadID)
+{
+    int2 p = id.xy; if (!Inside(p)) return;
+    // Unsupported primary surfaces retain the original radiance exactly.
+    _Out[p] = float4(Filterable(_CurrentSurface[Index(p)]) ?
+        _Input[p].rgb + _DirectFiltered[p].rgb + _IndirectFiltered[p].rgb : _Noisy[p].rgb, 1);
+}

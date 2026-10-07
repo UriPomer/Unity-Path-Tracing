@@ -22,3 +22,6 @@ float DirectLightVisibility(DirectLightSample sample)
     float tMax = sample.maxDist > 0.0 ? sample.maxDist : 1e20;
     return TraceVisibility(shadowRay, tMax, true);
 }
+
+// Reservoir targets use unoccluded radiance. Visibility belongs exclusively to
+// final shading, so receiver-domain MIS needs no shadow rays or old-frame BVH.

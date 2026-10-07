@@ -5,6 +5,7 @@
 bool ReevaluatePrevReservoir(
     HitData hd,
     DirectLightReservoirData prev,
+    float3 cameraPos,
     out DirectLightSample result)
 {
     RayHit hit;
@@ -16,7 +17,6 @@ bool ReevaluatePrevReservoir(
     hit.material.roughness = hd.roughness; hit.material.metallic = hd.metallic;
     hit.material.alpha = hd.alpha; hit.material.ior = hd.ior;
     hit.should_break = false;
-    float3 cameraPos = float3(_CameraToWorld._m03, _CameraToWorld._m13, _CameraToWorld._m23);
     float3 V = normalize(cameraPos - hd.position);
 
     float sourcePdf = prev.proposalPdf;
@@ -33,6 +33,7 @@ bool ReevaluatePrevReservoir(
             light, oldReceiverPosition, hd.position, oldSamplePosition);
         ok = ReevaluatePointLightDirectSample(hit, V, float3(1,1,1), prev.lightIndex, sp, sourcePdf, temp);
     }
+    ok = ok && IsValidDirectLightSample(temp);
     if (ok) result = temp;
     else result = (DirectLightSample)0;
     return ok;
@@ -74,6 +75,14 @@ void kernel_temporal_resampling(uint3 id : SV_DispatchThreadID)
 
     uint2 pixel = uint2(id.x % _ScreenWidth, id.x / _ScreenWidth);
     _Pixel = pixel;
+
+    // A sample-independent restart mixes two unbiased estimators. It bounds
+    // temporal correlation without clipping radiance or selecting by visibility.
+    // A single light has no light-selection reuse benefit. Keep fresh RIS draws
+    // there, so its soft-shadow visibility does not become persistent noise.
+    uint lightCount = (uint)max(_PointLightsCount,0) + (_DirectionalLightColor.a > 0 ? 1u : 0u);
+    RNG_SeedPixel(rng, pixel, _FrameCount, 2u);
+    if (RNG_Next(rng) < (lightCount <= 1u ? 1.0 : 0.25)) return;
 
     // Motion-vector reprojection
     float4 prevClip = mul(_RestirPreviousViewProjection, float4(hdCur.position, 1.0));
@@ -125,7 +134,7 @@ void kernel_temporal_resampling(uint3 id : SV_DispatchThreadID)
     float3 curN = hdCur.normal;
     float3 cameraPosition = _CameraToWorld._m03_m13_m23;
     if (dot(curN, cameraPosition - hdCur.position) < 0.0) curN = -curN;
-    if (dot(prevN, cameraPosition - hdPrev.position) < 0.0) prevN = -prevN;
+    if (dot(prevN, _RestirPreviousCameraPosition - hdPrev.position) < 0.0) prevN = -prevN;
     if (!IsTemporalCompatible(hdCur.position, curN, hdCur.mode,
                               hdPrev.position, prevN, hdPrev.mode))
     {
@@ -141,7 +150,7 @@ void kernel_temporal_resampling(uint3 id : SV_DispatchThreadID)
     DirectLightSample prevSample = (DirectLightSample)0;
     bool previousCandidateValid = IsReservoirValid(prev) &&
         IsHistoryLightAvailable(prev) &&
-        ReevaluatePrevReservoir(hdCur, prev, prevSample) &&
+        ReevaluatePrevReservoir(hdCur, prev, cameraPosition, prevSample) &&
         IsValidDirectLightSample(prevSample);
     if (!previousCandidateValid)
         RestirTelemetryCount(RESTIR_COUNTER_DI_TEMPORAL_REEVALUATION_REJECTED, id.x);
@@ -169,7 +178,6 @@ void kernel_temporal_resampling(uint3 id : SV_DispatchThreadID)
     float combinedWS = curW + prevW;
     uint combinedSC = currentM + previousM;
 
-    RNG_SeedPixel(rng, pixel, _FrameCount, 2u);
 
     DirectLightReservoirData outR = (DirectLightReservoirData)0;
     if (currentReservoirValid)
@@ -194,7 +202,7 @@ void kernel_temporal_resampling(uint3 id : SV_DispatchThreadID)
     float selectedTargetPdf = outR.targetLum;
     DirectLightSample selectedAtPrevious = (DirectLightSample)0;
     float temporalP = selectedTargetPdf > 0.0 &&
-        ReevaluatePrevReservoir(hdPrev, outR, selectedAtPrevious)
+        ReevaluatePrevReservoir(hdPrev, outR, _RestirPreviousCameraPosition, selectedAtPrevious)
         ? selectedAtPrevious.targetLum : 0.0;
     float pi = selectedPrevious ? temporalP : selectedTargetPdf;
     float piSum = selectedTargetPdf * (float)currentM + temporalP * (float)previousM;

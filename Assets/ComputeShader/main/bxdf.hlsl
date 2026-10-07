@@ -439,4 +439,19 @@ void EvaluateOpaqueBXDF_GivenDir(RayHit hit, float3 V, float3 L, out float3 f_br
     pdf = diffProb * max(pdf_d, 0.0) + specProb * max(pdf_s, 0.0);
 }
 
+// Partition the evaluated marginal BSDF, not the randomly selected sampling lobe.
+// Every path still estimates the full BSDF; these fractions only label radiance
+// for reconstruction and do not change proposals, throughput or reservoirs.
+float3 OpaqueDiffuseFraction(RayHit hit, float3 V, float3 L)
+{
+    if (hit.mode >= 2.0) return 0.0;
+    float NV = saturate(dot(hit.normal,V)), NL = saturate(dot(hit.normal,L));
+    if (NV <= 0.0 || NL <= 0.0) return 0.0;
+    if (IsLambertianMaterial(hit.material)) return 1.0;
+    float3 total; float pdf;
+    EvaluateOpaqueBXDF_GivenDir(hit,V,L,total,pdf);
+    float3 diffuse = EvaluateOpaqueDiffuse(hit.material,NV,NL,saturate(dot(L,normalize(V+L))));
+    return saturate(diffuse / max(total,1e-20));
+}
+
 #endif

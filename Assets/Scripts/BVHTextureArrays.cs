@@ -1,10 +1,11 @@
 using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
 
 internal static class BVHTextureArrays
 {
-    public static Texture2DArray Create(List<Texture2D> textures, bool linear)
+    public enum Kind { Color, Data, Normal }
+
+    public static Texture2DArray Create(List<Texture2D> textures, Kind kind)
     {
         int texWidth = 1, texHeight = 1;
         foreach (Texture tex in textures)
@@ -12,45 +13,50 @@ internal static class BVHTextureArrays
             texWidth = Mathf.Max(texWidth, tex.width);
             texHeight = Mathf.Max(texHeight, tex.height);
         }
-        int maxDim = GetMaxDimension(textures.Count, Mathf.Max(texWidth, texHeight));
-        texWidth = Mathf.Min(texWidth, maxDim);
-        texHeight = Mathf.Min(texHeight, maxDim);
         var newTexture = new Texture2DArray(
             texWidth, texHeight, Mathf.Max(1, textures.Count),
-            TextureFormat.ARGB32, true, linear
+            kind == Kind.Color ? TextureFormat.RGBAHalf : TextureFormat.ARGB32, true, true
         );
-        newTexture.SetPixels(Enumerable.Repeat(Color.white, texWidth * texHeight).ToArray(), 0, 0);
-        RenderTextureReadWrite readWrite = linear ? RenderTextureReadWrite.Linear : RenderTextureReadWrite.sRGB;
-        RenderTexture rt = new RenderTexture(texWidth, texHeight, 1, RenderTextureFormat.ARGB32, readWrite);
-        Texture2D tmp = new Texture2D(texWidth, texHeight, TextureFormat.ARGB32, false, linear);
-        for (int i = 0; i < textures.Count; i++)
+        newTexture.filterMode = FilterMode.Trilinear;
+        if (textures.Count == 0)
         {
-            RenderTexture.active = rt;
-            Graphics.Blit(textures[i], rt);
-            tmp.ReadPixels(new Rect(0, 0, texWidth, texHeight), 0, 0);
-            tmp.Apply();
-            newTexture.SetPixels(tmp.GetPixels(0), i, 0);
+            newTexture.SetPixels(new[] { Color.white },0,0);
+            newTexture.Apply(false);
+            return newTexture;
         }
-        newTexture.Apply();
-        RenderTexture.active = null;
-        UnityEngine.Object.Destroy(rt);
-        UnityEngine.Object.Destroy(tmp);
+        newTexture.Apply(false, true);
+        // Decode imported sRGB in the blit and store/filter linear values.
+        // Half precision retains dark-color detail without requiring sRGB mip
+        // generation, whose encoded-byte averaging darkened minified textures.
+        var rt = new RenderTexture(new RenderTextureDescriptor(texWidth,texHeight) {
+            graphicsFormat = newTexture.graphicsFormat, depthBufferBits = 0,
+            useMipMap = true, autoGenerateMips = false, msaaSamples = 1
+        });
+        rt.Create();
+        // Normal arrays have one canonical XYZ encoding, including their mips.
+        // Unity's platform-dependent RG/AG packing ends at this boundary.
+        Material decoder = kind == Kind.Normal ?
+            new Material(Resources.Load<Shader>("TextureArrayNormal")) : null;
+        RenderTexture previousTarget = RenderTexture.active;
+        try
+        {
+            for (int i = 0; i < textures.Count; i++)
+            {
+                if (decoder == null) Graphics.Blit(textures[i], rt);
+                else Graphics.Blit(textures[i], rt, decoder);
+                rt.GenerateMips();
+                for (int mip=0;mip<newTexture.mipmapCount;mip++)
+                    Graphics.CopyTexture(rt,0,mip,newTexture,i,mip);
+            }
+        }
+        finally
+        {
+            RenderTexture.active = previousTarget;
+            rt.Release();
+            UnityEngine.Object.Destroy(rt);
+            if (decoder != null) UnityEngine.Object.Destroy(decoder);
+        }
         return newTexture;
     }
 
-    private static int GetMaxDimension(int count, int dim)
-    {
-        // 看上去是用于纹理压缩
-        if (dim >= 2048)
-        {
-            if (count <= 16) return 2048;
-            else return 1024;
-        }
-        else if (dim >= 1024)
-        {
-            if (count <= 48) return 1024;
-            else return 512;
-        }
-        else return dim;
-    }
 }

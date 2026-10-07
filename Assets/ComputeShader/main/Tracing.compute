@@ -12,7 +12,6 @@
 #pragma kernel kernel_shade_gi_secondary_surfaces
 #pragma kernel kernel_temporal_gi_resampling
 #pragma kernel kernel_spatial_gi_resampling
-#pragma kernel kernel_shade_gi_samples
 #pragma kernel kernel_clear_restir_telemetry
 #pragma kernel kernel_capture_restir_frame
 #pragma multi_compile _ RESTIR_TELEMETRY_ENABLED
@@ -25,14 +24,14 @@
 #include "restir/restir_common.hlsl"
 #include "restir/telemetry.hlsl"
 #include "restir/reservoir.hlsl"
+#include "restir/gi_reservoir.hlsl"
 #include "restir/generate_initial.hlsl"
 #include "restir/temporal_resampling.hlsl"
 #include "restir/shade_di.hlsl"
-#include "restir/gi_reservoir.hlsl"
 #include "restir/gi_initial.hlsl"
 #include "restir/gi_temporal.hlsl"
-#include "restir/gi_spatial.hlsl"
 #include "restir/gi_shade.hlsl"
+#include "restir/gi_spatial.hlsl"
 
 RWStructuredBuffer<HitData> PrimarySurfaceHistoryPrevRW;
 
@@ -148,20 +147,25 @@ void kernel_generate(uint3 id : SV_DispatchThreadID)
     rd.pixelIndex = id.x;
     rd.rngState = rng.state;
     rd.throughput = float3(1, 1, 1);
-    rd.lastPdf = 0;
 
     GlobalRays[id.x] = rd;
     GlobalColors[id.x].L = float3(0, 0, 0);
     GlobalColors[id.x].throughput = float3(1, 1, 1);
+    if (_DenoiseEnabled)
+    {
+        _DenoiseDirect[uint2(id.x % _ScreenWidth, id.x / _ScreenWidth)] = 0;
+        _DenoiseDiffuse[pixel] = 0;
+        _DenoisePathDiffuse[pixel] = 0;
+    }
     GlobalHits[id.x].distance = 1.#INF;
-    if (_UseReSTIRDI || _UseReSTIRGI)
+    if (_UseReSTIRDI || _UseReSTIRGI || _DenoiseEnabled)
         PrimarySurfaceHistory[id.x] = GenHitData();
 
     // Debug modes: write debug color to GlobalColors (finalize kernel will output it)
     if (_OnlyDrawAlbedo || _OnlyDrawDepth || _OnlyDrawNormals)
     {
         _Pixel = pixel;
-        RayHit firstHit = Trace(r);
+        RayHit firstHit = Trace(r,true);
 
         if (_OnlyDrawAlbedo)
             GlobalColors[id.x].L = firstHit.material.albedo;
@@ -195,6 +199,7 @@ void kernel_trace(uint3 id : SV_DispatchThreadID)
         if (HasCachedGISecondaryHit(cached.flags))
         {
             HitData hd;
+            hd.materialIndex = -1; // Cached secondary hits are never primary denoising guides.
             hd.position = cached.position;
             hd.distance = cached.secondaryDistance >= 1e19 ? 1.#INF : cached.secondaryDistance;
             hd.normal = cached.normal;
@@ -215,15 +220,36 @@ void kernel_trace(uint3 id : SV_DispatchThreadID)
     rng.state = rd.rngState;
     _Pixel = uint2(rd.pixelIndex % _ScreenWidth, rd.pixelIndex / _ScreenWidth);
 
-    Ray ray;
+    Ray ray = (Ray)0;
     ray.origin = rd.origin;
     ray.dir = rd.direction;
     ray.invDir = 1.0 / ray.dir;
 
-    RayHit hit = Trace(ray);
+    ray.coneSpread = _RayPixelSpread;
+    RayHit hit = Trace(ray,CurBounce == 0);
+    if (CurBounce == 0 && _DenoiseEnabled)
+    {
+        float4 motion = float4(0, 0, -1, 0);
+        if (hit.distance < 1e19)
+        {
+            uint instance = (uint)hit.instanceIndex;
+            // Instance identity belongs to the current hit, even when there
+            // is no valid previous projection for temporal reuse.
+            motion.w = instance + 1;
+            float3 local = mul(_Transforms[instance * 2 + 1], float4(hit.position, 1)).xyz;
+            float3 previous = mul(_DenoisePreviousTransforms[instance * 2], float4(local, 1)).xyz;
+            float4 a = mul(_DenoiseCurrentVP, float4(hit.position, 1));
+            float4 b = mul(_DenoisePreviousVP, float4(previous, 1));
+            float depth = -mul(_DenoisePreviousView, float4(previous, 1)).z;
+            if (b.w > 1e-6)
+                motion = float4((b.xy/b.w - a.xy/a.w) * 0.5 * float2(_ScreenWidth, _ScreenHeight), depth, instance + 1);
+        }
+        _DenoiseMotion[uint2(rd.pixelIndex % _ScreenWidth, rd.pixelIndex / _ScreenWidth)] = motion;
+    }
     GlobalRays[id.x].rngState = rng.state;
 
     HitData hd;
+    hd.materialIndex = hit.materialIndex;
     hd.position = hit.position;
     hd.distance = hit.distance;
     hd.normal = hit.normal;
@@ -268,11 +294,14 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
     {
         if (!restirGIReplacesLocalShading)
         {
-            Ray ray;
+            Ray ray = (Ray)0;
             ray.origin = rd.origin;
             ray.dir = rd.direction;
             ray.invDir = 1.0 / ray.dir;
-            L += throughput * SampleSkybox(ray);
+            float3 sky = throughput * SampleSkybox(ray);
+            L += sky;
+            if (_DenoiseEnabled && CurBounce > 0)
+                _DenoiseDiffuse[_Pixel] += float4(sky * _DenoisePathDiffuse[_Pixel].rgb,0);
         }
         GlobalColors[rd.pixelIndex].L = L;
         return;
@@ -296,12 +325,17 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
     if (hit.mode < 3.0 && dot(-rd.direction, hit.normal) < 0.0)
         hit.normal = -hit.normal;
 
-    if (CurBounce == 0 && (_UseReSTIRDI || _UseReSTIRGI))
+    if (CurBounce == 0 && (_UseReSTIRDI || _UseReSTIRGI || _DenoiseEnabled))
         PrimarySurfaceHistory[rd.pixelIndex] = hd;
 
     // Emission
     if (!restirGIReplacesLocalShading && hit.material.emissionIntensity > 0.0f)
-        L += throughput * (hit.material.emission * hit.material.emissionIntensity) * (hit.mode == 2.0 ? saturate(hit.material.alpha) : 1.0);
+    {
+        float3 emission = throughput * (hit.material.emission * hit.material.emissionIntensity) * (hit.mode == 2.0 ? saturate(hit.material.alpha) : 1.0);
+        L += emission;
+        if (_DenoiseEnabled && CurBounce > 0)
+            _DenoiseDiffuse[_Pixel] += float4(emission * _DenoisePathDiffuse[_Pixel].rgb,0);
+    }
 
     // Wavefront direct lighting: shade samples a light candidate and queues a shadow ray.
     // The shadow kernel is the only stage that resolves visibility and commits the contribution.
@@ -309,7 +343,7 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
         GenerateShadowRays(hit, -rd.direction, throughput, rd.pixelIndex);
 
     // BXDF sampling
-    Ray ray;
+    Ray ray = (Ray)0;
     ray.origin = rd.origin;
     ray.dir = rd.direction;
     ray.invDir = 1.0 / ray.dir;
@@ -322,6 +356,8 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
     }
     else
         EvaluateBXDFWithDotAndPDF(hit, /*inout*/ ray, f_brdf);
+    if (_DenoiseEnabled && CurBounce == 0)
+        _DenoisePathDiffuse[_Pixel] = float4(OpaqueDiffuseFraction(hit,-rd.direction,ray.dir),_DenoisePathDiffuse[_Pixel].a);
     throughput *= f_brdf;
 
     // Russian Roulette
@@ -349,7 +385,6 @@ void kernel_shade(uint3 id : SV_DispatchThreadID)
     nextRd.pixelIndex = rd.pixelIndex;
     nextRd.rngState = rng.state;
     nextRd.throughput = throughput;
-    nextRd.lastPdf = 0;
     GlobalRays2[nextIndex] = nextRd;
 }
 
@@ -363,13 +398,32 @@ void kernel_shadow(uint3 id : SV_DispatchThreadID)
 
     ShadowRayData sr = ShadowRaysBuffer[id.x];
 
-    Ray ray;
+    Ray ray = (Ray)0;
     ray.origin = sr.origin;
     ray.dir = sr.direction;
     ray.invDir = 1.0 / ray.dir;
 
     float visibility = TraceVisibility(ray, sr.maxDist, true);
     GlobalColors[sr.pixelIndex].L += sr.illumination * visibility;
+    if (_DenoiseEnabled)
+    {
+        uint2 pixel = uint2(sr.pixelIndex % _ScreenWidth,sr.pixelIndex / _ScreenWidth);
+        float3 fraction = _DenoisePathDiffuse[pixel].rgb;
+        if (CurBounce == 0)
+        {
+            RayHit primary = BuildPrimaryRayHit(PrimarySurfaceHistory[sr.pixelIndex]);
+            float3 V = normalize(_CameraToWorld._m03_m13_m23-primary.position);
+            primary.normal = GetDirectLightSurfaceNormal(primary,V);
+            fraction = OpaqueDiffuseFraction(primary,V,sr.direction);
+            float3 diffuse = sr.illumination * visibility * fraction;
+            float observed = dot(diffuse/max(primary.material.albedo*(1.0-primary.material.metallic),0.001),LUM);
+            float4 path = _DenoisePathDiffuse[pixel];
+            float delta = observed-path.a;
+            _DenoisePathDiffuse[pixel] = float4(path.rgb,0.5*delta*delta);
+            _DenoiseDirect[pixel] = float4(diffuse,0);
+        }
+        _DenoiseDiffuse[pixel] += float4(sr.illumination * visibility * fraction,0);
+    }
 }
 
 // ==================== Kernel 4: Finalize ====================
@@ -380,6 +434,10 @@ void kernel_finalize(uint3 id : SV_DispatchThreadID)
     if (id.x >= _ScreenWidth || id.y >= _ScreenHeight) return;
     uint pixelIndex = id.y * _ScreenWidth + id.x;
     _Result[id.xy] = float4(GlobalColors[pixelIndex].L, 1.0f);
+    // Shade/shadow use the existing path-weight alpha for PT uncertainty so
+    // shade stays within D3D11's eight-UAV limit, including rejected proposals.
+    if (_DenoiseEnabled && !_UseReSTIRDI)
+        _DenoiseDirect[id.xy] = float4(_DenoiseDirect[id.xy].rgb,_DenoisePathDiffuse[id.xy].a);
 }
 
 [numthreads(64, 1, 1)]

@@ -28,31 +28,23 @@ public class BVHBuilder
     // object data
     private static List<GameObject> objects = new List<GameObject>();
     public static IReadOnlyList<GameObject> GetObjects() => objects;
-    
     // material data
     private static List<MaterialData> materials = new List<MaterialData>();
     public static IReadOnlyList<MaterialData> GetMaterials() => materials;
-    
     // Mesh data
     private static List<Vector3> vertices = new List<Vector3>();
     public static IReadOnlyList<Vector3> GetVertices() => vertices;
-    
     private static List<Vector2> uvs = new List<Vector2>();
     public static IReadOnlyList<Vector2> GetUVs() => uvs;
-    
     private static List<Vector3> normals = new List<Vector3>();
     public static IReadOnlyList<Vector3> GetNormals() => normals;
-    
     private static List<Vector4> tangents = new List<Vector4>();
     public static IReadOnlyList<Vector4> GetTangents() => tangents;
-    
     // Acceleration structure
     private static List<BLASNode> bnodes = new List<BLASNode>();
     public static IReadOnlyList<BLASNode> GetBLASNodes() => bnodes;
-    
     private static List<MeshNode> meshNodes = new List<MeshNode>();
     public static IReadOnlyList<MeshNode> GetMeshNodes() => meshNodes;
-    
     private static List<MeshNode> tlasNodes = new List<MeshNode>();
     public static IReadOnlyList<MeshNode> GetTLASNodes() => tlasNodes;
 
@@ -66,6 +58,7 @@ public class BVHBuilder
     public static List<int> GetIndices() => indices;
 
     public static ComputeBuffer VertexBuffer;
+    public static ComputeBuffer TriangleBuffer;
     public static ComputeBuffer UVBuffer;
     public static ComputeBuffer IndexBuffer;
     public static ComputeBuffer NormalBuffer;
@@ -74,7 +67,6 @@ public class BVHBuilder
     public static ComputeBuffer BLASBuffer;
     public static ComputeBuffer MeshNodeBuffer;
     public static ComputeBuffer TransformBuffer;
-    
     public static Texture2DArray AlbedoTextures = null;
     public static Texture2DArray EmissionTextures = null;
     public static Texture2DArray MetallicTextures = null;
@@ -82,6 +74,7 @@ public class BVHBuilder
     public static Texture2DArray RoughnessTextures = null;
 
     private static bool objectUpdated = true;
+    public static int GeometryRevision { get; private set; }
     private static bool objectTransformUpdated = false;
 
     public static void RegisterObject(GameObject o)
@@ -104,6 +97,7 @@ public class BVHBuilder
         // —— 1. 检测物体结构变化（Register/Unregister） —— //
         if (objectUpdated)
         {
+            GeometryRevision++;
             BuildBVH();
             LoadTransforms();
             RebuildTLAS();
@@ -126,7 +120,6 @@ public class BVHBuilder
 
         return false;
     }
-    
     private static readonly int ID_MainTex          = Shader.PropertyToID("_MainTex");
     private static readonly int ID_EmissionMap      = Shader.PropertyToID("_EmissionMap");
     private static readonly int ID_MetallicGlossMap = Shader.PropertyToID("_MetallicGlossMap");
@@ -137,7 +130,6 @@ public class BVHBuilder
     private static readonly int ID_Glossiness       = Shader.PropertyToID("_Glossiness");
     private static readonly int ID_IOR              = Shader.PropertyToID("_IOR");
     private static readonly int ID_Mode             = Shader.PropertyToID("_Mode");
-    
     private static float ReadIor(Material material)
     {
         float ior = material.HasProperty(ID_IOR) ? material.GetFloat(ID_IOR) : 1.5f;
@@ -152,7 +144,6 @@ public class BVHBuilder
         public override bool Equals(object obj) =>
             obj is SubMeshKey o && o.Mesh == Mesh && o.SubMeshIndex == SubMeshIndex;
     }
-    
     private static void BuildMaterialAndMeshData(List<GameObject> SceneObjects)
     {
         // Packed offsets are valid only for this build's vertex/index arrays.
@@ -277,7 +268,7 @@ public class BVHBuilder
         if (MetallicTextures) UnityEngine.Object.Destroy(MetallicTextures);
         if (NormalTextures) UnityEngine.Object.Destroy(NormalTextures);
         if (RoughnessTextures) UnityEngine.Object.Destroy(RoughnessTextures);
-        AlbedoTextures = BVHTextureArrays.Create(albedoTex, false);
+        AlbedoTextures = BVHTextureArrays.Create(albedoTex, BVHTextureArrays.Kind.Color);
 #if UNITY_EDITOR && DEBUG_TEXTURE
         UnityEditor.EditorApplication.delayCall += () =>
         {
@@ -293,18 +284,16 @@ public class BVHBuilder
             win.Repaint();
         };
 #endif
-        EmissionTextures = BVHTextureArrays.Create(emitTex, false);
-        MetallicTextures = BVHTextureArrays.Create(metalTex, true);
-        NormalTextures = BVHTextureArrays.Create(normTex, true);
-        RoughnessTextures = BVHTextureArrays.Create(roughTex, true);
+        EmissionTextures = BVHTextureArrays.Create(emitTex, BVHTextureArrays.Kind.Color);
+        MetallicTextures = BVHTextureArrays.Create(metalTex, BVHTextureArrays.Kind.Data);
+        NormalTextures = BVHTextureArrays.Create(normTex, BVHTextureArrays.Kind.Normal);
+        RoughnessTextures = BVHTextureArrays.Create(roughTex, BVHTextureArrays.Kind.Data);
     }
-    
     static void verticesEnsure<T>(List<T> dst, T[] src, int count, T pad)
     {
         if (src != null && src.Length == count) dst.AddRange(src);
         else dst.AddRange(System.Linq.Enumerable.Repeat(pad, count));
     }
-    
     static void ExtractMaterialTexture(
         Material mat, Dictionary<Texture2D,int> map, List<Texture2D> list,
         int propId, out int idx)
@@ -368,13 +357,21 @@ public class BVHBuilder
     {
         SetBuffer(ref IndexBuffer, indices, sizeof(int));
         SetBuffer(ref VertexBuffer, vertices, sizeof(float) * 3);
+        // Flattened BLAS primitive order: v0, e1, e2. Rigid transforms keep this local cache valid.
+        var triangles = new List<Vector3>(indices.Count);
+        for (int i = 0; i < indices.Count; i += 3) {
+            Vector3 v0 = vertices[indices[i]];
+            triangles.Add(v0);
+            triangles.Add(vertices[indices[i+1]] - v0);
+            triangles.Add(vertices[indices[i+2]] - v0);
+        }
+        SetBuffer(ref TriangleBuffer, triangles, sizeof(float) * 3);
         SetBuffer(ref UVBuffer, uvs, sizeof(float) * 2);
         SetBuffer(ref NormalBuffer, normals, sizeof(float) * 3);
         SetBuffer(ref TangentBuffer, tangents, sizeof(float) * 4);
         SetBuffer(ref MaterialBuffer, materials, MaterialData.TypeSize);
         SetBuffer(ref BLASBuffer, bnodes, BLASNode.TypeSize);
     }
-    
     public static void RebuildTLAS()
     {
         tlasNodes.Clear();
@@ -393,6 +390,8 @@ public class BVHBuilder
         if (data.Count > 0) buffer.SetData(data);
     }
 
+    private static readonly List<Material> reloadMaterials = new List<Material>();
+
     public static bool ReloadMaterials()
     {
         if (objectUpdated || materials.Count <= 1 || objects.Count == 0)
@@ -405,8 +404,8 @@ public class BVHBuilder
         {
             if (obj == null) continue;
 
-            var meshMats = obj.GetComponent<Renderer>().sharedMaterials;
-            foreach (var mat in meshMats)
+            obj.GetComponent<Renderer>().GetSharedMaterials(reloadMaterials);
+            foreach (var mat in reloadMaterials)
             {
                 Color emission = mat.IsKeywordEnabled("_EMISSION") ? mat.GetColor("_EmissionColor") : Color.black;
                 obj.TryGetComponent<Emission>(out var emissionComponent);
@@ -465,6 +464,7 @@ public class BVHBuilder
     {
         IndexBuffer?.Release(); IndexBuffer = null;
         VertexBuffer?.Release(); VertexBuffer = null;
+        TriangleBuffer?.Release(); TriangleBuffer = null;
         NormalBuffer?.Release(); NormalBuffer = null;
         TangentBuffer?.Release(); TangentBuffer = null;
         UVBuffer?.Release(); UVBuffer = null;

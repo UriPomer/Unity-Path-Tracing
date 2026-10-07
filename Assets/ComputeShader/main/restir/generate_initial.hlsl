@@ -74,7 +74,8 @@ void kernel_generate_initial(uint3 id : SV_DispatchThreadID)
             candidateIndex,
             proposalPdf,
             s);
-        if (!ok || !IsValidDirectLightSample(s)) continue;
+        // All proposal draws remain in cCount, including zero-radiance draws.
+        if (!ok) continue;
 
         float w = s.targetLum / s.proposalPdf;
         weightSum += w;

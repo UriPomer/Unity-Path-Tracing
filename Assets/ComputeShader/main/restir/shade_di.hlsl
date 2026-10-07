@@ -1,6 +1,6 @@
 #pragma once
 
-// Depends on: global.hlsl, intersection.hlsl (IntersectTlasFast), reservoir.hlsl
+// Depends on: global.hlsl, reservoir.hlsl
 
 [numthreads(64, 1, 1)]
 void kernel_shade_di_samples(uint3 id : SV_DispatchThreadID)
@@ -18,26 +18,11 @@ void kernel_shade_di_samples(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    // Inline shadow ray (any-hit)
-    Ray shadowRay;
-    shadowRay.origin = res.origin;
-    shadowRay.dir = res.direction;
-    shadowRay.invDir = 1.0 / res.direction;
     float tMax = res.maxDist > 0.0 ? res.maxDist : 1e20;
-    float visibility = TraceVisibility(shadowRay, tMax, true);
-    if (visibility <= 0.0)
-    {
-        RestirTelemetryCount(RESTIR_COUNTER_DI_SHADE_VISIBILITY_REJECTED, id.x);
-        WriteDirectReservoirTelemetry(
-            6u, RESTIR_STAGE_DI_SHADE, RESTIR_REASON_VISIBILITY_REJECTED, id.x,
-            res,
-            float4((float)res.lightType, (float)res.lightIndex, (float)res.sampleCount, res.selectedWeight),
-            float4(0.0, 0.0, 0.0, tMax));
-        return;
-    }
-
-    // Visible: accumulate weighted contribution
-    float3 di = res.contribution * res.selectedWeight * visibility;
+    // Evaluate current-frame visibility once, after selection. Reservoirs keep
+    // unoccluded contributions and targets; alpha transmittance is not squared.
+    float visibility = TraceVisibility(GenRay(res.origin,res.direction),tMax,true);
+    float3 di = res.contribution * (res.selectedWeight * visibility);
     if (!all(isfinite(di)))
     {
         RestirTelemetryCountCritical(RESTIR_COUNTER_CRITICAL_NONFINITE);
@@ -48,10 +33,29 @@ void kernel_shade_di_samples(uint3 id : SV_DispatchThreadID)
             float4(di, tMax));
         return;
     }
-    RestirTelemetryCount(RESTIR_COUNTER_DI_SHADE_POSITIVE_CONTRIBUTION, id.x);
+    if (any(di > 0.0))
+        RestirTelemetryCount(RESTIR_COUNTER_DI_SHADE_POSITIVE_CONTRIBUTION, id.x);
     WriteDirectReservoirTelemetry(
         6u, RESTIR_STAGE_DI_SHADE, RESTIR_REASON_NONE, id.x, res,
         float4((float)res.lightType, (float)res.lightIndex, (float)res.sampleCount, res.selectedWeight),
         float4(di, tMax));
     GlobalColors[id.x].L += max(di, float3(0, 0, 0));
+    if (_DenoiseEnabled)
+    {
+        RayHit primary = BuildPrimaryRayHit(_RestirGbuffer[id.x]);
+        float3 V = normalize(_CameraToWorld._m03_m13_m23-primary.position);
+        primary.normal = GetDirectLightSurfaceNormal(primary,V);
+        float3 diffuse = max(di,0) * OpaqueDiffuseFraction(primary,V,res.direction);
+        uint2 pixel = uint2(id.x % _ScreenWidth,id.x / _ScreenWidth);
+        _Pixel = pixel;
+        float variance = 0;
+        if (primary.mode < 2.0 && primary.material.roughness >= 0.1)
+        {
+            float observation = DirectDiffuseLuminance(primary,V,res.direction,di);
+            float delta = observation - IndependentDirectDiffuseObservation(primary,V);
+            variance = 0.5 * delta * delta;
+        }
+        _DenoiseDirect[pixel] = float4(diffuse,variance);
+        _DenoiseDiffuse[pixel] += float4(diffuse,0);
+    }
 }

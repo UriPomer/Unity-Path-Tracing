@@ -8,6 +8,7 @@ struct Ray
     float3 origin;
     float3 dir;
     float3 invDir;
+    float coneSpread;
 };
 
 struct Material
@@ -27,6 +28,8 @@ struct Material
 
 struct RayHit
 {
+    int instanceIndex;
+    int materialIndex;
     float distance;
     float3 position;
     float3 normal;
@@ -42,6 +45,8 @@ int _TraceDepth;
 float4x4 _CameraToWorld;
 float4x4 _CameraInverseProjection;
 float4x4 _PreviousCameraViewProjection;
+float3 _RestirPreviousCameraPosition;
+float _RayPixelSpread;
 Texture2D<float4> _SkyboxTexture;
 SamplerState sampler_SkyboxTexture;
 float3 _InverseDirectionalLight;
@@ -68,7 +73,7 @@ static RNG rng;
 static const float PI = 3.14159265f;
 static const float INV_PI = 0.318309886f;
 #define PI_TWO          6.28318530717958623198
-const float3 LUM = float3(0.2126, 0.7152, 0.0722);
+static const float3 LUM = float3(0.2126, 0.7152, 0.0722);
 
 float2 _Pixel;
 // float _Seed;
@@ -79,6 +84,7 @@ struct BLASNode
     float3 boundMin;
     int primitiveEndIdx;
     int Index;  // Child Index Or Primitive Start Index
+    int escapeIndex;
 };
 StructuredBuffer<BLASNode> _BNodes;
 
@@ -89,6 +95,7 @@ struct TLASNode
     int transformIdx;
     int materialIdx;
     int Index;  // Child Index Or BLAS Root Index
+    int escapeIndex;
 };
 StructuredBuffer<TLASNode> _TLASNodes;
 
@@ -102,6 +109,13 @@ bool _OnlyDrawDepth;
 bool _HasPrimarySurfaceHistory;
 bool _UseReSTIRDI;
 bool _UseReSTIRGI;
+bool _DenoiseEnabled;
+RWTexture2D<float4> _DenoiseMotion;
+RWTexture2D<float4> _DenoiseDiffuse;
+RWTexture2D<float4> _DenoisePathDiffuse;
+RWTexture2D<float4> _DenoiseDirect;
+StructuredBuffer<float4x4> _DenoisePreviousTransforms;
+float4x4 _DenoisePreviousVP, _DenoiseCurrentVP, _DenoisePreviousView;
 
 /// Debug
 
@@ -123,6 +137,7 @@ struct MaterialData
 StructuredBuffer<MaterialData> _Materials;
 
 StructuredBuffer<float3> _Vertices;
+StructuredBuffer<float3> _Triangles; // v0, e1, e2 in flattened primitive order
 StructuredBuffer<int> _Indices;
 StructuredBuffer<float3> _Normals;
 StructuredBuffer<float4> _Tangents;
@@ -150,7 +165,6 @@ struct RayData
     uint   pixelIndex;
     uint   rngState;
     float3 throughput;
-    float  lastPdf;
 };
 
 struct PathContribution
@@ -176,6 +190,7 @@ struct HitData
     float  metallic;          float  alpha;
     float  ior;
     float3 geometryNormal;
+    int materialIndex;
 };
 
 struct ShadowRayData
@@ -245,25 +260,33 @@ uint _RestirDebugPixelIndex;
 
 // ==================== End Multi-Pass ====================
 
+float TextureArrayLod(Texture2DArray<float4> textureArray, float2 uvFootprint)
+{
+    uint width,height,layers;
+    textureArray.GetDimensions(width,height,layers);
+    float2 texels = uvFootprint * float2(width,height);
+    return max(0.0,log2(max(max(texels.x,texels.y),1e-8)));
+}
+
 Material GenMaterial(half3 baseColor, half3 emission, half emissionIntensity,
     half metallic, half smoothness, half alpha, float ior,
-    int4 indices = -1, half2 uv = 0.0)
+    int4 indices = -1, float2 uv = 0.0, float2 uvFootprint = 0.0)
 {
     if (indices.x >= 0)
     {
-        half4 color = _AlbedoTextures.SampleLevel(sampler_AlbedoTextures, float3(uv, indices.x), 0.0);
+        half4 color = _AlbedoTextures.SampleLevel(sampler_AlbedoTextures, float3(uv, indices.x), TextureArrayLod(_AlbedoTextures,uvFootprint));
         baseColor = baseColor * color.rgb;
         alpha = alpha * color.a;
     }
     if (indices.y >= 0)
     {
-        half4 metallicRoughness = _MetallicTextures.SampleLevel(sampler_MetallicTextures, float3(uv, indices.y), 0.0);
+        half4 metallicRoughness = _MetallicTextures.SampleLevel(sampler_MetallicTextures, float3(uv, indices.y), TextureArrayLod(_MetallicTextures,uvFootprint));
         metallic = metallicRoughness.r;
         smoothness = metallicRoughness.a;
     }
     if (indices.w >= 0)
     {
-        smoothness = _RoughnessTextures.SampleLevel(sampler_RoughnessTextures, float3(uv, indices.w), 0.0).x;
+        smoothness = _RoughnessTextures.SampleLevel(sampler_RoughnessTextures, float3(uv, indices.w), TextureArrayLod(_RoughnessTextures,uvFootprint)).x;
         smoothness = 1.0 - smoothness;
     }
     Material mat;
@@ -272,7 +295,7 @@ Material GenMaterial(half3 baseColor, half3 emission, half emissionIntensity,
     mat.metallic = metallic;
     if (indices.z >= 0)
     {
-        emission = emission * _EmitTextures.SampleLevel(sampler_EmitTextures, float3(uv, indices.z), 0.0).xyz;
+        emission = emission * _EmitTextures.SampleLevel(sampler_EmitTextures, float3(uv, indices.z), TextureArrayLod(_EmitTextures,uvFootprint)).xyz;
     }
     mat.emissionIntensity = emissionIntensity;
     mat.emission = emission;
@@ -284,6 +307,8 @@ Material GenMaterial(half3 baseColor, half3 emission, half emissionIntensity,
 RayHit GenRayHit()
 {
     RayHit hit;
+    hit.instanceIndex = -1;
+    hit.materialIndex = -1;
     hit.position = float3(0.0f, 0.0f, 0.0f);
     hit.distance = 1.#INF;
     hit.normal = float3(0.0f, 0.0f, 0.0f);
@@ -297,6 +322,7 @@ RayHit GenRayHit()
 HitData GenHitData()
 {
     HitData hit;
+    hit.materialIndex = -1;
     hit.position = float3(0.0f, 0.0f, 0.0f);
     hit.distance = 1.#INF;
     hit.normal = float3(0.0f, 0.0f, 0.0f);
@@ -314,7 +340,7 @@ HitData GenHitData()
 
 Ray GenRay(float3 origin, float3 dir)
 {
-    Ray ray;
+    Ray ray = (Ray)0;
     ray.origin = origin;
     ray.dir = dir;
     ray.invDir = 1.0f / ray.dir;

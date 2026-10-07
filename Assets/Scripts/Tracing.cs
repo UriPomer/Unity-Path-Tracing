@@ -48,6 +48,7 @@ public partial class Tracing : MonoBehaviour
     [SerializeField, Min(1)] int ReSTIRGIDiagnosticFrameInterval = 8;
 
     [Header("Display")]
+    [SerializeField] bool UseTemporalDenoising = true;
     [UnityEngine.Serialization.FormerlySerializedAs("Denoise")]
     [SerializeField] bool AccumulateFrames = true;
     [SerializeField] bool ToneMap = true;
@@ -88,8 +89,14 @@ public partial class Tracing : MonoBehaviour
     private bool _oldUseReSTIRDI = false;
     private bool _oldUseReSTIRGI = false;
     private bool _oldAccumulateFrames = true;
+    private bool _oldTemporalDenoising = true;
+    private TemporalDenoiser _denoiser;
+    private bool TemporalDenoisingActive => UseTemporalDenoising && DebugMode == 0;
+    private RenderTexture DisplayTexture => TemporalDenoisingActive && _denoiser?.Output != null
+        ? _denoiser.Output : AccumulateFrames ? frameConverged : target;
     private bool _hasPrimarySurfaceHistory = false;
     private Matrix4x4 _previousCameraViewProjection = Matrix4x4.identity;
+    private Vector3 _previousRestirCameraPosition;
     private int _previousTargetFrameRate = -1;
     private int _previousVSyncCount = -1;
     private int _previousRenderFrameInterval = -1;
@@ -191,7 +198,15 @@ public partial class Tracing : MonoBehaviour
         bool cameraMoved = _hasPrimarySurfaceHistory && viewProjection != _previousCameraViewProjection;
         if (sceneChanged)
         {
-            ResetSampleCount("scene_changed");
+            if (_denoiser != null && _denoiser.GeometryRevision == BVHBuilder.GeometryRevision)
+            {
+                ResetAccumulationOnly("scene_moved");
+                // Stored GI secondary vertices are not yet mapped through object
+                // motion. Discard reservoirs, while preserving denoiser motion.
+                ResetReservoirHistory();
+            }
+            else
+                ResetSampleCount("scene_changed");
         }
         else if (cameraMoved)
         {
@@ -202,10 +217,19 @@ public partial class Tracing : MonoBehaviour
         CreateReSTIRBuffersIfNeeded(renderDimensions.x * renderDimensions.y);
         if (FrameLimit > 0 && sampleCount >= FrameLimit)
         {
-            BlitToDisplay(AccumulateFrames ? frameConverged : target, destination);
+            BlitToDisplay(DisplayTexture, destination);
             return;
         }
 
+        if (TemporalDenoisingActive)
+        {
+            _denoiser ??= new TemporalDenoiser();
+            _denoiser.Prepare(cam, renderDimensions.x, renderDimensions.y, tracingShader, kernelTrace);
+        }
+        else
+        {
+            _denoiser?.Dispose(); _denoiser = null;
+        }
         SetShaderParameters();
         _restirDiagnostics?.RecordRenderModes(UseReSTIRDI, IsReSTIRGIActive);
         sampleCount++;
@@ -301,16 +325,16 @@ public partial class Tracing : MonoBehaviour
             Mathf.CeilToInt(_currentRenderWidth / 8.0f),
             Mathf.CeilToInt(_currentRenderHeight / 8.0f), 1);
 
-        if (UseReSTIRDI || IsReSTIRGIActive)
-            tracingShader.Dispatch(kernelCopyPrimarySurfaceHistory, (pixelCount + 63) / 64, 1, 1);
-
-        // The former Denoise option was sample averaging, not a spatial denoising filter.
-        if (AccumulateFrames)
+        if (TemporalDenoisingActive)
+            _denoiser.Reconstruct(cam, target, _primarySurfaceHistory, _primarySurfaceHistoryPrev);
+        else if (AccumulateFrames)
         {
             _addMaterial.SetFloat("_Sample", sampleCount);
             Graphics.Blit(target, frameConverged, _addMaterial);
         }
-        BlitToDisplay(AccumulateFrames ? frameConverged : target, destination);
+        if (UseReSTIRDI || IsReSTIRGIActive || TemporalDenoisingActive)
+            tracingShader.Dispatch(kernelCopyPrimarySurfaceHistory, (pixelCount + 63) / 64, 1, 1);
+        BlitToDisplay(DisplayTexture, destination);
 
         _hasPrimarySurfaceHistory = true;
         double renderMilliseconds =
@@ -386,6 +410,8 @@ public partial class Tracing : MonoBehaviour
 
     private void OnDisable()
     {
+        RestoreRasterCulling();
+        _denoiser?.Dispose(); _denoiser = null;
         StopReSTIRDiagnostics();
         RestoreFrameRateLimit();
         ReleaseRenderTargets();
@@ -407,7 +433,8 @@ public partial class Tracing : MonoBehaviour
                _oldDirectLightRISCandidateCount != DirectLightRISCandidateCount ||
                _oldUseReSTIRDI != UseReSTIRDI ||
                _oldUseReSTIRGI != UseReSTIRGI ||
-               _oldAccumulateFrames != AccumulateFrames;
+               _oldAccumulateFrames != AccumulateFrames ||
+               _oldTemporalDenoising != UseTemporalDenoising;
     }
 
     private void CacheRuntimeSettings()
@@ -423,18 +450,17 @@ public partial class Tracing : MonoBehaviour
         _oldUseReSTIRDI = UseReSTIRDI;
         _oldUseReSTIRGI = UseReSTIRGI;
         _oldAccumulateFrames = AccumulateFrames;
+        _oldTemporalDenoising = UseTemporalDenoising;
     }
 
     private void ResetSampleCount(string reason = "full_reset")
     {
+        _denoiser?.Reset();
         _restirDiagnostics?.ScheduleResetCapture(reason, sampleCount);
         sampleCount = 0;
         frameId = 0;
         _hasPrimarySurfaceHistory = false;
-        _hasDirectRestirHistory = false;
-        _hasIndirectRestirHistory = false;
-        _lastDirectReservoirOutputIdx = 0;
-        _lastIndirectReservoirOutputIdx = 0;
+        ResetReservoirHistory();
         ClearAccumulationRenderTargets();
     }
 
@@ -442,32 +468,15 @@ public partial class Tracing : MonoBehaviour
     {
         _restirDiagnostics?.ScheduleResetCapture(reason, sampleCount);
         sampleCount = 0;
-        frameId = 0;
+        ClearAccumulationRenderTargets();
+    }
+
+    private void ResetReservoirHistory()
+    {
         _hasDirectRestirHistory = false;
         _hasIndirectRestirHistory = false;
         _lastDirectReservoirOutputIdx = 0;
         _lastIndirectReservoirOutputIdx = 0;
-        ClearAccumulationRenderTargets();
-    }
-
-    private void ClearAccumulationRenderTargets()
-    {
-        if (target != null)
-            ClearRenderTexture(target);
-
-        if (frameConverged != null)
-            ClearRenderTexture(frameConverged);
-    }
-
-    private static void ClearRenderTexture(RenderTexture renderTexture)
-    {
-        if (renderTexture == null)
-            return;
-
-        RenderTexture previous = RenderTexture.active;
-        RenderTexture.active = renderTexture;
-        GL.Clear(false, true, Color.clear);
-        RenderTexture.active = previous;
     }
 
 }
