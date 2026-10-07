@@ -75,7 +75,6 @@ public partial class Tracing : MonoBehaviour
 
     // Cached arrays and objects to avoid per-frame GC allocations
     private int[] bvhKernels;
-    private int[] lightKernels;
     private CommandBuffer cmdBuffer;
     private string[] bounceNames = new string[24]; // 8 bounces × 3 phases = 24
     private int _lastLightStateHash = int.MinValue;
@@ -221,6 +220,11 @@ public partial class Tracing : MonoBehaviour
             return;
         }
 
+        // Rotate only when a frame will be rendered. The last completed primary
+        // surface becomes history; the other buffer receives this frame's hits.
+        if (UseReSTIRDI || IsReSTIRGIActive || TemporalDenoisingActive)
+            (_primarySurfaceHistory, _primarySurfaceHistoryPrev) = (_primarySurfaceHistoryPrev, _primarySurfaceHistory);
+
         if (TemporalDenoisingActive)
         {
             _denoiser ??= new TemporalDenoiser();
@@ -332,8 +336,6 @@ public partial class Tracing : MonoBehaviour
             _addMaterial.SetFloat("_Sample", sampleCount);
             Graphics.Blit(target, frameConverged, _addMaterial);
         }
-        if (UseReSTIRDI || IsReSTIRGIActive || TemporalDenoisingActive)
-            tracingShader.Dispatch(kernelCopyPrimarySurfaceHistory, (pixelCount + 63) / 64, 1, 1);
         BlitToDisplay(DisplayTexture, destination);
 
         _hasPrimarySurfaceHistory = true;
@@ -395,7 +397,6 @@ public partial class Tracing : MonoBehaviour
         if (resetRequired)
             ResetSampleCount(runtimeStateChangeReason ?? "runtime_reset");
 
-        _lights.UpdateBuffer(tracingShader, lightKernels);
     }
 
     private void OnValidate()

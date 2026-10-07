@@ -75,6 +75,7 @@ public class BVHBuilder
 
     private static bool objectUpdated = true;
     public static int GeometryRevision { get; private set; }
+    public static int TransformRevision { get; private set; }
     private static bool objectTransformUpdated = false;
 
     public static void RegisterObject(GameObject o)
@@ -348,6 +349,7 @@ public class BVHBuilder
         }
 
         SetBuffer(ref TransformBuffer, transforms, sizeof(float) * 4 * 4);
+        TransformRevision++;
 
         objectTransformUpdated = false;
         return true;
@@ -405,23 +407,25 @@ public class BVHBuilder
             if (obj == null) continue;
 
             obj.GetComponent<Renderer>().GetSharedMaterials(reloadMaterials);
+            obj.TryGetComponent<Emission>(out var emissionComponent);
             foreach (var mat in reloadMaterials)
             {
-                Color emission = mat.IsKeywordEnabled("_EMISSION") ? mat.GetColor("_EmissionColor") : Color.black;
-                obj.TryGetComponent<Emission>(out var emissionComponent);
-                float emissionIntensity = mat.IsKeywordEnabled("_EMISSION")
+                Color color = mat.color;
+                bool emissive = mat.IsKeywordEnabled("_EMISSION");
+                Color emission = emissive ? mat.GetColor(ID_EmissionColor) : Color.black;
+                float emissionIntensity = emissive
                     ? emissionComponent?.Intensity ?? 0.0f
                     : 0.0f;
 
                 MaterialData newData = new MaterialData()
                 {
-                    Color = new Vector4(mat.color.r, mat.color.g, mat.color.b, mat.color.a),
+                    Color = color,
                     Emission = new Vector3(emission.r, emission.g, emission.b),
                     EmissionIntensity = emissionIntensity,
-                    Metallic = mat.HasProperty("_Metallic") ? mat.GetFloat("_Metallic") : 0.0f,
-                    Smoothness = mat.HasProperty("_Glossiness") ? mat.GetFloat("_Glossiness") : 0.0f,
+                    Metallic = mat.HasProperty(ID_Metallic) ? mat.GetFloat(ID_Metallic) : 0.0f,
+                    Smoothness = mat.HasProperty(ID_Glossiness) ? mat.GetFloat(ID_Glossiness) : 0.0f,
                     IOR = ReadIor(mat),
-                    RenderMode = mat.HasProperty("_Mode") ? mat.GetFloat("_Mode") : 0.0f,
+                    RenderMode = mat.HasProperty(ID_Mode) ? mat.GetFloat(ID_Mode) : 0.0f,
                     AlbedoIdx = materials[matIdx].AlbedoIdx,
                     EmitIdx = materials[matIdx].EmitIdx,
                     MetallicIdx = materials[matIdx].MetallicIdx,

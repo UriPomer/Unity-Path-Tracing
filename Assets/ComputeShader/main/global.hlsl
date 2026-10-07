@@ -44,7 +44,6 @@ float2 _Resolution;
 int _TraceDepth;
 float4x4 _CameraToWorld;
 float4x4 _CameraInverseProjection;
-float4x4 _PreviousCameraViewProjection;
 float3 _RestirPreviousCameraPosition;
 float _RayPixelSpread;
 Texture2D<float4> _SkyboxTexture;
@@ -101,7 +100,6 @@ StructuredBuffer<TLASNode> _TLASNodes;
 
 /// Debug ///
 uint _TLASNodesCount;
-uint _BNodesCount;
 
 bool _OnlyDrawAlbedo;
 bool _OnlyDrawNormals;
@@ -171,8 +169,6 @@ struct PathContribution
 {
     float3 L;
     float _padding0;
-    float3 throughput;
-    float _padding1;
 };
 
 struct BufferSizeData

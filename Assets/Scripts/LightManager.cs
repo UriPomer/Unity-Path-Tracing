@@ -59,16 +59,6 @@ public class LightManager : MonoBehaviour
         tracingShader.SetInt("_PointLightsCount", GetPointLightsCount());
     }
 
-    public void UpdateBuffer(ComputeShader tracingShader, int[] kernelIndices)
-    {
-        UpdateBuffer(tracingShader);
-        if (pointLightsBuffer != null)
-        {
-            foreach (int k in kernelIndices)
-                tracingShader.SetBuffer(k, "_PointLights", pointLightsBuffer);
-        }
-    }
-
     private List<Vector4> pointLightsPosColor = new List<Vector4>();
     private List<Vector4> previousPointLights = new List<Vector4>();
     private readonly HashSet<EntityId> handledLights = new HashSet<EntityId>();

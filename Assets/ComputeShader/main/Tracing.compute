@@ -3,7 +3,6 @@
 #pragma kernel kernel_shade
 #pragma kernel kernel_shadow
 #pragma kernel kernel_finalize
-#pragma kernel kernel_copy_primary_surface_history
 #pragma kernel TransferKernel
 #pragma kernel kernel_generate_initial
 #pragma kernel kernel_temporal_resampling
@@ -33,7 +32,6 @@
 #include "restir/gi_shade.hlsl"
 #include "restir/gi_spatial.hlsl"
 
-RWStructuredBuffer<HitData> PrimarySurfaceHistoryPrevRW;
 
 [numthreads(64, 1, 1)]
 void kernel_clear_restir_telemetry(uint3 id : SV_DispatchThreadID)
@@ -150,7 +148,6 @@ void kernel_generate(uint3 id : SV_DispatchThreadID)
 
     GlobalRays[id.x] = rd;
     GlobalColors[id.x].L = float3(0, 0, 0);
-    GlobalColors[id.x].throughput = float3(1, 1, 1);
     if (_DenoiseEnabled)
     {
         _DenoiseDirect[uint2(id.x % _ScreenWidth, id.x / _ScreenWidth)] = 0;
@@ -438,15 +435,6 @@ void kernel_finalize(uint3 id : SV_DispatchThreadID)
     // shade stays within D3D11's eight-UAV limit, including rejected proposals.
     if (_DenoiseEnabled && !_UseReSTIRDI)
         _DenoiseDirect[id.xy] = float4(_DenoiseDirect[id.xy].rgb,_DenoisePathDiffuse[id.xy].a);
-}
-
-[numthreads(64, 1, 1)]
-void kernel_copy_primary_surface_history(uint3 id : SV_DispatchThreadID)
-{
-    uint pixelCount = _ScreenWidth * _ScreenHeight;
-    if (id.x >= pixelCount) return;
-
-    PrimarySurfaceHistoryPrevRW[id.x] = PrimarySurfaceHistory[id.x];
 }
 
 // ==================== Kernel 5: Transfer (compute indirect dispatch args) ====================

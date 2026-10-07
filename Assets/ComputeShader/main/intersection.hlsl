@@ -109,13 +109,14 @@ float2 TriangleUVFootprint(Ray ray, int triangleBase, int transformIdx, float di
     return width * float2(length(a*duv1.x+b*duv2.x),length(a*duv1.y+b*duv2.y));
 }
 
-void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int materialIdx, int transformIdx)
+void IntersectBlasTree(Ray ray, inout float distance, int startIdx, int materialIdx,
+    out int closestTriangle, out float2 closestBarycentrics)
 {
     int stack[BVHTREE_RECURSE_SIZE];
     int stackPtr = 0;
     int primitiveIdx;
-    int closestTriangle = -1;
-    float2 closestBarycentrics = 0.0;
+    closestTriangle = -1;
+    closestBarycentrics = 0.0;
     stack[stackPtr] = startIdx;
     while (stackPtr >= 0 && stackPtr < BVHTREE_RECURSE_SIZE)
     {
@@ -124,7 +125,7 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int material
 
         float dst = IntersectBox(ray, node.boundMax, node.boundMin);    // 和BLAS的包围盒求交
         bool leaf = node.primitiveEndIdx >= 0;
-        if (dst < bestHit.distance)
+        if (dst < distance)
         {
             if (leaf)
             {
@@ -135,12 +136,12 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int material
                     float t, u, v;
                     if (IntersectTriangle(ray, triIndexBase, t, u, v))    //与面求交
                     {
-                        if (t > 0.0 && t < bestHit.distance)
+                        if (t > 0.0 && t < distance)
                         {
                             MaterialData mat = _Materials[materialIdx];
                             if (mat.mode == 1.0 && SurfaceAlpha(mat, TriangleUV(triIndexBase, u, v)) < 0.5)
                                 continue;
-                            bestHit.distance = t;
+                            distance = t;
                             closestTriangle = triIndexBase;
                             closestBarycentrics = float2(u, v);
                         }
@@ -157,8 +158,8 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int material
                 float dstA = RayBoundingBoxDst(ray, childA.boundMin, childA.boundMax);
                 float dstB = RayBoundingBoxDst(ray, childB.boundMin, childB.boundMax);
 
-                bool hitA = dstA >= 0.0f && dstA < bestHit.distance;
-                bool hitB = dstB >= 0.0f && dstB < bestHit.distance;
+                bool hitA = dstA >= 0.0f && dstA < distance;
+                bool hitB = dstB >= 0.0f && dstB < distance;
 
                 if (!hitA && !hitB)
                     continue;
@@ -179,7 +180,11 @@ void IntersectBlasTree(Ray ray, inout RayHit bestHit, int startIdx, int material
             }
         }
     }
-    if (closestTriangle < 0) return;
+}
+
+void LoadTriangleHit(Ray ray, inout RayHit bestHit, int closestTriangle,
+    float2 closestBarycentrics, int materialIdx, int transformIdx)
+{
     MaterialData mat = _Materials[materialIdx];
     bestHit.materialIndex = materialIdx;
     float2 uv = TriangleUV(closestTriangle, closestBarycentrics.x, closestBarycentrics.y);
@@ -245,6 +250,8 @@ void IntersectTlas(Ray ray, inout RayHit bestHit)
     int stack[BVHTREE_RECURSE_SIZE];
     int stackIndex = 0;
     stack[0] = 0;                         // 根始终是 0
+    int triangleBase = -1, transformIdx = -1, materialIdx = -1;
+    float2 barycentrics = 0.0;
 
     while (stackIndex >= 0)
     {
@@ -257,17 +264,12 @@ void IntersectTlas(Ray ray, inout RayHit bestHit)
             if (n.transformIdx >= 0)               // ---------- 叶子 ----------
             {
                 Ray localRay = PrepareTreeEnterRay(ray, n.transformIdx);
-                RayHit localHit = GenRayHit();
-                localHit.distance = bestHit.distance;
-                IntersectBlasTree(localRay, localHit, n.Index, n.materialIdx, n.transformIdx);
-                if (localHit.distance < bestHit.distance)
+                int localTriangle; float2 localBarycentrics;
+                IntersectBlasTree(localRay, bestHit.distance, n.Index, n.materialIdx, localTriangle, localBarycentrics);
+                if (localTriangle >= 0)
                 {
-                    bestHit = localHit;
-                    bestHit.instanceIndex = n.transformIdx;
-                    bestHit.position = ray.origin + ray.dir * localHit.distance;
-                    float3x3 worldToLocal = (float3x3)_Transforms[n.transformIdx * 2 + 1];
-                    bestHit.normal = normalize(mul(localHit.normal, worldToLocal));
-                    bestHit.geometryNormal = normalize(mul(localHit.geometryNormal, worldToLocal));
+                    triangleBase = localTriangle; barycentrics = localBarycentrics;
+                    transformIdx = n.transformIdx; materialIdx = n.materialIdx;
                 }
             }
             else
@@ -307,6 +309,19 @@ void IntersectTlas(Ray ray, inout RayHit bestHit)
             }
         }
     }
+    if (triangleBase < 0) return;
+    // Decode material textures only for the global closest hit. Earlier TLAS
+    // candidates can be replaced and require coverage tests, not full shading.
+    Ray localRay = PrepareTreeEnterRay(ray,transformIdx);
+    RayHit localHit = GenRayHit();
+    localHit.distance = bestHit.distance;
+    LoadTriangleHit(localRay,localHit,triangleBase,barycentrics,materialIdx,transformIdx);
+    bestHit = localHit;
+    bestHit.instanceIndex = transformIdx;
+    bestHit.position = ray.origin + ray.dir * localHit.distance;
+    float3x3 worldToLocal = (float3x3)_Transforms[transformIdx * 2 + 1];
+    bestHit.normal = normalize(mul(localHit.normal, worldToLocal));
+    bestHit.geometryNormal = normalize(mul(localHit.geometryNormal, worldToLocal));
 }
 
 float TraceVisibility(Ray ray, float targetDist, bool transmitAlpha)

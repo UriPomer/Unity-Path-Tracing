@@ -16,6 +16,7 @@ public sealed class TemporalDenoiser : IDisposable
     RenderTexture _direct, _directFiltered, _diffuse, _pathDiffuse, _indirectFiltered;
     ComputeBuffer _previousTransforms, _geometry;
     int _index, _width, _height;
+    int _transformRevision = -1;
     bool _valid;
     Matrix4x4 _previousVP, _previousView, _projection;
     Vector3 _cameraPosition;
@@ -76,6 +77,7 @@ public sealed class TemporalDenoiser : IDisposable
         {
             _previousTransforms?.Release();
             _previousTransforms = new ComputeBuffer(count, 64);
+            _transformRevision = -1;
             _valid = false;
         }
         bool cut = _projection != camera.projectionMatrix ||
@@ -86,7 +88,7 @@ public sealed class TemporalDenoiser : IDisposable
         {
             _previousVP = camera.projectionMatrix * camera.worldToCameraMatrix;
             _previousView = camera.worldToCameraMatrix;
-            if (transforms.Count > 0) _previousTransforms.SetData(transforms);
+            CaptureTransforms();
         }
         GeometryRevision = BVHBuilder.GeometryRevision;
         tracer.SetTexture(traceKernel, "_DenoiseMotion", _motion[_index]);
@@ -139,8 +141,7 @@ public sealed class TemporalDenoiser : IDisposable
         _previousView = camera.worldToCameraMatrix;
         _projection = camera.projectionMatrix;
         _cameraPosition = camera.transform.position; _cameraRotation = camera.transform.rotation;
-        var transforms = BVHBuilder.GetTransforms();
-        if (transforms.Count > 0) _previousTransforms.SetData(transforms);
+        CaptureTransforms();
         _index = 1 - _index; _valid = true;
         return Output;
     }
@@ -185,6 +186,14 @@ public sealed class TemporalDenoiser : IDisposable
     }
 
     void Dispatch(int kernel) => _shader.Dispatch(kernel, (_width + 7) / 8, (_height + 7) / 8, 1);
+
+    void CaptureTransforms()
+    {
+        if (_transformRevision == BVHBuilder.TransformRevision) return;
+        var transforms = BVHBuilder.GetTransforms();
+        if (transforms.Count > 0) _previousTransforms.SetData(transforms);
+        _transformRevision = BVHBuilder.TransformRevision;
+    }
 
     RenderTexture Create(string name)
     {
